@@ -29,7 +29,7 @@ python -m pytest -q
 
 `demo`는 자체 합성 음원을 만들고 테스트 전용 LOCK을 설정합니다. 실제 프로젝트에서는 사람이 콘티를 검토하고 LOCK해야 합니다. `--seconds`를 생략하면 동일한 전체 곡 manifest를 사용해 곡 끝까지 편집합니다. 입력은 최대 10분입니다.
 
-포함 샘플: `projects/pipeline_demo/output/TEST_A_30S.mp4`, `PILOT_60S.mp4`.
+전달 ZIP에는 `projects/pipeline_demo/output/TEST_A_30S.mp4`, `PILOT_60S.mp4` 샘플이 포함됩니다. GitHub에서는 미디어를 추적하지 않으므로 위 `demo` 명령으로 재현합니다.
 
 ## 실제 Suno 음원으로 시작하기
 
@@ -65,7 +65,7 @@ python -m engine.cli compile projects/project_001 --seconds 30
 | QC 실패 수정 지시·최대 2회 재시도·이어하기 | 구현·오류 주입 검증 |
 | H.264 1440×1080 24fps + 원곡 AAC | 30초·60초 출력 검증 |
 | 실제 AI 영상 3샷 | 연결 준비 및 요청 파일 테스트; 실제 생성 미실행 |
-| Git | 로컬 커밋·복원용 bundle; 원격 저장소 미생성 |
+| Git | 비공개 GitHub 저장소에 소스와 개발 이력 관리 |
 
 ## 결과물
 
@@ -85,10 +85,11 @@ python -m engine.cli compile projects/project_001 --seconds 30
 git clone film-unit-history.bundle film-unit-source
 ```
 
-GitHub 계정 연결은 확인했지만 이번 환경의 GitHub 도구에는 새 저장소 생성 기능이 노출되지 않았습니다. 원격 업로드를 수행했다고 주장하지 않습니다. GitHub CLI가 인증된 환경에서는 아래 명령으로 사용자 요청대로 비공개 저장소를 만들고 올릴 수 있습니다.
+소스 저장소: [soulbounddao-ADMIN/film-unit-mv-studio](https://github.com/soulbounddao-ADMIN/film-unit-mv-studio). 비공개 저장소이며 개발 단계별 커밋을 보존합니다.
 
 ```bash
-gh repo create film-unit-mv-studio --private --source=. --remote=origin --push
+git clone https://github.com/soulbounddao-ADMIN/film-unit-mv-studio.git
+cd film-unit-mv-studio
 ```
 
 음원·생성 영상·API 설정은 `.gitignore`에서 제외했습니다. 공유할 미디어는 별도 제공하고 코드 저장소는 가볍게 유지합니다.
