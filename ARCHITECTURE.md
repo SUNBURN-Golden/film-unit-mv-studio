@@ -48,6 +48,8 @@ Semantic items have no numeric default. A review must contain the normalized cli
 
 The included mock generator draws an exact layout diagram, not original production art. Approved first frames are supplied through Work or imported. Local video supports hold, pan and zoom; pan/zoom are rejected when the shot says camera movement is none. Split screen can be authored directly into the locked first frame. General layered character animation, per-limb rigging, lip-sync, rotoscoping and dynamic split-screen composition are future features.
 
+The production target is actual 2D character/scene animation. New draft manifests default to LIMITED_MOTION throughout instead of allocating a quota of static shots. A locked camera never implies frozen subjects. Work must specify and review actual subject motion; Mock camera effects are previews and do not satisfy animation acceptance. STATIC remains available for deliberate editorial holds, and FULL_GENERATIVE for director-specified complex actions. Existing locked packages remain unchanged.
+
 ## Platform scope
 
 Streamlit is a local control panel, not a hosted SaaS. Python does not possess Work's connector credentials. No invented OpenArt REST endpoint or secret-token extraction is used. Authentication, multiuser concurrency, hosted workers and scheduled jobs are deliberately outside v0.1. Browser access to the local panel was blocked by the Work browser environment; Streamlit's execution testing framework was used instead.

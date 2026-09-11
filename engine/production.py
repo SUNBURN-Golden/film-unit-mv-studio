@@ -9,9 +9,9 @@ from .core import FilmError, atomic_text, read, write, safe_path, timecode, vali
 
 STYLE = {
     "format": {"aspect_ratio": "4:3", "resolution": "1440x1080", "fps": 24},
-    "visual_style": {"medium": "limited 2D animation", "background": "warm gray paper", "line": "thin black ink", "shading": "minimal", "camera": "mostly static"},
+    "visual_style": {"medium": "2D character animation", "background": "warm gray paper", "line": "thin black ink", "shading": "minimal", "camera": "mostly locked; characters and scene elements animate within the frame"},
     "palette": {"paper": "#ECEAE4", "ink": "#181818", "teal": "#48A6A0"},
-    "rules": ["no photorealism", "no cinematic dramatic lighting", "no unnecessary camera movement", "no text unless explicitly specified", "emotion should be understated", "movement should be economical"],
+    "rules": ["no photorealism", "no cinematic dramatic lighting", "no unnecessary camera movement", "no text unless explicitly specified", "emotion should be understated", "movement should be economical but depict actual character or scene action", "no stop-motion aesthetic", "do not substitute camera-only pan or zoom for character or scene animation"],
     "draft": True,
 }
 
@@ -43,16 +43,17 @@ def make_package(project, target_shot_ms=5000):
     write(p / "bible/locations.yaml", {"draft": True, "locations": [{"id": f"LOC_{name}", "reference_images": [], "required_views": ["wide", "medium", "prop"]} for name in ["ROOM", "INTERROGATION", "OFFICE", "HOME", "ORPHANAGE", "NURSING_HOME", "POLITICAL_OFFICE", "STAGE"]]})
     atomic_text(p / "bible/story.md", "# Story draft\n\n" + brief + "\n\nThis is the supplied brief. Shot-level story, ages, actions and symbolism require director review. Section labels are not lyric transcription.\n")
     shots = []
-    pattern = ["STATIC", "LIMITED_MOTION", "STATIC", "FULL_GENERATIVE", "LIMITED_MOTION"]
     for i, (a, b) in enumerate(zip(boundaries, boundaries[1:])):
-        mode = pattern[i % len(pattern)]
+        # The director assigns complex actions or intentional holds after review.
+        # A locked camera does not imply a static subject or a free local render.
+        mode = "LIMITED_MOTION"
         shots.append({
             "id": f"S{i+1:03d}", "sequence": next(s["id"] for s in seq if s["in_ms"] <= a < s["out_ms"]),
             "in_ms": a, "out_ms": b, "duration_ms": b-a,
             "description": f"Draft shot {i+1}. Director to specify the action and emotion.",
             "characters": ["CHAR_A", "CHAR_B"], "locations": ["LOC_HOME", "LOC_POLITICAL_OFFICE"],
             "composition": "vertical split screen", "camera": {"type": "locked", "movement": "none"},
-            "motion": {"complexity": "low" if mode != "FULL_GENERATIVE" else "high", "instruction": "Restrained movement. Preserve the approved first frame.", "local_effect": "hold"},
+            "motion": {"complexity": "low", "instruction": "Animate the director-approved character or scene action with restrained movement. Start from the approved first frame and preserve its identity, style and composition. A locked camera must not freeze the subjects.", "local_effect": "hold"},
             "references": [f"storyboard/S{i+1:03d}.png"], "render_mode": mode, "renderer": "auto", "status": "storyboard",
             "storyboard_kind": "placeholder", "identity_priority": "high",
         })
@@ -60,7 +61,7 @@ def make_package(project, target_shot_ms=5000):
     write(p / "manifest/sequence.json", seq)
     write(p / "manifest/shots.json", shots)
     generate_storyboard(p)
-    atomic_text(p / "bible/director_request.md", "# Work director handoff\n\nRead input/brief.md, input/lyrics.txt and analysis/audio.json. Write story.md, style_bible.yaml, characters.yaml, locations.yaml and shot descriptions against actual timecodes. Preserve contiguous full-duration coverage. Create character/location references and approved first frames using an image generator. Replace each placeholder via the Control Panel. Review all assets, then LOCK. No paid generation before a concrete batch quote is approved.\n")
+    atomic_text(p / "bible/director_request.md", "# Work director handoff\n\nRead input/brief.md, input/lyrics.txt and analysis/audio.json. Write story.md, style_bible.yaml, characters.yaml, locations.yaml and shot descriptions against actual timecodes. Preserve contiguous full-duration coverage. The target is a 2D character-animation MV, not stop motion or a slideshow. Specify actual character, expression, prop or environmental action for each animated shot. LIMITED_MOTION still requires actual animation; assign FULL_GENERATIVE where the action needs it. Use STATIC only for an intentional director-approved hold, never to satisfy a savings quota. Mock/local hold, pan and zoom are timing-preview tools, not completed animation. Create character/location references and approved first frames using an image generator. Replace each placeholder via the Control Panel. Review all assets, then LOCK. No paid generation before a concrete batch quote is approved.\n")
     return shots
 
 

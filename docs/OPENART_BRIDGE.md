@@ -7,7 +7,7 @@ OpenArt is connected in Work. The local Python process cannot invoke another app
 ## One batch, three real shots
 
 1. Use Work to create real first frames and character/location references. Replace placeholders, complete the story and shot descriptions, then LOCK for production. Keep the approved first frame as the literal first frame of `image2video`.
-2. Select three non-STATIC shots. In `manifest/shots.json`, set other motion shots to `renderer: mock` when they can use their approved image locally. This edits the production package, so do it before LOCK.
+2. For the three-shot integration test only, select three animated shots and set the remaining shots to `renderer: mock`. This produces a hybrid technical test, not a finished animation MV. For the finished pilot or full song, supply actual animation for every animated shot through OpenArt or Manual; reserve STATIC for intentional editorial holds. Any change to `manifest/shots.json` requires review before a new LOCK.
 3. Query `openart_model_list`, then `openart_model_form_get` for each selected model/mode. Never infer accepted fields from a marketing model name. `templates/` contains a 2026-09-11 snapshot for reference only.
 4. Make the approved images available through the provider's supported asset-upload flow. Obtain each reference object through the available upload/metadata tools. Verify that the referenced image matches the local approved first frame. Never fabricate an uploaded asset ID or URL.
 5. Build model form parameters including exact duration, resolution, aspect ratio and one output. Disable `generateAudio`. Ask `openart_model_cost` to price that exact configuration. Provider duration can exceed a cut's duration; the compiler trims only after generation.

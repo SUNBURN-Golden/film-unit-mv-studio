@@ -6,10 +6,18 @@
 |---|---|---|
 | A | 30-second audio → analysis → storyboard → Mock → MP4 | PASS with original synthetic test signal |
 | B | Three actual AI-generated shots in the same 30 seconds | NOT RUN; provider bridge schema/receipt lifecycle tested without spending |
-| C | 60-second pilot with at least three real generated shots | Mock 60-second export PASS; real-generation portion remains pending |
+| C | 60-second animated pilot: actual motion for every animated shot, including at least three provider-generated shots | Mock 60-second export PASS; finished animated pilot remains pending |
 | D | Full supplied Suno song | Awaiting the user's MP3/WAV and approved production art |
 
 This is an operational Mock-first MVP, not completion of the full real-generation acceptance criterion. No real Suno audio or earlier actual character/storyboard image was attached to this task. Memory and prose do not substitute for those files.
+
+## Animation direction (2026-09-11 clarification)
+
+The deliverable is a 2D character-animation music video. Characters, expressions, props and environmental elements perform the approved actions within each shot. A locked camera is compatible with animated subjects. Economical acting does not mean replacing most of the film with camera motion over still images; a stop-motion aesthetic is not the target.
+
+New production packages draft every shot as LIMITED_MOTION. The director upgrades complex actions to FULL_GENERATIVE and may deliberately choose STATIC for an editorial hold. There is no automatic 40% STATIC quota. Existing packages and their approvals are not rewritten. Mock hold/pan/zoom remains a timing-preview tool and does not satisfy final animation acceptance. LIMITED_MOTION is not automatically a free local effect: the current local renderer has no character rigging or subject-animation engine.
+
+For a four-minute film, initial budget planning therefore covers 240 seconds of animation until the actual shot plan establishes any intentional holds or reuse. At the quoted 350 credits per five-second job, 48 jobs cost 16,800 credits for a first pass; 15 additional jobs provide about 30% retry allowance for a total of 22,050. The current two-retry-per-shot reservation policy instead reserves up to 50,400. These are video-only planning scenarios at 720p with audio off, not a final 1080p quote or a guarantee of successful takes. Storyboard/reference generation and unused clip portions add cost.
 
 ## Files
 
