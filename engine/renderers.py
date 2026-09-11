@@ -45,6 +45,9 @@ class VideoRenderer(ABC):
     def config_hash(self):
         return object_hash({"name": self.name, "format": self.fmt})
 
+    def input_hash(self, shot, attempt, job_id):
+        return self.config_hash()
+
 
 class MockRenderer(VideoRenderer):
     name = "mock"
@@ -71,6 +74,10 @@ class MockRenderer(VideoRenderer):
 class ManualRenderer(VideoRenderer):
     name = "manual"
 
+    def input_hash(self, shot, attempt, job_id):
+        source = self.project / f"render/manual/{shot['id']}_a{attempt}.mp4"
+        return digest(source) if source.exists() else None
+
     def render(self, shot, target, attempt=0, correction="", job_id=""):
         source = self.project / f"render/manual/{shot['id']}_a{attempt}.mp4"
         if not source.exists():
@@ -94,6 +101,14 @@ class OpenArtRenderer(VideoRenderer):
 
     def config_hash(self):
         return object_hash(self.config)
+
+    def input_hash(self, shot, attempt, job_id):
+        response = self.project / f"render/responses/{job_id}.json"
+        if not response.exists():
+            return None
+        receipt = read(response)
+        clip = safe_path(self.project, receipt["clip_path"]) if receipt.get("clip_path") else None
+        return object_hash({"receipt": receipt, "clip": digest(clip) if clip and clip.exists() else None})
 
     def prepared(self, shot, quality):
         specific = self.config.get("shots", {}).get(shot["id"])
@@ -142,6 +157,8 @@ class OpenArtRenderer(VideoRenderer):
         if not response.exists():
             raise AwaitingRender(f"OpenArt job {job_id} is queued; submit once in Work and import the result")
         receipt = read(response)
+        if receipt.get("job_id") == job_id and receipt.get("status") in {"FAILED", "CANCELLED"}:
+            raise FilmError(f"Provider job failed: {receipt.get('error', receipt['status'])}")
         if receipt.get("job_id") != job_id or receipt.get("status") != "COMPLETED" or not receipt.get("history_id"):
             raise AwaitingRender(f"OpenArt job {job_id} is not completed; do not resubmit")
         clip = safe_path(self.project, receipt["clip_path"])

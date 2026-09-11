@@ -1,0 +1,11 @@
+# Direct dependencies used for this acceptance run. Python 3.12 / Linux.
+numpy==2.3.5
+scipy==1.17.0
+soundfile==0.14.0
+librosa==1.0.0
+Pillow==12.3.0
+PyYAML==6.0.3
+matplotlib==3.10.8
+streamlit==1.63.0
+jsonschema==4.26.0
+pytest==9.1.1

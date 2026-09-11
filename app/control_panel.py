@@ -143,8 +143,9 @@ with tabs[2]:
         reviewer = st.text_input("검토자", "Director")
         mock_only = st.checkbox("콘티 테스트용 LOCK", value=any(s.get("storyboard_kind") == "placeholder" for s in shots))
         if st.button("LOCK ALL", type="primary"):
-            result = guarded(lambda: lock_production(p, reviewer, mock_only), "전체 제작 패키지를 LOCK했습니다.")
-            st.rerun()
+            result = guarded(lambda: (lock_production(p, reviewer, mock_only), True)[1], "전체 제작 패키지를 LOCK했습니다.")
+            if result:
+                st.rerun()
 
 with tabs[3]:
     st.subheader("렌더링")

@@ -1,4 +1,5 @@
 from pathlib import Path
+import math
 from .core import FilmError, now, object_hash, read, require_lock, write
 
 
@@ -8,10 +9,12 @@ def make_estimate(p, shots, renderer, quality, fingerprint):
     retry = int(config["budget"]["max_retry_per_shot"])
     if not 0 <= retry <= 10:
         raise FilmError("max_retry_per_shot must be 0–10")
+    if not math.isfinite(config["budget"]["max_credits"]) or config["budget"]["max_credits"] < 0:
+        raise FilmError("Budget must be a finite nonnegative credit amount")
     rows = []
     for shot in shots:
-        credits = renderer.quote(shot, quality) if shot["render_mode"] != "STATIC" else 0
-        if credits < 0:
+        credits = renderer.quote(shot, quality) if shot["render_mode"] != "STATIC" and shot.get("renderer") != "mock" else 0
+        if not math.isfinite(credits) or credits < 0:
             raise FilmError("Negative or unknown quote")
         rows.append({"shot": shot["id"], "in_ms": shot["in_ms"], "out_ms": shot["out_ms"], "credits": credits})
     initial = sum(r["credits"] for r in rows)

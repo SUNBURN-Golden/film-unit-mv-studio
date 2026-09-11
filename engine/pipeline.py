@@ -60,7 +60,7 @@ def _compile(p, seconds, mode, quality, output_name, progress):
         if progress:
             progress(index, len(shots), shot["id"])
         sstate = state["shots"].setdefault(shot["id"], {"attempt": 0, "correction": ""})
-        active = local if shot["render_mode"] == "STATIC" else renderer
+        active = local if shot["render_mode"] == "STATIC" or shot.get("renderer") == "mock" else renderer
         max_retry = estimate["max_retry_per_shot"]
         while sstate["attempt"] <= max_retry:
             attempt = sstate["attempt"]
@@ -72,7 +72,8 @@ def _compile(p, seconds, mode, quality, output_name, progress):
                 if credits:
                     budget.reserve(p, job_id, credits, estimate)
                 cache = read(target.with_suffix(".cache.json"), {})
-                cached = target.exists() and cache.get("sha256") == digest(target)
+                input_hash = active.input_hash(shot, attempt, job_id)
+                cached = target.exists() and cache.get("sha256") == digest(target) and cache.get("input_hash") == input_hash
                 if not cached:
                     result = active.render(shot, raw, attempt, sstate["correction"], job_id)
                     generated = result.generated
@@ -85,7 +86,7 @@ def _compile(p, seconds, mode, quality, output_name, progress):
                         normalize(raw, target, expected, fmt)
                     else:
                         raw.replace(target)
-                    write(target.with_suffix(".cache.json"), {"sha256": digest(target), "generated": generated})
+                    write(target.with_suffix(".cache.json"), {"sha256": digest(target), "generated": generated, "input_hash": active.input_hash(shot, attempt, job_id)})
                 else:
                     generated = cache["generated"]
                 qc = inspect_clip(target, shot, p, fmt, generated, estimate["production"])
