@@ -85,10 +85,10 @@ python -m engine.cli compile projects/project_001 --seconds 30
 git clone film-unit-history.bundle film-unit-source
 ```
 
-소스 저장소: [soulbounddao-ADMIN/film-unit-mv-studio](https://github.com/soulbounddao-ADMIN/film-unit-mv-studio). 비공개 저장소이며 개발 단계별 커밋을 보존합니다.
+소스 저장소: [BeautifulMind-JT/film-unit-mv-studio](https://github.com/BeautifulMind-JT/film-unit-mv-studio). 비공개 저장소이며 개발 단계별 커밋을 보존합니다.
 
 ```bash
-git clone https://github.com/soulbounddao-ADMIN/film-unit-mv-studio.git
+git clone https://github.com/BeautifulMind-JT/film-unit-mv-studio.git
 cd film-unit-mv-studio
 ```
 
