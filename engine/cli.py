@@ -22,12 +22,16 @@ def main(argv=None):
     demo.add_argument("--root", default="projects")
     demo.add_argument("--name", default="pipeline_demo")
     demo.add_argument("--seconds", type=float, default=65)
+    benchmark = sub.add_parser("benchmark", help="Prepare three actual-animation tests from one image; no LOCK or paid calls")
+    benchmark.add_argument("--reference", required=True)
+    benchmark.add_argument("--name", default="animation_benchmark")
+    benchmark.add_argument("--root", default="projects")
     for name in ["analyze", "package", "lock", "estimate", "approve", "compile", "import-frame"]:
         p = sub.add_parser(name)
         p.add_argument("project")
         if name in {"estimate", "compile"}:
             p.add_argument("--seconds", type=float)
-            p.add_argument("--renderer", choices=["mock", "manual", "openart"], default="mock")
+            p.add_argument("--renderer", choices=["mock", "manual", "openart", "fal"], default="mock")
             p.add_argument("--quality", choices=["draft", "final"], default="final")
         if name == "compile":
             p.add_argument("--output")
@@ -43,6 +47,9 @@ def main(argv=None):
     try:
         if a.command == "init":
             result = str(init_project(a.root, a.name, a.audio, Path(a.brief).read_text(), Path(a.lyrics).read_text() if a.lyrics else ""))
+        elif a.command == "benchmark":
+            from .benchmark import make_benchmark
+            result = {"project": str(make_benchmark(a.root, a.name, a.reference)), "status": "AWAITING_REVIEW_AND_PROVIDER_CONNECTION", "paid_generations": 0}
         elif a.command == "demo":
             import tempfile
             with tempfile.TemporaryDirectory() as tmp:

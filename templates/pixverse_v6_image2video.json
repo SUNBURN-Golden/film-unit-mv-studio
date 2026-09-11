@@ -1,0 +1,103 @@
+{
+  "jsonSchema": {
+    "additionalProperties": false,
+    "properties": {
+      "duration": {
+        "default": 5,
+        "maximum": 15,
+        "minimum": 1,
+        "type": "integer"
+      },
+      "endFrame": {
+        "anyOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "type": {
+                "const": "image",
+                "type": "string"
+              },
+              "url": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "id",
+              "url",
+              "label"
+            ],
+            "type": "object"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "generateAudio": {
+        "default": false,
+        "type": "boolean"
+      },
+      "prompt": {
+        "maxLength": 5000,
+        "minLength": 1,
+        "type": "string"
+      },
+      "resolution": {
+        "default": "540p",
+        "enum": [
+          "360p",
+          "540p",
+          "720p",
+          "1080p"
+        ],
+        "type": "string"
+      },
+      "startFrame": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "type": {
+            "const": "image",
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "id",
+          "url",
+          "label"
+        ],
+        "type": "object"
+      },
+      "videoCount": {
+        "default": 1,
+        "maximum": 8,
+        "minimum": 1,
+        "type": "integer"
+      }
+    },
+    "required": [
+      "prompt",
+      "startFrame"
+    ],
+    "type": "object"
+  },
+  "media": "video",
+  "mode": "image2video",
+  "model": "pixverseV6"
+}

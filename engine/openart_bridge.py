@@ -22,14 +22,17 @@ def register_quote(project, shot_id, form, reference, cost_result, quality="draf
     params = {k: v["default"] for k, v in props.items() if "default" in v}
     params.update({k: v["const"] for k, v in props.items() if "const" in v})
     params.update(extra_params or {})
-    params.update(prompt=build_prompt(p, shot), startFrame=reference, generateAudio=False, videoCount=1, aspectRatio="4:3")
+    params.update(prompt=build_prompt(p, shot), startFrame=reference, videoCount=1)
+    for key, value in {"generateAudio": False, "generateSound": False, "aspectRatio": "4:3"}.items():
+        if key in props:
+            params[key] = value
     jsonschema.validate(params, schema)
     rows = cost_result["items"]
     matching = [r for r in rows if r["model"] == form["model"] and r["mode"] == form["mode"]]
     if len(matching) != 1:
         raise FilmError("Need one exact model/mode cost result")
     priced = matching[0]
-    for key in ["duration", "resolution", "aspectRatio", "videoCount", "generateAudio"]:
+    for key in ["duration", "resolution", "aspectRatio", "videoCount", "generateAudio", "generateSound"]:
         if priced["config"].get(key) != params.get(key):
             raise FilmError(f"Cost result does not cover exact {key}")
     config = read(p / "render/openart_config.json", {"models": {}, "shots": {}})

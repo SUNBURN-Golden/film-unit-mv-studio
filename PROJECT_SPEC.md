@@ -84,3 +84,8 @@ Default video: 4:3, 1440×1080, 24fps, H.264, CRF 18, yuv420p. Default audio: AA
 ## Next concrete input
 
 Upload the final Suno MP3/WAV, optionally lyrics and the earlier chosen character/art reference. Work can then build a song-specific production bible and real storyboard, obtain an exact three-shot quote, lock the package, request that one batch approval, and execute the real-render pilot.
+
+
+## 저가 애니메이션 renderer 추가 (2026-09-11)
+
+fal Wan 2.2 Turbo adapter와 OpenArt PixVerse V6 schema 지원을 추가했다. fal USD 예산은 OpenArt credits와 별도 한도·예약액으로 관리한다. 비동기 제출 전에 상태를 저장하고, 응답이 불확실하면 배치를 중단해 중복 결제를 방지한다. 3×5초의 실제 인물 동작 비교 입력을 생성하는 benchmark 명령을 제공한다. 현재 유료 생성은 0건이며 실제 품질 검증이 남았다. 세부 설정·한계·증거는 [저가 애니메이션 테스트](docs/CHEAP_ANIMATION_TEST.md)를 참고한다.

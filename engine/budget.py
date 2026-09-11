@@ -9,21 +9,30 @@ def make_estimate(p, shots, renderer, quality, fingerprint):
     retry = int(config["budget"]["max_retry_per_shot"])
     if not 0 <= retry <= 10:
         raise FilmError("max_retry_per_shot must be 0–10")
-    if not math.isfinite(config["budget"]["max_credits"]) or config["budget"]["max_credits"] < 0:
-        raise FilmError("Budget must be a finite nonnegative credit amount")
+    unit = getattr(renderer, "billing_unit", "credits")
+    if unit not in {"credits", "USD"}:
+        raise FilmError("Unknown billing unit")
+    cap = config["budget"].get("max_usd" if unit == "USD" else "max_credits", 0)
+    if not math.isfinite(cap) or cap < 0:
+        raise FilmError("Budget must be a finite nonnegative amount")
     rows = []
     for shot in shots:
         credits = renderer.quote(shot, quality) if shot["render_mode"] != "STATIC" and shot.get("renderer") != "mock" else 0
         if not math.isfinite(credits) or credits < 0:
             raise FilmError("Negative or unknown quote")
-        rows.append({"shot": shot["id"], "in_ms": shot["in_ms"], "out_ms": shot["out_ms"], "credits": credits})
-    initial = sum(r["credits"] for r in rows)
+        row = {"shot": shot["id"], "in_ms": shot["in_ms"], "out_ms": shot["out_ms"], "amount": credits}
+        if unit == "credits":
+            row["credits"] = credits  # Legacy OpenArt readers only; never USD.
+        rows.append(row)
+    initial = round(sum(r["amount"] for r in rows), 6)
     spec = {"production": fingerprint, "renderer": renderer.name, "quality": quality,
-        "rows": rows, "initial_credits": initial, "retry_reserve": initial * retry,
-        "worst_case_credits": initial * (1+retry), "max_retry_per_shot": retry,
-        "max_credits": config["budget"]["max_credits"], "provider_config": renderer.config_hash()}
-    if spec["worst_case_credits"] > spec["max_credits"]:
-        raise FilmError(f"Worst-case {spec['worst_case_credits']} exceeds budget {spec['max_credits']}")
+        "billing_unit": unit, "rows": rows, "initial_amount": initial, "retry_reserve": round(initial * retry, 6),
+        "worst_case_amount": round(initial * (1+retry), 6), "max_retry_per_shot": retry,
+        "max_amount": cap, "provider_config": renderer.config_hash()}
+    if unit == "credits":
+        spec.update(initial_credits=initial, worst_case_credits=spec["worst_case_amount"], max_credits=cap)
+    if spec["worst_case_amount"] > cap:
+        raise FilmError(f"Worst-case {spec['worst_case_amount']} {unit} exceeds budget {cap} {unit}")
     spec["estimate_id"] = object_hash(spec)
     write(p / "render/estimate.json", spec)
     return spec
@@ -35,7 +44,7 @@ def approve(p, estimate):
 
 
 def require_approval(p, estimate):
-    if estimate["worst_case_credits"] == 0:
+    if estimate.get("worst_case_amount", estimate.get("worst_case_credits")) == 0:
         return
     approval = read(Path(p) / "render/approval.json", {})
     if approval.get("estimate_id") != estimate["estimate_id"]:
@@ -46,11 +55,22 @@ def reserve(p, job_id, credits, estimate):
     """Caller holds project_mutex. Pending/failed jobs remain reserved conservatively."""
     path = Path(p) / "render/ledger.json"
     ledger = read(path, {"jobs": {}})
-    if job_id in ledger["jobs"]:
+    unit = estimate.get("billing_unit", "credits")
+    if not math.isfinite(credits) or credits < 0:
+        raise FilmError("Invalid reservation amount")
+    previous = ledger["jobs"].get(job_id)
+    if previous:
+        if previous.get("billing_unit", "credits") != unit or previous.get("reserved_amount", previous.get("reserved_credits")) != credits or previous["estimate_id"] != estimate["estimate_id"]:
+            raise FilmError("Existing reservation differs from this job")
         return
-    total = sum(j["reserved_credits"] for j in ledger["jobs"].values())
-    batch = sum(j["reserved_credits"] for j in ledger["jobs"].values() if j["estimate_id"] == estimate["estimate_id"])
-    if total + credits > estimate["max_credits"] or batch + credits > estimate["worst_case_credits"]:
-        raise FilmError("Credit cap reached; submission stopped before a new job")
-    ledger["jobs"][job_id] = {"reserved_credits": credits, "estimate_id": estimate["estimate_id"], "created_at": now()}
+    jobs = [j for j in ledger["jobs"].values() if j.get("billing_unit", "credits") == unit]
+    amount = lambda j: j.get("reserved_amount", j.get("reserved_credits", 0))
+    total = round(sum(amount(j) for j in jobs) + credits, 6)
+    batch = round(sum(amount(j) for j in jobs if j["estimate_id"] == estimate["estimate_id"]) + credits, 6)
+    if total > estimate.get("max_amount", estimate.get("max_credits")) or batch > estimate.get("worst_case_amount", estimate.get("worst_case_credits")):
+        raise FilmError(f"{unit} cap reached; submission stopped before a new job")
+    entry = {"billing_unit": unit, "reserved_amount": credits, "estimate_id": estimate["estimate_id"], "created_at": now()}
+    if unit == "credits":
+        entry["reserved_credits"] = credits
+    ledger["jobs"][job_id] = entry
     write(path, ledger)

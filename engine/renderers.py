@@ -14,6 +14,10 @@ class AwaitingRender(FilmError):
     pass
 
 
+class RenderBlocked(FilmError):
+    """Stop the batch without consuming another attempt or submitting more jobs."""
+
+
 @dataclass
 class RenderResult:
     path: Path
@@ -31,6 +35,7 @@ def normalize(source, target, frames, fmt):
 
 class VideoRenderer(ABC):
     name = "abstract"
+    billing_unit = "credits"
 
     def __init__(self, project, fmt):
         self.project, self.fmt = Path(project), fmt
@@ -41,6 +46,9 @@ class VideoRenderer(ABC):
 
     def quote(self, shot, quality):
         return 0
+
+    def preflight(self):
+        pass
 
     def config_hash(self):
         return object_hash({"name": self.name, "format": self.fmt})
@@ -115,13 +123,16 @@ class OpenArtRenderer(VideoRenderer):
         if not specific:
             raise FilmError(f"{shot['id']}: configure a verified OpenArt first-frame reference and exact quote")
         available = self.config.get("models", {})
-        model = route(shot, list(available), quality)
+        # Route only within this shot's priced model, never another shot's catalog.
+        model = route(shot, [specific[quality]["model"]], quality)
         spec = available[model]
         schema = spec["jsonSchema"]
         params = dict(specific[quality]["params"])
         # Mutable direction is rebuilt from locked bible + shot; no model-directed story.
         params["prompt"] = build_prompt(self.project, shot)
-        params["generateAudio"] = False
+        for key in ("generateAudio", "generateSound"):
+            if key in schema["properties"]:
+                params[key] = False
         params["videoCount"] = 1
         if params.get("duration", 0) * 1000 < shot["duration_ms"]:
             raise FilmError(f"{shot['id']}: quoted generation is shorter than the shot")
@@ -181,7 +192,8 @@ def build_prompt(project, shot):
 
 
 def get_renderer(name, project, fmt, quality):
-    cls = {"mock": MockRenderer, "manual": ManualRenderer, "openart": OpenArtRenderer}.get(name)
+    from .fal_renderer import FalRenderer
+    cls = {"mock": MockRenderer, "manual": ManualRenderer, "openart": OpenArtRenderer, "fal": FalRenderer}.get(name)
     if not cls:
         raise FilmError("Unknown renderer")
     renderer = cls(project, fmt)

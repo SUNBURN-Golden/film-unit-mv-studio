@@ -1,0 +1,7 @@
+{
+  "endpoint": "fal-ai/wan/v2.2-a14b/image-to-video/turbo",
+  "resolution": "720p",
+  "usd_per_video": 0.10,
+  "price_source": "https://fal.ai/models/fal-ai/wan/v2.2-a14b/image-to-video/turbo",
+  "price_valid_until": "2026-09-12T23:59:59+00:00"
+}

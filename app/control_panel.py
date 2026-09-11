@@ -1,5 +1,6 @@
 from pathlib import Path
 import json
+import os
 import sys
 import tempfile
 import yaml
@@ -149,14 +150,15 @@ with tabs[2]:
 
 with tabs[3]:
     st.subheader("렌더링")
-    renderer = st.selectbox("Renderer", ["mock", "manual", "openart"], format_func=lambda x: {"mock":"Mock · 비용 없는 콘티 테스트", "manual":"Manual · 생성한 영상 가져오기", "openart":"OpenArt · Work 작업 연결"}[x])
+    renderer = st.selectbox("Renderer", ["mock", "manual", "openart", "fal"], format_func=lambda x: {"mock":"Mock · 비용 없는 콘티 테스트", "manual":"Manual · 생성한 영상 가져오기", "openart":"OpenArt · Work 작업 연결", "fal":"fal · Wan 2.2 Turbo"}[x])
     quality = st.radio("Quality", ["draft", "final"], index=1, horizontal=True)
     length = st.radio("길이", ["30초 테스트", "60초 Pilot", "곡 전체"], horizontal=True)
     seconds = {"30초 테스트": 30, "60초 Pilot": 60, "곡 전체": None}[length]
     budget_cap = st.number_input("전체 크레딧 한도", min_value=0, value=int(config["budget"]["max_credits"]))
+    usd_cap = st.number_input("fal 전체 예산 (USD)", min_value=0.0, value=float(config["budget"].get("max_usd", 0)), step=0.1, format="%.2f")
     retry_cap = st.number_input("샷당 최대 재시도", min_value=0, max_value=10, value=int(config["budget"]["max_retry_per_shot"]))
     if st.button("예산 설정 저장"):
-        config["budget"].update(max_credits=budget_cap, max_retry_per_shot=retry_cap)
+        config["budget"].update(max_credits=budget_cap, max_usd=usd_cap, max_retry_per_shot=retry_cap)
         write(p / "project.yaml", config)
         st.success("저장 완료")
     if st.button("예상 비용 확인"):
@@ -166,11 +168,20 @@ with tabs[3]:
     estimate = st.session_state.get("estimate_"+chosen)
     if estimate:
         cols = st.columns(3)
-        cols[0].metric("첫 생성", f"{estimate['initial_credits']:g} credits")
-        cols[1].metric("재시도 여유분", f"{estimate['retry_reserve']:g} credits")
-        cols[2].metric("최대 예상", f"{estimate['worst_case_credits']:g} credits")
-        if estimate["worst_case_credits"] > 0 and st.button("이 배치 비용 승인"):
+        unit = estimate.get("billing_unit", "credits")
+        cols[0].metric("첫 생성", f"{estimate['initial_amount']:g} {unit}")
+        cols[1].metric("재시도 여유분", f"{estimate['retry_reserve']:g} {unit}")
+        cols[2].metric("최대 예상", f"{estimate['worst_case_amount']:g} {unit}")
+        if estimate["worst_case_amount"] > 0 and st.button("이 배치 비용 승인"):
             guarded(lambda: approve(p, estimate), "승인 완료")
+    if renderer == "fal":
+        st.caption("Wan 2.2 Turbo · 최대 5초 샷 · 기본 720p. 1080p 출력은 편집 시 확대됩니다.")
+        if not os.environ.get("FAL_KEY"):
+            st.info("fal API 키가 아직 연결되지 않았습니다. 실행 환경에 FAL_KEY를 설정해주세요.")
+        if not (p / "render/fal_config.json").exists():
+            if st.button("Wan 테스트 설정 추가"):
+                write(p / "render/fal_config.json", read(ROOT / "templates/fal_wan_turbo.json"))
+                st.success("설정 완료. 달러 예산을 저장하고 콘티 LOCK 후 비용을 확인해주세요.")
     if renderer == "openart":
         st.caption("Work에서 모델 규격·첫 프레임 URL·견적을 연결하면 승인된 요청 파일을 만듭니다. Work가 OpenArt에 제출한 후 결과를 가져와 이어서 실행합니다.")
     if st.button("GENERATE MUSIC VIDEO / RESUME", type="primary"):

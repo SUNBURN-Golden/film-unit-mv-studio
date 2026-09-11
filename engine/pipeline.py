@@ -1,7 +1,7 @@
 from pathlib import Path
 import copy
 from .core import FilmError, digest, frame_at, now, object_hash, probe, project_mutex, read, require_lock, validate_manifest, write
-from .renderers import AwaitingRender, MockRenderer, get_renderer, normalize
+from .renderers import AwaitingRender, RenderBlocked, MockRenderer, get_renderer, normalize
 from . import budget
 from .qc import inspect_clip
 from .assemble import assemble, exports
@@ -44,6 +44,7 @@ def compile_project(project, duration_seconds=None, mode="mock", quality="final"
 def _compile(p, seconds, mode, quality, output_name, progress):
     shots, duration_ms, fmt, renderer, estimate = prepare(p, seconds, mode, quality)
     budget.require_approval(p, estimate)
+    renderer.preflight()
     output_name = output_name or ("ANIMATIC.mp4" if mode == "mock" else "MASTER.mp4")
     if Path(output_name).name != output_name or not output_name.endswith(".mp4"):
         raise FilmError("Output must be a simple .mp4 filename")
@@ -105,6 +106,9 @@ def _compile(p, seconds, mode, quality, output_name, progress):
                 report["shots"].append({"shot_id": shot["id"], "status": "AWAITING_RENDER", "attempt": attempt, "job_id": job_id, "message": str(e)})
                 pending.append(shot["id"])
                 break
+            except RenderBlocked:
+                write(state_path, state)
+                raise
             except (FilmError, StopIteration) as e:
                 correction = str(e)
                 qc = {"shot_id": shot["id"], "status": "FAIL", "attempt": attempt, "job_id": job_id, "failures": [correction]}

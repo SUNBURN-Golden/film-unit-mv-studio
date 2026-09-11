@@ -134,7 +134,7 @@ def init_project(root, name, audio, brief, lyrics="", synthetic=False):
         "schema_version": "0.1", "name": name, "created_at": now(),
         "audio": {"path": str(dest.relative_to(p)), "sha256": digest(dest), "synthetic_test_audio": synthetic},
         "format": {"width": 1440, "height": 1080, "fps": 24, "aspect_ratio": "4:3", "crf": 18},
-        "budget": {"max_credits": 10000, "max_retry_per_shot": 2, "draft_resolution": "720p", "final_resolution": "1080p"},
+        "budget": {"max_credits": 10000, "max_usd": 0, "max_retry_per_shot": 2, "draft_resolution": "720p", "final_resolution": "1080p"},
         "qc": {"threshold": 85, "semantic_review_required": True},
         "renderer": {"default": "mock", "mode": "AUTO"},
     })

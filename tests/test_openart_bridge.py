@@ -9,18 +9,21 @@ from engine.audio import analyze, synth_test_audio
 from engine.core import init_project
 
 
-def test_bridge_request_schema_audio_off_stable_job_and_quote_drift(tmp_path):
+@pytest.mark.parametrize("template", ["seedance_fast_image2video.json", "pixverse_v6_image2video.json"])
+def test_bridge_request_schema_audio_off_stable_job_and_quote_drift(tmp_path, template):
     master = synth_test_audio(tmp_path / "source.wav", 5)
     p = init_project(tmp_path, "bridge_fixture", master, "TEST ONLY")
     analyze(p)
     shots = make_package(p)
     shots[0]["render_mode"] = "LIMITED_MOTION"
     write(p / "manifest/shots.json", shots)
-    form = read(Path(__file__).resolve().parents[1] / "templates/seedance_fast_image2video.json")
+    form = read(Path(__file__).resolve().parents[1] / "templates" / template)
     reference = {"id": "TEST_ONLY", "label": "fixture", "type": "image", "url": "https://example.invalid/fixture.png"}
-    cost = {"items": [{"model": form["model"], "mode": form["mode"], "totalCredits": 7,
-        "config": {"duration": 5, "resolution": "720p", "aspectRatio": "4:3", "videoCount": 1, "generateAudio": False}}]}
-    register_quote(p, "S001", form, reference, cost)
+    priced_config = {"duration": 5, "resolution": "720p", "videoCount": 1, "generateAudio": False}
+    if "aspectRatio" in form["jsonSchema"]["properties"]:
+        priced_config["aspectRatio"] = "4:3"
+    cost = {"items": [{"model": form["model"], "mode": form["mode"], "totalCredits": 7, "config": priced_config}]}
+    register_quote(p, "S001", form, reference, cost, extra_params={"resolution": "720p"})
     renderer = OpenArtRenderer(p, read(p / "project.yaml")["format"])
     renderer.quality = "draft"
     assert renderer.quote(shots[0], "draft") == 7
@@ -31,6 +34,8 @@ def test_bridge_request_schema_audio_off_stable_job_and_quote_drift(tmp_path):
     assert len(requests) == 1
     request = read(requests[0])
     assert request["arguments"]["params"]["generateAudio"] is False
+    if "aspectRatio" not in priced_config:
+        assert "aspectRatio" not in request["arguments"]["params"]
     record_submission(p, request["job_id"], "test-history")
     with pytest.raises(FilmError, match="twice"):
         record_submission(p, request["job_id"], "different-history")

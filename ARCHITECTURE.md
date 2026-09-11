@@ -53,3 +53,8 @@ The production target is actual 2D character/scene animation. New draft manifest
 ## Platform scope
 
 Streamlit is a local control panel, not a hosted SaaS. Python does not possess Work's connector credentials. No invented OpenArt REST endpoint or secret-token extraction is used. Authentication, multiuser concurrency, hosted workers and scheduled jobs are deliberately outside v0.1. Browser access to the local panel was blocked by the Work browser environment; Streamlit's execution testing framework was used instead.
+
+
+## 저가 애니메이션 renderer 추가 (2026-09-11)
+
+fal Wan 2.2 Turbo adapter와 OpenArt PixVerse V6 schema 지원을 추가했다. fal USD 예산은 OpenArt credits와 별도 한도·예약액으로 관리한다. 비동기 제출 전에 상태를 저장하고, 응답이 불확실하면 배치를 중단해 중복 결제를 방지한다. 3×5초의 실제 인물 동작 비교 입력을 생성하는 benchmark 명령을 제공한다. 현재 유료 생성은 0건이며 실제 품질 검증이 남았다. 세부 설정·한계·증거는 [저가 애니메이션 테스트](docs/CHEAP_ANIMATION_TEST.md)를 참고한다.

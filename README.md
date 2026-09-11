@@ -39,7 +39,7 @@ python -m pytest -q
 2. ANALYZE → GENERATE PRODUCTION PACKAGE.
 3. Work에서 `bible/director_request.md`와 입력·분석 파일을 바탕으로 이야기와 실제 그림을 제작합니다. 파일의 이야기·나이·장소·샷 설명을 검토하고, 각 샷의 승인할 첫 프레임을 업로드합니다.
 4. STORYBOARD에서 전체 확인 → LOCK ALL. 도식만으로 테스트할 때는 “콘티 테스트용 LOCK”을 선택합니다.
-5. Mock은 무료 로컬 렌더입니다. 실제 영상은 Manual로 가져오거나 [OpenArt 연결 안내](docs/OPENART_BRIDGE.md)에 따라 Work에서 생성합니다.
+5. Mock은 무료 로컬 렌더입니다. 실제 영상은 Manual로 가져오거나 [OpenArt 연결 안내](docs/OPENART_BRIDGE.md)에 따라 Work에서 생성합니다. 저가 후보인 fal Wan 2.2 Turbo와 OpenArt PixVerse V6는 [애니메이션 비교 테스트](docs/CHEAP_ANIMATION_TEST.md)를 참고합니다.
 6. 비용을 확인하고 해당 배치를 승인 → GENERATE / RESUME → QC 검토 → EXPORT.
 
 ```bash
@@ -59,7 +59,9 @@ python -m engine.cli compile projects/project_001 --seconds 30
 | Style / Character / Location Bible | 편집 가능한 템플릿·LOCK 구현 |
 | 서사·캐릭터 그림 자동 창작 | Work 감독 단계; 독립 Python LLM 호출은 미연결 |
 | 콘티 PNG·contact sheet·HTML | 구현; 기본값은 명시적 배치 도식 |
-| Mock / Manual / OpenArt abstraction | 구현 |
+| Mock / Manual / OpenArt / fal abstraction | 구현; fal은 오류 주입 검증, 실제 유료 호출 미검증 |
+| OpenArt PixVerse V6 | 첫 프레임 schema·견적·AUTO 선택 지원 |
+| fal Wan 2.2 Turbo | 달러 예산·비동기 요청·재개·다운로드 구현; API 키 필요 |
 | OpenArt AUTO routing | 검증된 form·견적 설정이 있는 모델만 선택 |
 | 독립 로컬 앱에서 OpenArt 직접 호출 | 미구현; Work MCP 작업 파일 방식 사용 |
 | 기술 QC·5프레임 추출 | 자동 |
