@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "film-unit-mv-studio"
-version = "0.1.0"
+version = "0.2.0"
 description = "File-based, locked-shot music video compiler"
 requires-python = ">=3.11"
 dependencies = ["numpy>=1.24,<3", "scipy>=1.10,<2", "soundfile>=0.12,<1", "librosa>=0.10,<2", "Pillow>=10,<13", "PyYAML>=6,<7", "matplotlib>=3.7,<4", "streamlit>=1.40,<2", "jsonschema>=4,<5"]

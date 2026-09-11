@@ -1,6 +1,8 @@
-# FILM UNIT — ASTRA MV STUDIO v0.1
+# FILM UNIT — ASTRA MV STUDIO v0.2
 
 음원 분석 → 제작 문서 → 샷·콘티 → LOCK → 렌더링 → QC → FFmpeg 편집 → MP4.
+
+**v0.2: Work가 여러 생성 도구와 편집을 이어서 처리하는 Economy 모드**를 추가했습니다. 장면별로 승인된 저가 후보를 선택하고, 실패 컷만 재시도하며, 생성 원본은 출력 크기 변경과 편집에 재사용합니다. [설정·Work 운영 안내](docs/ECONOMY_COMPILER.md). 실제 유료 생성과 무인 의미 QC는 아직 검증·연결하지 않았습니다.
 
 **MockRenderer로 30초와 60초의 실제 MP4 출력을 검증한 로컬 제작 도구입니다.** 이번 샘플은 합성 테스트 음원과 콘티 배치 도식입니다. Suno 음원이나 완성된 「물 좀 주소」 MV가 아닙니다. 실제 생성형 영상은 아직 제출하지 않았으며 사용 크레딧은 0입니다.
 
@@ -63,6 +65,9 @@ python -m engine.cli compile projects/project_001 --seconds 30
 | OpenArt PixVerse V6 | 첫 프레임 schema·견적·AUTO 선택 지원 |
 | fal Wan 2.2 Turbo | 달러 예산·비동기 요청·재개·다운로드 구현; API 키 필요 |
 | OpenArt AUTO routing | 검증된 form·견적 설정이 있는 모델만 선택 |
+| Economy 다중 모델·서비스 경로 | 같은 서비스 내 가격순, 서비스 우선순위와 샷별 후보 지정; 개별 USD·credits 상한 |
+| 원본 보관·Draft/Final 재사용·구간 편집 | 동일 입력은 재과금 없이 원본 재사용; 편집 결과 변경 시 QC 필요 |
+| Work 작업 목록·중복 접수 차단 | 제출·검토·복구 작업 구분, 불확실한 접수는 재제출 차단 |
 | 독립 로컬 앱에서 OpenArt 직접 호출 | 미구현; Work MCP 작업 파일 방식 사용 |
 | 기술 QC·5프레임 추출 | 자동 |
 | 인물·화풍·소품·텍스트·동작 QC | 근거가 있는 검토 기록을 읽는 인터페이스; 무인 시각 모델 미연결 |

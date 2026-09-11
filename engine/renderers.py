@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 import math
 import shutil
+import copy
 from datetime import datetime, timezone
 import jsonschema
 from .core import FilmError, digest, ffmpeg, frame_at, object_hash, read, safe_path, write
@@ -26,9 +27,9 @@ class RenderResult:
     job_id: str | None = None
 
 
-def normalize(source, target, frames, fmt):
+def normalize(source, target, frames, fmt, source_in_ms=0):
     w, h, fps = fmt["width"], fmt["height"], fmt["fps"]
-    ffmpeg(["-i", source, "-map", "0:v:0", "-an", "-vf",
+    ffmpeg(["-ss", f"{source_in_ms / 1000:.6f}", "-i", source, "-map", "0:v:0", "-an", "-vf",
         f"scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:color=0xECEAE4,setsar=1,fps={fps},trim=end_frame={frames},setpts=PTS-STARTPTS",
         "-frames:v", frames, "-c:v", "libx264", "-preset", "veryfast", "-crf", fmt["crf"], "-pix_fmt", "yuv420p", "-threads", "2", target])
 
@@ -55,6 +56,10 @@ class VideoRenderer(ABC):
 
     def input_hash(self, shot, attempt, job_id):
         return self.config_hash()
+
+    def generation_config(self, shot):
+        """Stable paid input settings, excluding local export size and price evidence."""
+        return None
 
 
 class MockRenderer(VideoRenderer):
@@ -108,13 +113,25 @@ class OpenArtRenderer(VideoRenderer):
         self.config = read(self.project / "render/openart_config.json", {"models": {}, "shots": {}})
 
     def config_hash(self):
-        return object_hash(self.config)
+        config = copy.deepcopy(self.config)
+        for specific in config.get("shots", {}).values():
+            for quality in ("draft", "final"):
+                for key in ("valid_until", "cost_evidence"):
+                    specific.get(quality, {}).pop(key, None)
+        return object_hash(config)
+
+    def generation_config(self, shot):
+        model, params, _ = self.prepared(shot, self.quality)
+        return {"provider": self.name, "model": model, "mode": "image2video", "params": params}
 
     def input_hash(self, shot, attempt, job_id):
         response = self.project / f"render/responses/{job_id}.json"
         if not response.exists():
             return None
         receipt = read(response)
+        request = self.project / f"render/requests/{job_id}.json"
+        if receipt.get("history_id") != read(request).get("history_id"):
+            raise RenderBlocked("OpenArt receipt does not match the recorded provider history ID")
         clip = safe_path(self.project, receipt["clip_path"]) if receipt.get("clip_path") else None
         return object_hash({"receipt": receipt, "clip": digest(clip) if clip and clip.exists() else None})
 
@@ -168,13 +185,15 @@ class OpenArtRenderer(VideoRenderer):
         if not response.exists():
             raise AwaitingRender(f"OpenArt job {job_id} is queued; submit once in Work and import the result")
         receipt = read(response)
+        if receipt.get("history_id") != read(request).get("history_id"):
+            raise RenderBlocked("OpenArt receipt does not match the recorded provider history ID")
         if receipt.get("job_id") == job_id and receipt.get("status") in {"FAILED", "CANCELLED"}:
             raise FilmError(f"Provider job failed: {receipt.get('error', receipt['status'])}")
         if receipt.get("job_id") != job_id or receipt.get("status") != "COMPLETED" or not receipt.get("history_id"):
             raise AwaitingRender(f"OpenArt job {job_id} is not completed; do not resubmit")
         clip = safe_path(self.project, receipt["clip_path"])
         if receipt["sha256"] != digest(clip):
-            raise FilmError("Imported clip hash does not match its OpenArt receipt")
+            raise RenderBlocked("Imported clip hash does not match its OpenArt receipt; recover this result")
         shutil.copyfile(clip, target)
         return RenderResult(Path(target), True, model, job_id)
 
@@ -193,7 +212,8 @@ def build_prompt(project, shot):
 
 def get_renderer(name, project, fmt, quality):
     from .fal_renderer import FalRenderer
-    cls = {"mock": MockRenderer, "manual": ManualRenderer, "openart": OpenArtRenderer, "fal": FalRenderer}.get(name)
+    from .economy import EconomyRenderer
+    cls = {"mock": MockRenderer, "manual": ManualRenderer, "openart": OpenArtRenderer, "fal": FalRenderer, "economy": EconomyRenderer}.get(name)
     if not cls:
         raise FilmError("Unknown renderer")
     renderer = cls(project, fmt)

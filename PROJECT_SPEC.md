@@ -1,4 +1,4 @@
-# Project specification / v0.1
+# Project specification / v0.2
 
 ## Acceptance status
 
@@ -55,6 +55,11 @@ FILM_UNIT/
     render/estimate.json
     render/approval.json
     render/ledger.json
+    render/economy.json
+    render/profiles/
+    render/takes/
+    render/progress/
+    render/edit_decisions.json
     qc/frames/
     qc/reviews/
     qc/report.json
@@ -73,7 +78,9 @@ IDs are unique `S001`-style strings. Ranges are contiguous, non-overlapping, int
 
 ## Budgets
 
-Default cap: 10,000 credits. Default retries: two additional attempts after the first. Draft: 960×720 local output; final: 1440×1080. Provider-native output size depends on its verified form; final delivery may normalize it. The app prices the selected Draft or Final pass, not a hidden two-pass workflow. Running both consumes two separately approved batches under the same project ledger.
+Default caps: 10,000 OpenArt credits and USD 0 for fal. Default retries: two additional attempts after the first. Draft: 960×720 local output; final: 1440×1080. Provider-native output size depends on its verified form; final delivery may normalize it. Each selected output pass has an exact approval, but identical paid generation inputs reuse source clips across Draft and Final without a new generation charge. Provider setting changes require a distinct take. Economy budgets each attempt's chosen provider in its own currency pool. These are cumulative project reservations, not account-wide monthly spending.
+
+v0.2 adds multiple configured profiles, cost ordering within each service, explicit provider priority, per-shot fallback sequences, resumable Work actions, duplicate-submission protection, cached original takes and local source-window edits. Work handles actual external tool calls and evidence-backed semantic review. A fully autonomous vision worker and actual paid 60-second animated pilot remain pending. See [Economy compiler operations](docs/ECONOMY_COMPILER.md).
 
 The source brief's sample prices are illustrative and not hardcoded. A read-only OpenArt quote on 2026-09-11 returned 350 credits for one Seedance 2.0 Fast image-to-video job at 720p, 5 seconds, 4:3, audio off. Other settings cost differently and the final price is determined at generation. This sample is not a quote for the entire user's MV and has not been authorized or spent.
 

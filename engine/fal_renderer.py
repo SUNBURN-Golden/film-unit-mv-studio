@@ -80,6 +80,11 @@ class FalRenderer(VideoRenderer):
         # Renewing unchanged price evidence must not produce another paid run.
         return object_hash({"adapter": 1, "config": {k: v for k, v in self.config.items() if k != "price_valid_until"}})
 
+    def generation_config(self, shot):
+        self.quote(shot, self.quality)
+        return {"provider": self.name, "adapter": 1, "endpoint": ENDPOINT,
+                "resolution": self.config["resolution"]}
+
     def quote(self, shot, quality):
         config = self.config
         if config.get("endpoint") != ENDPOINT:

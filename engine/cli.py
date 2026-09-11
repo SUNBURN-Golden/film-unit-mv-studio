@@ -2,7 +2,7 @@ from pathlib import Path
 import argparse
 import json
 import sys
-from .core import FilmError, init_project, lock_production, read
+from .core import FilmError, init_project, lock_production, project_mutex, read
 from .audio import analyze, synth_test_audio
 from .production import make_package, import_frame
 from .pipeline import compile_project, prepare
@@ -26,12 +26,12 @@ def main(argv=None):
     benchmark.add_argument("--reference", required=True)
     benchmark.add_argument("--name", default="animation_benchmark")
     benchmark.add_argument("--root", default="projects")
-    for name in ["analyze", "package", "lock", "estimate", "approve", "compile", "import-frame"]:
+    for name in ["analyze", "package", "lock", "estimate", "approve", "compile", "import-frame", "economy-init", "work-status", "edit-take", "claim-job"]:
         p = sub.add_parser(name)
         p.add_argument("project")
         if name in {"estimate", "compile"}:
             p.add_argument("--seconds", type=float)
-            p.add_argument("--renderer", choices=["mock", "manual", "openart", "fal"], default="mock")
+            p.add_argument("--renderer", choices=["mock", "manual", "openart", "fal", "economy"], default="mock")
             p.add_argument("--quality", choices=["draft", "final"], default="final")
         if name == "compile":
             p.add_argument("--output")
@@ -43,9 +43,28 @@ def main(argv=None):
         if name == "import-frame":
             p.add_argument("shot")
             p.add_argument("image")
+        if name == "edit-take":
+            p.add_argument("shot")
+            p.add_argument("--source-in-ms", type=int, required=True)
+            p.add_argument("--notes", required=True)
+        if name == "claim-job":
+            p.add_argument("job")
     a = parser.parse_args(argv)
     try:
-        if a.command == "init":
+        if a.command == "economy-init":
+            from .economy import initialize
+            result = initialize(a.project)
+        elif a.command == "work-status":
+            from .work_queue import status
+            result = status(a.project)
+        elif a.command == "edit-take":
+            from .takes import select_window
+            with project_mutex(a.project):
+                result = select_window(a.project, a.shot, a.source_in_ms, a.notes)
+        elif a.command == "claim-job":
+            from .openart_bridge import claim_submission
+            result = claim_submission(a.project, a.job)
+        elif a.command == "init":
             result = str(init_project(a.root, a.name, a.audio, Path(a.brief).read_text(), Path(a.lyrics).read_text() if a.lyrics else ""))
         elif a.command == "benchmark":
             from .benchmark import make_benchmark

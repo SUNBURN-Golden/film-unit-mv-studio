@@ -10,6 +10,9 @@ The compiler is a file-based local application. ChatGPT/Work is the director; re
 | `audio.py` | Decode analysis derivative; librosa tempo/onsets/beats; candidate boundaries; waveform |
 | `production.py` | Editable bible drafts, measured beat-aligned cuts, clearly labelled layout placeholders |
 | `renderer_router.py` | Capability/configuration-constrained provider preferences |
+| `economy.py` | Verified profile selection, approved retry/fallback paths, separate currency pools |
+| `takes.py` | Durable paid source cache and hash-bound local source-window edits |
+| `work_queue.py` | Read-only submission/review/reconciliation actions for the Work operator |
 | `renderers.py` | Common renderer interface; local, imported, Work/OpenArt bridge; normalization |
 | `openart_bridge.py` | Store verified forms, references and quotes; bind history IDs; import output receipts |
 | `budget.py` | Concrete estimate, batch approval binding, durable conservative reservations |
@@ -28,13 +31,15 @@ Structural changes are candidate energy/spectral shifts, not inferred verse or c
 
 LOCK stores a digest over master bytes, brief, lyrics, measured analysis, story, bibles, sequence, shot content, reference images and format. Any edit invalidates it. Shot status is not overwritten during render; execution state is stored separately. Test placeholder LOCK cannot authorize real generation.
 
-The estimate binds production digest, effective pilot shot ranges, renderer, quality, exact provider config and retry policy. A stale approval cannot authorize a changed configuration. Estimates reserve the full configured retry count per generated shot. Reservations are durable and idempotent by job ID, and count against a cumulative project cap. Failed or pending jobs retain their reservations; refunds are not guessed. The implementation is single-writer per project via an OS file lock.
+The estimate binds production digest, effective pilot shot ranges, renderer, quality, exact provider config, QC threshold and retry policy. Economy adds the exact per-attempt profile path and separate USD/credits pools. A stale approval cannot authorize a changed configuration. Estimates cover every possible attempt conservatively, including cached inputs; paid source reuse makes no new reservation. Reservations are durable and idempotent by job ID, and count against a cumulative project cap. Failed or pending jobs retain their reservations; refunds are not guessed. Compilation is single-writer per project via an OS file lock.
 
 Provider prices can change at submission time. Work must obtain a fresh exact price before submitting and stop if it differs from the approved row. Local accounting cannot impose a provider-side credit ceiling across unrelated jobs initiated outside this compiler.
 
 ## Render state
 
-Each run has a stable configuration digest. Each attempt has a stable `run_shot_attempt` job ID. Source edits invalidate normalized clip caches. An OpenArt job writes an outbox request and pauses. Work records the returned history ID immediately; uncertain submissions are reconciled against that ID rather than repeated. Completed clips have hash-bound receipts. Network timeouts are not treated as permission to duplicate a billed submission.
+Each run has a configuration digest. Paid attempts use a canonical `take_<hash>` job ID bound to provider generation settings, approved direction/references, attempt and correction. Local export dimensions and renewed price evidence do not create a different paid input. Manual/Mock retain per-run IDs. Paid originals are retained in `render/takes/`; a generation-plan state preserves the chosen attempt across local output sizes. Source edits and source-window decisions invalidate normalized caches. An OpenArt job writes an outbox request and pauses. Work claims it as SUBMITTING before the external call, then records the returned history ID immediately. Unknown submissions require reconciliation; completed clips have history- and hash-bound receipts.
+
+Economy sorts prices only within a service; provider order is explicit, not a fictitious exchange rate. An optional per-shot profile sequence overrides sorting while respecting an explicit locked renderer. Pending review or ambiguous transport errors never trigger a paid fallback. See [Work operations](docs/ECONOMY_COMPILER.md) for claim, review and local-edit steps.
 
 Technical or explicitly scored semantic failure adds concrete correction notes to the next attempt. Missing semantic review pauses without consuming a retry. Exhaustion stops that shot without substituting a different scene. Generated clips are stripped of audio, normalized to the target video format, and trimmed to the planned frame count. Short clips are rejected rather than silently stretched or frozen.
 

@@ -6,7 +6,7 @@ import tempfile
 import yaml
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import streamlit as st
-from engine.core import FilmError, atomic_text, init_project, lock_production, production_fingerprint, read, write
+from engine.core import FilmError, atomic_text, init_project, lock_production, production_fingerprint, project_mutex, read, write
 from engine.audio import analyze
 from engine.production import generate_storyboard, import_frame, make_package
 from engine.pipeline import compile_project, prepare
@@ -21,7 +21,7 @@ st.markdown("""<style>
 [data-testid="stSidebar"]{background:#e1ddd4}.stButton>button{border-radius:3px}
 [data-testid="stMetric"]{border-top:1px solid #b6b3aa;padding-top:12px}
 </style>""", unsafe_allow_html=True)
-st.caption("FILM UNIT   /   ASTRA MV COMPILER   /   0.1")
+st.caption("FILM UNIT   /   ASTRA MV COMPILER   /   0.2")
 st.title("한 곡에서, 한 편으로.")
 st.write("음원을 분석하고, 콘티를 확정한 뒤, 장면을 연결합니다.")
 projects = sorted(p.name for p in PROJECTS.iterdir() if p.is_dir() and (p / "project.yaml").exists())
@@ -150,12 +150,12 @@ with tabs[2]:
 
 with tabs[3]:
     st.subheader("렌더링")
-    renderer = st.selectbox("Renderer", ["mock", "manual", "openart", "fal"], format_func=lambda x: {"mock":"Mock · 비용 없는 콘티 테스트", "manual":"Manual · 생성한 영상 가져오기", "openart":"OpenArt · Work 작업 연결", "fal":"fal · Wan 2.2 Turbo"}[x])
+    renderer = st.selectbox("Renderer", ["mock", "economy", "manual", "openart", "fal"], format_func=lambda x: {"mock":"Mock · 비용 없는 콘티 테스트", "economy":"Economy · 장면별 도구 선택과 재사용", "manual":"Manual · 생성한 영상 가져오기", "openart":"OpenArt · Work 작업 연결", "fal":"fal · Wan 2.2 Turbo"}[x])
     quality = st.radio("Quality", ["draft", "final"], index=1, horizontal=True)
     length = st.radio("길이", ["30초 테스트", "60초 Pilot", "곡 전체"], horizontal=True)
     seconds = {"30초 테스트": 30, "60초 Pilot": 60, "곡 전체": None}[length]
-    budget_cap = st.number_input("전체 크레딧 한도", min_value=0, value=int(config["budget"]["max_credits"]))
-    usd_cap = st.number_input("fal 전체 예산 (USD)", min_value=0.0, value=float(config["budget"].get("max_usd", 0)), step=0.1, format="%.2f")
+    budget_cap = st.number_input("이 프로젝트의 OpenArt 크레딧 한도", min_value=0, value=int(config["budget"]["max_credits"]))
+    usd_cap = st.number_input("이 프로젝트의 fal 예산 (USD)", min_value=0.0, value=float(config["budget"].get("max_usd", 0)), step=0.1, format="%.2f")
     retry_cap = st.number_input("샷당 최대 재시도", min_value=0, max_value=10, value=int(config["budget"]["max_retry_per_shot"]))
     if st.button("예산 설정 저장"):
         config["budget"].update(max_credits=budget_cap, max_usd=usd_cap, max_retry_per_shot=retry_cap)
@@ -167,13 +167,24 @@ with tabs[3]:
             st.session_state["estimate_"+chosen] = prepared[4]
     estimate = st.session_state.get("estimate_"+chosen)
     if estimate:
-        cols = st.columns(3)
         unit = estimate.get("billing_unit", "credits")
-        cols[0].metric("첫 생성", f"{estimate['initial_amount']:g} {unit}")
-        cols[1].metric("재시도 여유분", f"{estimate['retry_reserve']:g} {unit}")
-        cols[2].metric("최대 예상", f"{estimate['worst_case_amount']:g} {unit}")
-        if estimate["worst_case_amount"] > 0 and st.button("이 배치 비용 승인"):
+        pools = estimate["pools"] if unit == "mixed" else {unit: estimate}
+        for pool_unit, pool in pools.items():
+            cols = st.columns(3)
+            cols[0].metric("첫 생성", f"{pool['initial_amount']:g} {pool_unit}")
+            cols[1].metric("재시도 여유분", f"{pool['retry_reserve']:g} {pool_unit}")
+            cols[2].metric("최대 예상", f"{pool['worst_case_amount']:g} {pool_unit}")
+        if unit == "mixed":
+            st.caption("달러와 크레딧은 별도 한도입니다. 아래 상한에는 이미 보관한 영상도 포함되며, 같은 원본 재사용에는 생성비가 들지 않습니다.")
+            routes = [{"장면": row["shot"], "시도": a["attempt"] + 1, "설정": a["profile"], "도구": a["provider"], "금액": a["amount"], "단위": a["billing_unit"]} for row in estimate["rows"] for a in row["attempts"]]
+            st.dataframe(routes, hide_index=True, width="stretch")
+        if any(pool["worst_case_amount"] > 0 for pool in pools.values()) and st.button("이 배치 비용 승인"):
             guarded(lambda: approve(p, estimate), "승인 완료")
+    if renderer == "economy":
+        st.caption("검증된 후보 중 도구 우선순위와 가격에 따라 선택합니다. 실패한 장면만 승인된 순서로 재시도하고, 검토를 기다리는 동안 추가 생성하지 않습니다.")
+        if not (p / "render/economy.json").exists() and st.button("연결된 설정으로 Economy 준비"):
+            from engine.economy import initialize
+            guarded(lambda: initialize(p), "설정 파일을 만들었습니다. Work에서 후보 모델과 견적을 연결해주세요.")
     if renderer == "fal":
         st.caption("Wan 2.2 Turbo · 최대 5초 샷 · 기본 720p. 1080p 출력은 편집 시 확대됩니다.")
         if not os.environ.get("FAL_KEY"):
@@ -192,6 +203,9 @@ with tabs[3]:
             st.session_state["last_result_"+chosen] = result
             st.success("출력 완료" if result["status"] == "COMPLETE" else "영상 업로드 또는 QC 검토 후 RESUME해주세요.")
     if (p / "qc/report.json").exists():
+        from engine.work_queue import status as work_status
+        with st.expander("작업 대기 목록과 사용 한도"):
+            st.json(work_status(p))
         report = read(p / "qc/report.json")
         for record in report["shots"]:
             if record["status"] == "AWAITING_RENDER" and renderer == "manual":
@@ -211,6 +225,15 @@ with tabs[3]:
                     person = st.text_input("QC 검토자", key="reviewer_"+record["clip_sha256"])
                     if st.button("QC 기록 저장", key="qc_"+record["clip_sha256"]):
                         guarded(lambda: save_review(p, record, scores, person, notes), "저장했습니다. RESUME하면 기준 미달 샷은 수정사항과 함께 재시도됩니다.")
+                    if record.get("raw_path"):
+                        st.caption("원본에 더 좋은 구간이 있으면 새 영상 생성 없이 시작점을 바꿀 수 있습니다.")
+                        offset = st.number_input("원본 시작점 (ms)", min_value=0, value=int(record.get("source_in_ms", 0)), key="trim_"+record["clip_sha256"])
+                        if st.button("이 구간으로 편집", key="trim_save_"+record["clip_sha256"]):
+                            from engine.takes import select_window
+                            def edit_window():
+                                with project_mutex(p):
+                                    return select_window(p, record["shot_id"], offset, notes)
+                            guarded(edit_window, "저장했습니다. RESUME 후 편집된 영상을 검토해주세요.")
 
 with tabs[4]:
     st.subheader("완성 파일")
