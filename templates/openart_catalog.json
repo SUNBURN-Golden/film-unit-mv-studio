@@ -1,0 +1,592 @@
+{
+  "checked_at": "2026-09-11",
+  "models": [
+    {
+      "description": "Google Nano Banana 2 — native 4K with strong fine detail; realistic people, pets, and fantasy-realism; accurate text and translation for ads and posters; up to 14 reference images. Text-to-image and image-to-image.",
+      "displayName": "Nano Banana 2",
+      "id": "nano-banana-2",
+      "modes": {
+        "image": [
+          {
+            "description": "Text to image — generate an image from a text prompt only (no input image).",
+            "mode": "text2image"
+          },
+          {
+            "description": "Image to image — use provided reference image(s) to edit, vary, or carry a subject/style into a new image. When a reference image contains text, keep the text layout and background style close to the reference.",
+            "mode": "image2image"
+          }
+        ]
+      }
+    },
+    {
+      "description": "Google Nano Banana Pro — highest-quality Nano Banana and the specialist for in-image text (short taglines to full paragraphs): native 4K detail, realistic people/pets/fantasy-realism, accurate text and translation for ads and posters, multi-subject consistency (up to 5 people, blends up to 14 references), and multi-turn editing. Text-to-image and image-to-image.",
+      "displayName": "Nano Banana Pro",
+      "id": "nano-banana-pro",
+      "modes": {
+        "image": [
+          {
+            "description": "Text to image — generate an image from a text prompt only (no input image).",
+            "mode": "text2image"
+          },
+          {
+            "description": "Image to image — use provided reference image(s) to edit, vary, or carry a subject/style into a new image. When a reference image contains text, keep the text layout and background style close to the reference.",
+            "mode": "image2image"
+          }
+        ]
+      }
+    },
+    {
+      "description": "Nano Banana 2 Lite — Google's fastest, most cost-efficient Gemini image model (Gemini 3.1 Flash-Lite Image): fast, low-cost 1K generation with strong character and text fidelity. Pick when speed or cost matters more than maximum quality. Text-to-image and image-to-image.",
+      "displayName": "Nano Banana 2 Lite",
+      "id": "nano-banana-2-lite",
+      "modes": {
+        "image": [
+          {
+            "description": "Text to image — generate an image from a text prompt only (no input image).",
+            "mode": "text2image"
+          },
+          {
+            "description": "Image to image — use provided reference image(s) to edit, vary, or carry a subject/style into a new image. When a reference image contains text, keep the text layout and background style close to the reference.",
+            "mode": "image2image"
+          }
+        ]
+      }
+    },
+    {
+      "description": "OpenAI GPT Image 2 — general-purpose flagship with top-tier aesthetics: fashion design and luxury product hero shots; hyperreal photography of people, pets, and fantasy-realism; precise control of tiny text and UI icons; multilingual layouts for multi-panel comics, ads, and posters. Best overall for high-quality general image work. Text-to-image and image-to-image.",
+      "displayName": "GPT Image 2",
+      "id": "gpt-image-2",
+      "modes": {
+        "image": [
+          {
+            "description": "Text to image — generate an image from a text prompt only (no input image).",
+            "mode": "text2image"
+          },
+          {
+            "description": "Image to image — use provided reference image(s) to edit, vary, or carry a subject/style into a new image. When a reference image contains text, keep the text layout and background style close to the reference.",
+            "mode": "image2image"
+          }
+        ]
+      }
+    },
+    {
+      "description": "OpenAI GPT Image 2.5 Flare — the newest GPT Image, speed-focused: GPT Image 2 quality or better at lower latency, with the same precise text and layout control. Pick over gpt-image-2 for the newest OpenAI model; pick over gpt-image-2-5-sunburst when speed matters more than the last bit of quality. Text-to-image and image-to-image.",
+      "displayName": "GPT Image 2.5 Flare",
+      "id": "gpt-image-2-5-flare",
+      "modes": {
+        "image": [
+          {
+            "description": "Text to image — generate an image from a text prompt only (no input image).",
+            "mode": "text2image"
+          },
+          {
+            "description": "Image to image — use provided reference image(s) to edit, vary, or carry a subject/style into a new image. When a reference image contains text, keep the text layout and background style close to the reference.",
+            "mode": "image2image"
+          }
+        ]
+      }
+    },
+    {
+      "description": "OpenAI GPT Image 2.5 Sunburst — the newest GPT Image, quality- and control-focused: OpenAI's strongest image quality and most precise editing, same price as Flare but slower. Pick when output quality, exact text, or editing precision matters more than speed. Text-to-image and image-to-image.",
+      "displayName": "GPT Image 2.5 Sunburst",
+      "id": "gpt-image-2-5-sunburst",
+      "modes": {
+        "image": [
+          {
+            "description": "Text to image — generate an image from a text prompt only (no input image).",
+            "mode": "text2image"
+          },
+          {
+            "description": "Image to image — use provided reference image(s) to edit, vary, or carry a subject/style into a new image. When a reference image contains text, keep the text layout and background style close to the reference.",
+            "mode": "image2image"
+          }
+        ]
+      }
+    },
+    {
+      "description": "Seedream 4.5 — distinctive Asian-leaning aesthetic; standout 2D-animation and anime styling; strong layout and multi-image composition for posters and logos. Best when the user wants anime/illustration over photorealism. Text-to-image and image-to-image.",
+      "displayName": "Seedream 4.5",
+      "id": "byte-plus-seedream-4-5",
+      "modes": {
+        "image": [
+          {
+            "description": "Text to image — generate an image from a text prompt only (no input image).",
+            "mode": "text2image"
+          },
+          {
+            "description": "Image to image — use provided reference image(s) to edit, vary, or carry a subject/style into a new image. When a reference image contains text, keep the text layout and background style close to the reference.",
+            "mode": "image2image"
+          }
+        ]
+      }
+    },
+    {
+      "description": "Seedream 5 Pro — flagship of the newer Seedream 5 generation, with the family's distinctive Asian-leaning aesthetic, anime / 2D-illustration and fantasy styling, and strong layout and multi-image composition for posters and logos; blends up to 10 reference images. The premium pick within the family: choose it when stylized quality matters more than cost, and the cheaper Seedream 4.5 or 5 Lite when it doesn't. Defaults to 1K; pass resolution \"2K\" for the full-detail output, which costs twice as much. Text-to-image and image-to-image.",
+      "displayName": "Seedream 5 Pro",
+      "id": "byte-plus-seedream-5-pro",
+      "modes": {
+        "image": [
+          {
+            "description": "Text to image — generate an image from a text prompt only (no input image).",
+            "mode": "text2image"
+          },
+          {
+            "description": "Image to image — use provided reference image(s) to edit, vary, or carry a subject/style into a new image. When a reference image contains text, keep the text layout and background style close to the reference.",
+            "mode": "image2image"
+          }
+        ]
+      }
+    },
+    {
+      "description": "Seedream 5 Lite — efficient, cost-conscious Seedream: Asian-leaning aesthetic, anime/2D styling, and layout/multi-image composition for posters and logos. Pick for stylized art on a budget. Text-to-image and image-to-image.",
+      "displayName": "Seedream 5 Lite",
+      "id": "byte-plus-seedream-5-lite",
+      "modes": {
+        "image": [
+          {
+            "description": "Text to image — generate an image from a text prompt only (no input image).",
+            "mode": "text2image"
+          },
+          {
+            "description": "Image to image — use provided reference image(s) to edit, vary, or carry a subject/style into a new image. When a reference image contains text, keep the text layout and background style close to the reference.",
+            "mode": "image2image"
+          }
+        ]
+      }
+    },
+    {
+      "description": "Wan 2.7 Image — Alibaba's image model, strongest on precise facial control and in-image text rendering, at up to 4K, blending up to 9 references. Two tiers on the `mode` form field in params: it defaults to \"pro\" (4K-capable, 15 credits per image), with \"standard\" at 6 credits and a 2K ceiling. Resolution is free either way — both tiers bill flat per image — so there is no reason to ask for less than the default 4K. Note this is the IMAGE model; the separately-listed Wan 2.7 and Wan 3.0 are video. Text-to-image and image-to-image.",
+      "displayName": "Wan 2.7 Image",
+      "id": "wan2-7-image",
+      "modes": {
+        "image": [
+          {
+            "description": "Text to image — generate an image from a text prompt only (no input image).",
+            "mode": "text2image"
+          },
+          {
+            "description": "Image to image — use provided reference image(s) to edit, vary, or carry a subject/style into a new image. When a reference image contains text, keep the text layout and background style close to the reference.",
+            "mode": "image2image"
+          }
+        ]
+      }
+    },
+    {
+      "description": "xAI Grok Imagine Image 2.0 — precise, instruction-led image editing: region-targeted edits, background removal, and Smart Resize to re-frame an existing image into any aspect ratio, blending up to 3 references. Strong prompt following with improved layout and in-image text, and better consistency across a series of edits. Pick over GPT Image 2 or Nano Banana Pro when the job is editing an existing picture rather than a from-scratch render, and over the other Grok Imagine routes for anything image (they are video). Defaults to the low quality tier at 1K; pass quality \"medium\" and/or resolution \"2K\" for more detail at a higher price. Text-to-image and image-to-image.",
+      "displayName": "Grok Imagine Image 2.0",
+      "id": "grok-imagine-image-2",
+      "modes": {
+        "image": [
+          {
+            "description": "Text to image — generate an image from a text prompt only (no input image).",
+            "mode": "text2image"
+          },
+          {
+            "description": "Image to image — use provided reference image(s) to edit, vary, or carry a subject/style into a new image. When a reference image contains text, keep the text layout and background style close to the reference.",
+            "mode": "image2image"
+          }
+        ]
+      }
+    },
+    {
+      "description": "xAI Grok Imagine 1.5 — top-tier video quality at extremely fast speed, with native 1080p and synchronized audio; the best value for animating a photo. Text-to-video and image-to-video.",
+      "displayName": "Grok Imagine 1.5",
+      "id": "grok-imagine-1-5",
+      "modes": {
+        "video": [
+          {
+            "description": "Text to video — generate a video from a text prompt only (no input image).",
+            "mode": "text2video"
+          },
+          {
+            "description": "Image to video — animate a provided image as the literal FIRST FRAME — same subject, SAME framing/background, the video starts from that exact picture and moves. Use ONLY when the user wants that specific picture to come alive. Do NOT use when the subject should appear in a new scene, background, place, or action — that is element2video.",
+            "mode": "image2video"
+          }
+        ]
+      }
+    },
+    {
+      "description": "Google Gemini Omni Flash — top cinematic video quality with native synchronized audio (dialogue, SFX, music); conversational text-to-video, plus image-to-video and element-to-video with image subject references. Text-, image-, and reference/element-to-video.",
+      "displayName": "Gemini Omni Flash",
+      "id": "gemini-omni-flash",
+      "modes": {
+        "video": [
+          {
+            "description": "Text to video — generate a video from a text prompt only (no input image).",
+            "mode": "text2video"
+          },
+          {
+            "description": "Image to video — animate a provided image as the literal FIRST FRAME — same subject, SAME framing/background, the video starts from that exact picture and moves. Use ONLY when the user wants that specific picture to come alive. Do NOT use when the subject should appear in a new scene, background, place, or action — that is element2video.",
+            "mode": "image2video"
+          },
+          {
+            "description": "Element to video — use provided image(s) as a subject/identity REFERENCE — generate NEW video footage featuring that subject, NOT locked to the input frame. The right choice for 'make a video of <this character/object/dog> doing X' and whenever the request changes the scene, background, or place (e.g. '<this dog> running in the jungle') — even if the user says 'animate' or 'make it move'. When unsure between this and image2video, pick element2video. This model accepts image element(s) only — subject/identity references.",
+            "elementTypes": [
+              "image"
+            ],
+            "mode": "element2video"
+          }
+        ]
+      }
+    },
+    {
+      "description": "Google Gemini Omni 1.1 Flash — the newest Omni: 360p up to 4K output, 3-10s clips, first/last-frame image-to-video, and element references that may include reference videos (up to 3 clips, 10s each) alongside up to 10 images. Pick over Gemini Omni Flash when the user wants 4K, a start-to-end frame transition, or a video as a reference. Text-, image-, and reference/element-to-video.",
+      "displayName": "Gemini Omni 1.1 Flash",
+      "id": "gemini-omni-1-1-flash",
+      "modes": {
+        "video": [
+          {
+            "description": "Text to video — generate a video from a text prompt only (no input image).",
+            "mode": "text2video"
+          },
+          {
+            "description": "Image to video — animate a provided image as the literal FIRST FRAME — same subject, SAME framing/background, the video starts from that exact picture and moves. Use ONLY when the user wants that specific picture to come alive. Do NOT use when the subject should appear in a new scene, background, place, or action — that is element2video. This model also accepts an optional `endFrame` beside the required `startFrame`: pass both for a start-to-end frame transition that begins on the first picture and lands on the second.",
+            "mode": "image2video"
+          },
+          {
+            "description": "Element to video — use provided image(s) as a subject/identity REFERENCE — generate NEW video footage featuring that subject, NOT locked to the input frame. The right choice for 'make a video of <this character/object/dog> doing X' and whenever the request changes the scene, background, or place (e.g. '<this dog> running in the jungle') — even if the user says 'animate' or 'make it move'. When unsure between this and image2video, pick element2video. This model accepts image and video element(s) only — subject/identity references.",
+            "elementTypes": [
+              "image",
+              "video"
+            ],
+            "mode": "element2video"
+          }
+        ]
+      }
+    },
+    {
+      "description": "Google Veo 3.1 — high-fidelity video with native audio, up to 4K, and 4/6/8s clips. Quality tiers live on the `mode` form field in params (not the top-level generate `mode`): it defaults to \"lite\" (cheapest, no 4K and no references), with \"fast\" and \"normal\" for progressively higher fidelity and cost. Pick over Gemini Omni for 4K with a start-to-end frame transition; pick Omni 1.1 for video references, which Veo does not take. Text-, image-, and reference/element-to-video, with start/end-frame control.",
+      "displayName": "Veo 3.1",
+      "id": "veo3-1",
+      "modes": {
+        "video": [
+          {
+            "description": "Text to video — generate a video from a text prompt only (no input image).",
+            "mode": "text2video"
+          },
+          {
+            "description": "Image to video — animate a provided image as the literal FIRST FRAME — same subject, SAME framing/background, the video starts from that exact picture and moves. Use ONLY when the user wants that specific picture to come alive. Do NOT use when the subject should appear in a new scene, background, place, or action — that is element2video. This model also accepts an optional `endFrame` beside the required `startFrame`: pass both for a start-to-end frame transition that begins on the first picture and lands on the second.",
+            "mode": "image2video"
+          },
+          {
+            "description": "Element to video — use provided image(s) as a subject/identity REFERENCE — generate NEW video footage featuring that subject, NOT locked to the input frame. The right choice for 'make a video of <this character/object/dog> doing X' and whenever the request changes the scene, background, or place (e.g. '<this dog> running in the jungle') — even if the user says 'animate' or 'make it move'. When unsure between this and image2video, pick element2video. This model accepts image element(s) only — subject/identity references.",
+            "elementTypes": [
+              "image"
+            ],
+            "mode": "element2video"
+          }
+        ]
+      }
+    },
+    {
+      "description": "MiniMax H3 Max by fal is an exceptionally fast, cost-effective choice for proving out a video concept. Pick it for rapid proof-of-concept iterations that still need good quality or consistent subjects and voices from image, video, or audio references. It generates clips up to 15s with optional first/last-frame control. An audio reference must be accompanied by at least one image or video reference. Text-, image-, and reference/element-to-video.",
+      "displayName": "MiniMax H3 Max",
+      "id": "fal-h3-max",
+      "modes": {
+        "video": [
+          {
+            "description": "Text to video — generate a video from a text prompt only (no input image).",
+            "mode": "text2video"
+          },
+          {
+            "description": "Image to video — animate a provided image as the literal FIRST FRAME — same subject, SAME framing/background, the video starts from that exact picture and moves. Use ONLY when the user wants that specific picture to come alive. Do NOT use when the subject should appear in a new scene, background, place, or action — that is element2video. This model also accepts an optional `endFrame` beside the required `startFrame`: pass both for a start-to-end frame transition that begins on the first picture and lands on the second.",
+            "mode": "image2video"
+          },
+          {
+            "description": "Element to video — use provided image(s) as a subject/identity REFERENCE — generate NEW video footage featuring that subject, NOT locked to the input frame. The right choice for 'make a video of <this character/object/dog> doing X' and whenever the request changes the scene, background, or place (e.g. '<this dog> running in the jungle') — even if the user says 'animate' or 'make it move'. When unsure between this and image2video, pick element2video. This model accepts image, video, audio elements. To give a subject a VOICE, add an audio element (wav/mp3, 2-15s) and say in the prompt which subject speaks with it (e.g. \"the woman in image 1 speaks with this voice\").",
+            "elementTypes": [
+              "image",
+              "video",
+              "audio"
+            ],
+            "mode": "element2video"
+          }
+        ]
+      }
+    },
+    {
+      "description": "MiniMax H3 Max Turbo by fal is an even faster and cheaper H3 Max option. Pick it for the quickest, lowest-cost proof-of-concept iterations when a slight quality tradeoff is acceptable and reference/element-to-video is not needed. It generates 5-15s clips at 480P, 768P, or 1080P with optional first/last-frame control. Text-to-video and image-to-video.",
+      "displayName": "MiniMax H3 Max Turbo",
+      "id": "fal-h3-max-turbo",
+      "modes": {
+        "video": [
+          {
+            "description": "Text to video — generate a video from a text prompt only (no input image).",
+            "mode": "text2video"
+          },
+          {
+            "description": "Image to video — animate a provided image as the literal FIRST FRAME — same subject, SAME framing/background, the video starts from that exact picture and moves. Use ONLY when the user wants that specific picture to come alive. Do NOT use when the subject should appear in a new scene, background, place, or action — that is element2video. This model also accepts an optional `endFrame` beside the required `startFrame`: pass both for a start-to-end frame transition that begins on the first picture and lands on the second.",
+            "mode": "image2video"
+          }
+        ]
+      }
+    },
+    {
+      "description": "Kling 3 Omni — 4K generation with extreme detail; stable, lower-cost output well suited to batch production; multi-shot with element references for complex compositions. Image generation plus text-, image-, and element-to-video, with start/end-frame control.",
+      "displayName": "Kling 3 Omni",
+      "id": "kling-3-omni",
+      "modes": {
+        "image": [
+          {
+            "description": "Text to image — generate an image from a text prompt only (no input image).",
+            "mode": "text2image"
+          },
+          {
+            "description": "Image to image — use provided reference image(s) to edit, vary, or carry a subject/style into a new image. When a reference image contains text, keep the text layout and background style close to the reference.",
+            "mode": "image2image"
+          }
+        ],
+        "video": [
+          {
+            "description": "Text to video — generate a video from a text prompt only (no input image).",
+            "mode": "text2video"
+          },
+          {
+            "description": "Image to video — animate a provided image as the literal FIRST FRAME — same subject, SAME framing/background, the video starts from that exact picture and moves. Use ONLY when the user wants that specific picture to come alive. Do NOT use when the subject should appear in a new scene, background, place, or action — that is element2video. This model also accepts an optional `endFrame` beside the required `startFrame`: pass both for a start-to-end frame transition that begins on the first picture and lands on the second.",
+            "mode": "image2video"
+          },
+          {
+            "description": "Element to video — use provided image(s) as a subject/identity REFERENCE — generate NEW video footage featuring that subject, NOT locked to the input frame. The right choice for 'make a video of <this character/object/dog> doing X' and whenever the request changes the scene, background, or place (e.g. '<this dog> running in the jungle') — even if the user says 'animate' or 'make it move'. When unsure between this and image2video, pick element2video. This model accepts image element(s) only — subject/identity references.",
+            "elementTypes": [
+              "image"
+            ],
+            "mode": "element2video"
+          }
+        ]
+      }
+    },
+    {
+      "description": "Kling 3.0 — Kuaishou's base Kling 3: 720p to 4K, 3-15s clips, synchronized audio, and native multi-shot sequencing. Pick over Kling 3 Omni when a plain text- or image-driven shot is all that is needed; pick Omni for element references and image generation, which this model does not offer. Text-to-video and image-to-video, with start/end-frame control.",
+      "displayName": "Kling 3.0",
+      "id": "kling-v3",
+      "modes": {
+        "video": [
+          {
+            "description": "Text to video — generate a video from a text prompt only (no input image).",
+            "mode": "text2video"
+          },
+          {
+            "description": "Image to video — animate a provided image as the literal FIRST FRAME — same subject, SAME framing/background, the video starts from that exact picture and moves. Use ONLY when the user wants that specific picture to come alive. Do NOT use when the subject should appear in a new scene, background, place, or action — that is element2video. This model also accepts an optional `endFrame` beside the required `startFrame`: pass both for a start-to-end frame transition that begins on the first picture and lands on the second.",
+            "mode": "image2video"
+          }
+        ]
+      }
+    },
+    {
+      "description": "Seedance 2.0 — most realistic, finely detailed people and animals; single-pass synchronized audio (BGM, sound effects, and dialogue/lip-sync) matched to the video; high-consistency reference generation for AI short dramas and comic series. The pick for video with a spoken voice (add an audio element). Text-, image-, and reference/element-to-video, with start/end-frame control.",
+      "displayName": "Seedance 2.0",
+      "id": "byte-plus-seedance-2",
+      "modes": {
+        "video": [
+          {
+            "description": "Text to video — generate a video from a text prompt only (no input image).",
+            "mode": "text2video"
+          },
+          {
+            "description": "Image to video — animate a provided image as the literal FIRST FRAME — same subject, SAME framing/background, the video starts from that exact picture and moves. Use ONLY when the user wants that specific picture to come alive. Do NOT use when the subject should appear in a new scene, background, place, or action — that is element2video. This model also accepts an optional `endFrame` beside the required `startFrame`: pass both for a start-to-end frame transition that begins on the first picture and lands on the second.",
+            "mode": "image2video"
+          },
+          {
+            "description": "Element to video — use provided image(s) as a subject/identity REFERENCE — generate NEW video footage featuring that subject, NOT locked to the input frame. The right choice for 'make a video of <this character/object/dog> doing X' and whenever the request changes the scene, background, or place (e.g. '<this dog> running in the jungle') — even if the user says 'animate' or 'make it move'. When unsure between this and image2video, pick element2video. This model accepts image, video, audio elements. To give a subject a VOICE, add an audio element (wav/mp3, 2-15s) and say in the prompt which subject speaks with it (e.g. \"the woman in image 1 speaks with this voice\").",
+            "elementTypes": [
+              "image",
+              "video",
+              "audio"
+            ],
+            "mode": "element2video"
+          }
+        ]
+      }
+    },
+    {
+      "description": "Seedance 2.0 Fast — lower-latency Seedance 2.0: realistic, detailed people and animals, synchronized BGM and sound effects, and high-consistency references for AI short dramas and comic series. Text-, image-, and reference/element-to-video, with start/end-frame control.",
+      "displayName": "Seedance 2.0 Fast",
+      "id": "byte-plus-seedance-2-fast",
+      "modes": {
+        "video": [
+          {
+            "description": "Text to video — generate a video from a text prompt only (no input image).",
+            "mode": "text2video"
+          },
+          {
+            "description": "Image to video — animate a provided image as the literal FIRST FRAME — same subject, SAME framing/background, the video starts from that exact picture and moves. Use ONLY when the user wants that specific picture to come alive. Do NOT use when the subject should appear in a new scene, background, place, or action — that is element2video. This model also accepts an optional `endFrame` beside the required `startFrame`: pass both for a start-to-end frame transition that begins on the first picture and lands on the second.",
+            "mode": "image2video"
+          },
+          {
+            "description": "Element to video — use provided image(s) as a subject/identity REFERENCE — generate NEW video footage featuring that subject, NOT locked to the input frame. The right choice for 'make a video of <this character/object/dog> doing X' and whenever the request changes the scene, background, or place (e.g. '<this dog> running in the jungle') — even if the user says 'animate' or 'make it move'. When unsure between this and image2video, pick element2video. This model accepts image, video, audio elements. To give a subject a VOICE, add an audio element (wav/mp3, 2-15s) and say in the prompt which subject speaks with it (e.g. \"the woman in image 1 speaks with this voice\").",
+            "elementTypes": [
+              "image",
+              "video",
+              "audio"
+            ],
+            "mode": "element2video"
+          }
+        ]
+      }
+    },
+    {
+      "description": "Seedance 2.0 Mini — lightweight Seedance 2.0: realistic, detailed people and animals, synchronized BGM and sound effects, and high-consistency references for AI short dramas and comic series. Text-, image-, and reference/element-to-video, with start/end-frame control.",
+      "displayName": "Seedance 2.0 Mini",
+      "id": "byte-plus-seedance-2-mini",
+      "modes": {
+        "video": [
+          {
+            "description": "Text to video — generate a video from a text prompt only (no input image).",
+            "mode": "text2video"
+          },
+          {
+            "description": "Image to video — animate a provided image as the literal FIRST FRAME — same subject, SAME framing/background, the video starts from that exact picture and moves. Use ONLY when the user wants that specific picture to come alive. Do NOT use when the subject should appear in a new scene, background, place, or action — that is element2video. This model also accepts an optional `endFrame` beside the required `startFrame`: pass both for a start-to-end frame transition that begins on the first picture and lands on the second.",
+            "mode": "image2video"
+          },
+          {
+            "description": "Element to video — use provided image(s) as a subject/identity REFERENCE — generate NEW video footage featuring that subject, NOT locked to the input frame. The right choice for 'make a video of <this character/object/dog> doing X' and whenever the request changes the scene, background, or place (e.g. '<this dog> running in the jungle') — even if the user says 'animate' or 'make it move'. When unsure between this and image2video, pick element2video. This model accepts image, video, audio elements. To give a subject a VOICE, add an audio element (wav/mp3, 2-15s) and say in the prompt which subject speaks with it (e.g. \"the woman in image 1 speaks with this voice\").",
+            "elementTypes": [
+              "image",
+              "video",
+              "audio"
+            ],
+            "mode": "element2video"
+          }
+        ]
+      }
+    },
+    {
+      "description": "Seedance 2.5 — newest Seedance: single-shot clips up to 30s and a far larger reference budget (30 images, 10 videos, 10 audios) for multi-shot storytelling and AI short dramas, with synchronized audio and dialogue/lip-sync. Renders up to 1080p — pick Seedance 2.0 when the shot needs 4K, or when cost matters more than length. Text-, image-, and reference/element-to-video, with start/end-frame control.",
+      "displayName": "Seedance 2.5",
+      "id": "byte-plus-seedance-2-5",
+      "modes": {
+        "video": [
+          {
+            "description": "Text to video — generate a video from a text prompt only (no input image).",
+            "mode": "text2video"
+          },
+          {
+            "description": "Image to video — animate a provided image as the literal FIRST FRAME — same subject, SAME framing/background, the video starts from that exact picture and moves. Use ONLY when the user wants that specific picture to come alive. Do NOT use when the subject should appear in a new scene, background, place, or action — that is element2video. This model also accepts an optional `endFrame` beside the required `startFrame`: pass both for a start-to-end frame transition that begins on the first picture and lands on the second.",
+            "mode": "image2video"
+          },
+          {
+            "description": "Element to video — use provided image(s) as a subject/identity REFERENCE — generate NEW video footage featuring that subject, NOT locked to the input frame. The right choice for 'make a video of <this character/object/dog> doing X' and whenever the request changes the scene, background, or place (e.g. '<this dog> running in the jungle') — even if the user says 'animate' or 'make it move'. When unsure between this and image2video, pick element2video. This model accepts image, video, audio elements. To give a subject a VOICE, add an audio element (wav/mp3, 2-30s) and say in the prompt which subject speaks with it (e.g. \"the woman in image 1 speaks with this voice\").",
+            "elementTypes": [
+              "image",
+              "video",
+              "audio"
+            ],
+            "mode": "element2video"
+          }
+        ]
+      }
+    },
+    {
+      "description": "Wan 2.7 — Alibaba cinematic video with high image-to-video stability; references and start/end-frame control. Solid mid-tier choice for controlled camera and framing. Text-, image-, and reference/element-to-video.",
+      "displayName": "Wan 2.7",
+      "id": "wan2-7",
+      "modes": {
+        "video": [
+          {
+            "description": "Text to video — generate a video from a text prompt only (no input image).",
+            "mode": "text2video"
+          },
+          {
+            "description": "Image to video — animate a provided image as the literal FIRST FRAME — same subject, SAME framing/background, the video starts from that exact picture and moves. Use ONLY when the user wants that specific picture to come alive. Do NOT use when the subject should appear in a new scene, background, place, or action — that is element2video. This model also accepts an optional `endFrame` beside the required `startFrame`: pass both for a start-to-end frame transition that begins on the first picture and lands on the second.",
+            "mode": "image2video"
+          },
+          {
+            "description": "Element to video — use provided image(s) as a subject/identity REFERENCE — generate NEW video footage featuring that subject, NOT locked to the input frame. The right choice for 'make a video of <this character/object/dog> doing X' and whenever the request changes the scene, background, or place (e.g. '<this dog> running in the jungle') — even if the user says 'animate' or 'make it move'. When unsure between this and image2video, pick element2video. This model accepts image element(s) only — subject/identity references.",
+            "elementTypes": [
+              "image"
+            ],
+            "mode": "element2video"
+          }
+        ]
+      }
+    },
+    {
+      "description": "MiniMax H3 (Hailuo 3.0) — MiniMax's flagship: native 2K output, 5-15s clips, and strong physical realism in motion. References mix up to 9 images, 3 video clips and 3 audio clips, and audio is how a subject gets a voice. Pick over the Seedance and Wan families when 2K sharpness on a short clip matters more than clip length or cost. Text-, image-, and reference/element-to-video, with start/end-frame control.",
+      "displayName": "MiniMax H3",
+      "id": "minimax-h3",
+      "modes": {
+        "video": [
+          {
+            "description": "Text to video — generate a video from a text prompt only (no input image).",
+            "mode": "text2video"
+          },
+          {
+            "description": "Image to video — animate a provided image as the literal FIRST FRAME — same subject, SAME framing/background, the video starts from that exact picture and moves. Use ONLY when the user wants that specific picture to come alive. Do NOT use when the subject should appear in a new scene, background, place, or action — that is element2video. This model also accepts an optional `endFrame` beside the required `startFrame`: pass both for a start-to-end frame transition that begins on the first picture and lands on the second.",
+            "mode": "image2video"
+          },
+          {
+            "description": "Element to video — use provided image(s) as a subject/identity REFERENCE — generate NEW video footage featuring that subject, NOT locked to the input frame. The right choice for 'make a video of <this character/object/dog> doing X' and whenever the request changes the scene, background, or place (e.g. '<this dog> running in the jungle') — even if the user says 'animate' or 'make it move'. When unsure between this and image2video, pick element2video. This model accepts image, video, audio elements. To give a subject a VOICE, add an audio element (wav/mp3, 2-15s) and say in the prompt which subject speaks with it (e.g. \"the woman in image 1 speaks with this voice\").",
+            "elementTypes": [
+              "image",
+              "video",
+              "audio"
+            ],
+            "mode": "element2video"
+          }
+        ]
+      }
+    },
+    {
+      "description": "Wan 3.0 — Alibaba's newest Wan: native 30s in a single pass (no stitching), so motion, lighting and subjects stay consistent across a long shot, at 480p/720p/1080p with an output audio track. References accept video and audio as well as images, and audio is how a subject gets a voice. Two tiers on one model, chosen by the `mode` form field in params (not the top-level generate `mode`, which selects text2video / image2video / element2video): it defaults to \"standard\"; set it to \"prime\" for the higher-fidelity tier at 1.75x the credits. Pick over Wan 2.7 for length, audio, or video references; pick Wan 2.7 only for the cheaper short clip. Text-, image-, and reference/element-to-video, with start/end-frame control.",
+      "displayName": "Wan 3.0",
+      "id": "wan3-0",
+      "modes": {
+        "video": [
+          {
+            "description": "Text to video — generate a video from a text prompt only (no input image).",
+            "mode": "text2video"
+          },
+          {
+            "description": "Image to video — animate a provided image as the literal FIRST FRAME — same subject, SAME framing/background, the video starts from that exact picture and moves. Use ONLY when the user wants that specific picture to come alive. Do NOT use when the subject should appear in a new scene, background, place, or action — that is element2video. This model also accepts an optional `endFrame` beside the required `startFrame`: pass both for a start-to-end frame transition that begins on the first picture and lands on the second.",
+            "mode": "image2video"
+          },
+          {
+            "description": "Element to video — use provided image(s) as a subject/identity REFERENCE — generate NEW video footage featuring that subject, NOT locked to the input frame. The right choice for 'make a video of <this character/object/dog> doing X' and whenever the request changes the scene, background, or place (e.g. '<this dog> running in the jungle') — even if the user says 'animate' or 'make it move'. When unsure between this and image2video, pick element2video. This model accepts image, video, audio elements. To give a subject a VOICE, add an audio element (wav/mp3, 2-15s) and say in the prompt which subject speaks with it (e.g. \"the woman in image 1 speaks with this voice\").",
+            "elementTypes": [
+              "image",
+              "video",
+              "audio"
+            ],
+            "mode": "element2video"
+          }
+        ]
+      }
+    },
+    {
+      "description": "PixVerse V6 — stable, natural camera and shot motion; standout 3D-anime motion scenes (surpassing Seedance 2.0 in some cases); excellent cost-performance. Text-to-video and image-to-video, with start/end-frame control.",
+      "displayName": "PixVerse V6",
+      "id": "pixverseV6",
+      "modes": {
+        "video": [
+          {
+            "description": "Text to video — generate a video from a text prompt only (no input image).",
+            "mode": "text2video"
+          },
+          {
+            "description": "Image to video — animate a provided image as the literal FIRST FRAME — same subject, SAME framing/background, the video starts from that exact picture and moves. Use ONLY when the user wants that specific picture to come alive. Do NOT use when the subject should appear in a new scene, background, place, or action — that is element2video. This model also accepts an optional `endFrame` beside the required `startFrame`: pass both for a start-to-end frame transition that begins on the first picture and lands on the second.",
+            "mode": "image2video"
+          }
+        ]
+      }
+    },
+    {
+      "description": "Smart Shot — automated shot planning. From a scene description plus optional subject references (characters, products, props) it writes a Shot Plan: a single production-design sheet with reference views, set design, a top-down camera floor plan, storyboard frames, and lighting notes. Use preview-shot-plan to see the plan alone; generate-shot-video to plan and render a video of the scene in one call.",
+      "displayName": "Smart Shot",
+      "id": "smart-shot",
+      "modes": {
+        "image": [
+          {
+            "description": "Preview Shot Plan — produce the Shot Plan only, as a single wide image. Fast, cheap look at how the scene would be staged before committing to video. The result carries a videoPrompt and a ready-to-submit nextStep payload for rendering that exact plan into video. Pass reference images as plain URL strings (the `url` field of what openart_upload_sign / openart_upload_pick returned), NOT the whole visualReference object: subjects go in characterReferenceImageUrls (up to 3 — characters, products, props), the location in environmentReferenceImageUrl. Both are optional — a scene description alone is a complete request.",
+            "mode": "preview-shot-plan"
+          }
+        ],
+        "video": [
+          {
+            "description": "Generate Shot Video — plan the scene and render it in one call. Returns TWO assets: the video, plus the Shot Plan it was planned from. Costs the plan plus the video, so use preview-shot-plan first if the user is still exploring. Pass reference images as plain URL strings (the `url` field of what openart_upload_sign / openart_upload_pick returned), NOT the whole visualReference object: subjects go in characterReferenceImageUrls (up to 3 — characters, products, props), the location in environmentReferenceImageUrl. Both are optional — a scene description alone is a complete request.",
+            "mode": "generate-shot-video"
+          }
+        ]
+      }
+    }
+  ]
+}
