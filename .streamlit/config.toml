@@ -1,0 +1,11 @@
+[server]
+headless = true
+maxUploadSize = 512
+address = "127.0.0.1"
+
+[theme]
+base = "light"
+primaryColor = "#287D76"
+backgroundColor = "#EEEAE3"
+secondaryBackgroundColor = "#E1DDD4"
+textColor = "#20221F"
