@@ -8,7 +8,7 @@ from PIL import Image, ImageDraw
 
 from .core import (FilmError, atomic_text, digest, ffmpeg, frame_at, now, object_hash,
                    probe, production_fingerprint, project_mutex, read, require_lock,
-                   safe_path, validate_manifest, write)
+                   safe_path, validate_manifest, visual_context_fingerprint, write)
 from .builds import allocate_build, capture, seal_build
 from .resolver import candidates, checked_source, register_asset, shot_hash
 
@@ -17,7 +17,7 @@ def import_asset(project, shot_id, source, kind="draft", reviewer="", evidence="
     """Explicit local take selection. Named final imports require human attestation.
 
     Labels alone do not approve a take. Reviewer/evidence are checked again against
-    the exact bytes, shot definition and current production at final compile time.
+    the exact bytes, shot definition/references and visual context at Final time.
     """
     p = Path(project)
     with project_mutex(p):
@@ -108,11 +108,11 @@ def _render_source(source, target, shot, candidate, fmt):
     media_check(target, frames, fmt)
 
 
-def _resolve_clip(p, build, shot, fmt, production_id, strict):
+def _resolve_clip(p, build, shot, fmt, visual_context_id, strict):
     failures = []
     cache_dir = p / "render/compile_cache"
     cache_dir.mkdir(parents=True, exist_ok=True)
-    for candidate in candidates(p, shot, production_id):
+    for candidate in candidates(p, shot, visual_context_id=visual_context_id):
         if strict and not candidate["approved"]:
             failures.append(f"{candidate['kind']}: not approved for Final")
             continue
@@ -162,7 +162,7 @@ def compile_final(project, quality="final", progress=None):
 
 
 def _compile(project, strict, quality, progress):
-    from .lyrics import export_subtitles, burn_subtitles, validate_lyrics
+    from .lyrics import export_subtitles, burn_subtitles, validate_lyrics, lyrics_review_fingerprint
     p = Path(project).resolve()
     with project_mutex(p):
         config, audio = read(p / "project.yaml"), read(p / "analysis/audio.json")
@@ -192,11 +192,12 @@ def _compile(project, strict, quality, progress):
             production_id = None
         if strict:
             lock = require_lock(p, "manual")
+        visual_context_id = visual_context_fingerprint(p)
         folder = allocate_build(p, "FINAL" if strict else "PREVIEW")
         record = read(folder / "build.json")
         try:
             record.update(duration_ms=duration, format=fmt, quality=quality,
-                          production_fingerprint=production_id, production_lock=lock,
+                          production_fingerprint=production_id, production_lock=lock, visual_context_id=visual_context_id,
                           lock_valid=bool(production_id and lock.get("fingerprint") == production_id),
                           audio={"sha256": digest(master), "path": "snapshot/" + config["audio"]["path"]},
                           warnings=[], shots=[], paid_generations=0,
@@ -220,11 +221,12 @@ def _compile(project, strict, quality, progress):
                 record["warnings"].append("Production is not locked for this Preview revision")
             record["lyrics"] = {"timing_sha256": digest(subtitles["timed"]),
                                 "source_sha256": digest(subtitles["source"]),
+                                "review_sha256": lyrics_review_fingerprint(p, subtitles["document"]),
                                 "font_report": subtitles.get("font_report", {})}
             for i, shot in enumerate(shots):
                 if progress:
                     progress(i, len(shots), shot["id"])
-                row = _resolve_clip(p, folder, shot, fmt, production_id, strict)
+                row = _resolve_clip(p, folder, shot, fmt, visual_context_id, strict)
                 record["shots"].append(row)
             record["asset_counts"] = dict(Counter(s["kind"] for s in record["shots"]))
             record["preview_incomplete_shots"] = [s["id"] for s in record["shots"] if not s["approved"]]
@@ -235,6 +237,7 @@ def _compile(project, strict, quality, progress):
             burn_subtitles(clean, subtitles["ass"], subbed, fmt)
             media_check(subbed, frame_at(duration, fmt["fps"]), fmt, audio=True)
             if strict:
+                validate_lyrics(p, duration, strict=True)
                 if require_lock(p, "manual")["fingerprint"] != production_id:
                     raise FilmError("Production revision changed during Final compile")
             if digest(master) != config["audio"]["sha256"]:

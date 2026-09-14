@@ -39,6 +39,7 @@ A completed build contains `MASTER_CLEAN.mp4`, `MASTER_SUBBED.mp4`, `lyrics.ass`
 | Lyrics | 1 |
 | Build | 1 |
 | Audio | 1 |
+| Visual/lyric review records | 2 |
 
 These versions are independent of package version 0.3.0. Existing audio documents labelled `0.1` retain their established field semantics. Explicit migration backs up and updates project metadata, without rewriting approved production files. Legacy shot records remain compatible without a per-record schema field. Existing assets and lock bytes are preserved; future unsupported versions fail explicitly.
 
@@ -71,7 +72,9 @@ Font coverage is measured against rendered cue characters. A full glyph-covering
 
 ## Editing and reproducibility
 
-Split, merge, move cut and snap-to-measured-beat/onset preserve full visual coverage. Merge is limited to neighboring shots in the same sequence and keeps the left direction/reference. Changed shots lose their selected asset authorization and need review; lyrics and completed builds remain unchanged.
+Split, merge, move cut and snap-to-measured-beat/onset preserve full visual coverage. A split copies the right shot's first frame into an independent owned file, without hard links; later import cannot overwrite its sibling. Existing shared first-frame references are detached before replacement, and ambiguous occupied destinations fail before mutation. Merge is limited to neighboring shots in the same sequence and keeps the left direction/reference. Changed shots lose their selected asset authorization and need review; lyrics and completed builds remain unchanged.
+
+Visual approval binds shared visual context plus only the reviewed shot, reference bytes, video bytes and selected source window. Shared context contains brief, source lyric wording, story/style/cast/location/directing, shared assets and format, excluding shot manifests and subtitle timing/settings. Lyric approval binds source, cues, subtitle settings and actual font identity. Global production LOCK still covers the complete build revision. Tests must demonstrate unaffected S003 surviving S001/S002 retiming, all visual approvals surviving a lyric timing edit, and all visual approvals expiring after a shared style edit. Old global-only approvals are not silently reauthorized; they need one explicit scoped re-review.
 
 Each saved build keeps the original selected assets as well as normalized per-shot clips, audio and subtitle/font inputs. Replaying a verified build needs no current project files. Historical exports retain their exact bytes; newly encoding them across FFmpeg versions is not guaranteed byte-identical. SHA inventories detect modified captured files but are not signed archival attestations. Local cache reuse avoids normalizing unchanged shot/source/window/format combinations again.
 

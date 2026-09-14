@@ -50,7 +50,9 @@ def seal_build(folder, record):
 
 def list_builds(project):
     result = []
-    for p in sorted((Path(project) / "builds").glob("B*/build.json"), reverse=True):
+    records = [p for p in (Path(project) / "builds").glob("B*/build.json")
+               if re.fullmatch(r"B[0-9]{4,}", p.parent.name) and p.is_file()]
+    for p in sorted(records, key=lambda p: int(p.parent.name[1:]), reverse=True):
         row = read(p)
         result.append({**row, "build_dir": str(p.parent)})
     return result

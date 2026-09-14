@@ -3,11 +3,13 @@ from pathlib import Path
 from copy import deepcopy
 import html
 import math
+import os
 import re
 import sys
+import tempfile
 import textwrap
 from PIL import Image, ImageDraw, ImageFont
-from .core import FilmError, atomic_text, read, write, safe_path, timecode, validate_manifest
+from .core import FilmError, atomic_text, project_mutex, read, write, safe_path, timecode, validate_manifest
 from .schema import SHOT_SCHEMA
 
 
@@ -154,13 +156,66 @@ def generate_storyboard(p, regenerate_id=None):
 
 
 def import_frame(project, shot_id, source):
-    p = Path(project)
-    shots = read(p / "manifest/shots.json")
-    s = next((s for s in shots if s["id"] == shot_id), None)
-    if s is None:
-        raise FilmError("Unknown shot")
-    image = Image.open(source).convert("RGB")
-    image.save(safe_path(p, s["references"][0]))
-    s["storyboard_kind"] = "imported"
-    write(p / "manifest/shots.json", shots)
-    generate_storyboard(p)
+    p = Path(project).resolve()
+    with project_mutex(p):
+        shots = read(p / "manifest/shots.json")
+        s = next((s for s in shots if s["id"] == shot_id), None)
+        if s is None or not re.fullmatch(r"S[0-9]{3,5}", shot_id):
+            raise FilmError("Unknown shot")
+        with Image.open(source) as original:
+            image = original.convert("RGB")
+        reference = f"storyboard/{shot_id}.png"
+        resolved_destination = safe_path(p, reference)
+        destination = p / reference
+        refs = s.get("references", [])
+        previous = safe_path(p, refs[0]) if refs else resolved_destination
+        if (destination.exists() or destination.is_symlink()) and previous != resolved_destination:
+            raise FilmError(f"Cannot replace unrelated storyboard: {reference} already exists")
+        # Retain the lexical filename: replacing a symlink or hardlink atomically
+        # must not modify the file to which the old name happened to point.
+        canonical = destination.parent.resolve() / destination.name
+        detach = []
+        for other in shots:
+            refs = other.get("references", [])
+            if other is s or not refs:
+                continue
+            old_path = p / refs[0]
+            resolved = safe_path(p, refs[0])
+            if old_path.absolute() != canonical and resolved != canonical:
+                continue
+            own_reference = f"storyboard/{other['id']}.png"
+            own_path = p / own_reference
+            safe_path(p, own_reference)
+            if own_path.exists() or own_path.is_symlink():
+                raise FilmError(f"Cannot detach shared storyboard: {own_reference} already exists")
+            # Validate every destination before copying or replacing any artwork.
+            if any(own_reference in candidate.get("references", [])
+                   for candidate in shots if candidate is not other):
+                raise FilmError(f"Cannot detach shared storyboard: {own_reference} is already referenced")
+            detach.append((other, refs, own_reference, own_path, resolved))
+        for other, refs, own_reference, own_path, old_source in detach:
+            own_path.parent.mkdir(parents=True, exist_ok=True)
+            if old_source.is_file():
+                # Independent bytes, never a hardlink into another shot/build.
+                with own_path.open("xb") as handle:
+                    handle.write(old_source.read_bytes())
+            else:
+                other["storyboard_kind"] = "placeholder"
+            other["references"] = [own_reference, *refs[1:]]
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        fd, temporary = tempfile.mkstemp(dir=destination.parent, suffix=".png")
+        os.close(fd)
+        try:
+            image.save(temporary, format="PNG")
+            # Persist legacy detachments before changing their old shared file.
+            # A crash can leave the import incomplete, but cannot mutate its peers.
+            if detach:
+                write(p / "manifest/shots.json", shots)
+            os.replace(temporary, destination)
+        finally:
+            Path(temporary).unlink(missing_ok=True)
+        refs = s.get("references", [])
+        s["references"] = [reference, *refs[1:]]
+        s["storyboard_kind"] = "imported"
+        write(p / "manifest/shots.json", shots)
+        generate_storyboard(p)

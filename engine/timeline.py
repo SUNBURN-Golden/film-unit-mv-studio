@@ -3,8 +3,9 @@ from __future__ import annotations
 
 from copy import deepcopy
 from pathlib import Path
+import shutil
 
-from .core import FilmError, now, project_mutex, read, validate_manifest, write
+from .core import FilmError, now, project_mutex, read, safe_path, validate_manifest, write
 
 
 def _load(project):
@@ -83,12 +84,41 @@ def split_shot(project, shot_id, at_ms):
             raise FilmError("Split must be strictly inside the shot")
         right = deepcopy(left)
         next_id = max(int(s["id"][1:]) for s in shots) + 1
-        if next_id > 99999:
+        # A removed shot may still have artwork. Never overwrite that asset when
+        # allocating a new ID, including dangling symlinks or reserved references.
+        reserved = {r for shot in shots for r in shot.get("references", [])}
+        while next_id <= 99999:
+            reference = f"storyboard/S{next_id:03d}.png"
+            destination = p / reference
+            if (not destination.exists() and not destination.is_symlink()
+                    and reference not in reserved):
+                safe_path(p, reference)
+                break
+            next_id += 1
+        else:
             raise FilmError("No remaining shot IDs")
         right.update(id=f"S{next_id:03d}", in_ms=at_ms,
                      duration_ms=right["out_ms"] - at_ms)
         left.update(out_ms=at_ms, duration_ms=at_ms - left["in_ms"])
         shots.insert(index + 1, right)
+        # Validate frame-sized ranges before any asset is created. Only the first
+        # reference is owned by a shot; character/location references stay shared.
+        validate_manifest(shots, audio["duration_ms"], fps)
+        references = right.get("references", [])
+        source = safe_path(p, references[0]) if references else None
+        right["references"] = [reference, *references[1:]]
+        if source is not None and source.is_file():
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            with destination.open("xb") as target:
+                try:
+                    with source.open("rb") as original:
+                        shutil.copyfileobj(original, target)
+                except Exception:
+                    destination.unlink(missing_ok=True)
+                    raise
+        else:
+            # Resolver will produce a placeholder; no artwork is fabricated here.
+            right["storyboard_kind"] = "placeholder"
         return _commit(p, shots, audio, fps, {left["id"], right["id"]}, "split")
 
 

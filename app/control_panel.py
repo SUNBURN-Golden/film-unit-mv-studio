@@ -269,7 +269,7 @@ with tabs[3]:
                     else:
                         current["subtitles"].pop("font_file", None)
                     write(p / "project.yaml", current)
-            guarded(save_font, "저장했습니다. Final 전에 다시 LOCK해주세요.")
+            guarded(save_font, "저장했습니다. Final 전에 가사 검수와 LOCK을 다시 진행해주세요. 영상 검수는 유지됩니다.")
     source_path = p / "input/lyrics.txt"
     source = st.text_area("가사 원문", source_path.read_text(encoding="utf-8") if source_path.exists() else "", height=250, key="lyrics_source_" + chosen)
     if st.button("원문 저장 / 자막 문서 준비"):
@@ -300,7 +300,7 @@ with tabs[3]:
             timing_upload = st.file_uploader("검토할 lyrics_timed.json", type=["json"], key="timing_upload")
             timing_text = st.text_area("타이밍 문서", json.dumps(document, ensure_ascii=False, indent=2), height=330, key="timing_json_" + chosen + "_" + str(document.get("source_sha256", "")))
             reviewer = st.text_input("자막 검토자", key="lyrics_reviewer")
-            reviewed = st.checkbox("실제 보컬과 각 구절의 시작·끝, 누락된 가사와 반복을 대조했습니다.", key="lyrics_reviewed")
+            reviewed = st.checkbox("실제 보컬과 구절의 시작·끝, 누락·반복 및 자막 표시 설정을 확인했습니다.", key="lyrics_reviewed")
             if st.button("타이밍 저장"):
                 def import_timing():
                     content = timing_upload.getvalue().decode("utf-8") if timing_upload else timing_text

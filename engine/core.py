@@ -168,7 +168,29 @@ def validate_manifest(shots, duration_ms, fps=24):
         raise FilmError("Manifest must cover the full measured audio duration")
 
 
+def visual_context_fingerprint(p):
+    """Shared visual intent; no cut positions, shot images or subtitle timing.
+
+    Source lyric wording can change the meaning of a scene, so it participates.
+    Per-shot reference bytes belong to the shot review, not this shared context.
+    Missing optional bibles are represented explicitly so their addition changes
+    context. Full production LOCK still requires all mandatory inputs below.
+    """
+    p = Path(p)
+    config = read(p / "project.yaml")
+    paths = {"input/brief.md", "input/lyrics.txt", "bible/story.md", "bible/style_bible.yaml",
+             "bible/characters.yaml", "bible/locations.yaml", "bible/directing.yaml"}
+    for folder in ("characters", "locations"):
+        paths.update(str(f.relative_to(p)) for f in (p / folder).rglob("*") if f.is_file())
+    files = {}
+    for relative in sorted(paths):
+        path = safe_path(p, relative)
+        files[relative] = digest(path) if path.is_file() else None
+    return object_hash({"schema_version": 1, "format": config["format"], "files": files})
+
+
 def production_fingerprint(p):
+    """Whole-build authorization, intentionally broader than individual reviews."""
     p = Path(p)
     config = read(p / "project.yaml")
     paths = [config["audio"]["path"], "input/brief.md", "input/lyrics.txt", "analysis/audio.json", "manifest/sequence.json", "manifest/shots.json", "bible/style_bible.yaml", "bible/story.md", "bible/characters.yaml", "bible/locations.yaml"]

@@ -4,17 +4,20 @@ from fractions import Fraction
 import math
 import numpy as np
 from PIL import Image
-from .core import FilmError, digest, ffmpeg, frame_at, probe, read, write
+from .core import FilmError, digest, ffmpeg, frame_at, probe, read, visual_context_fingerprint, write
+from .resolver import clip_review_fingerprint
 
 SEMANTIC_ITEMS = ["character_identity", "style", "composition", "palette", "camera", "background", "props", "unwanted_text", "anatomy", "motion"]
 
 
-def inspect_clip(clip, shot, project, fmt, generated, production_id):
+def inspect_clip(clip, shot, project, fmt, generated, production_id, source_in_ms=0):
     p, clip = Path(project), Path(clip)
     clip_hash = digest(clip)
     result = {"shot_id": shot["id"], "clip_path": str(clip.relative_to(p)), "clip_sha256": clip_hash,
         "production_id": production_id, "generated": generated, "technical": {},
         "semantic": {k: None for k in SEMANTIC_ITEMS}, "failures": [], "status": "PENDING"}
+    result.update(visual_context_id=visual_context_fingerprint(p), source_in_ms=source_in_ms)
+    result["review_binding"] = clip_review_fingerprint(p, shot, clip_hash, source_in_ms, result["visual_context_id"])
     try:
         info = probe(clip)
         video = next(s for s in info["streams"] if s["codec_type"] == "video")
@@ -56,7 +59,8 @@ def inspect_clip(clip, shot, project, fmt, generated, production_id):
         return result
     review_path = p / "qc/reviews" / f"{shot['id']}_{clip_hash[:12]}.json"
     review = read(review_path, {})
-    if review.get("clip_sha256") != clip_hash or review.get("production_id") != production_id:
+    if (review.get("schema_version") != 2 or review.get("clip_sha256") != clip_hash or
+            review.get("review_binding") != result["review_binding"]):
         result["status"] = "NEEDS_REVIEW"
         result["review_file"] = str(review_path.relative_to(p))
         return result
@@ -82,5 +86,7 @@ def save_review(project, record, scores, reviewer, notes):
         raise FilmError("Record reviewer and evidence notes")
     write(Path(project) / "qc/reviews" / f"{record['shot_id']}_{record['clip_sha256'][:12]}.json", {
         "clip_sha256": record["clip_sha256"], "production_id": record["production_id"],
+        "schema_version": 2, "visual_context_id": record.get("visual_context_id"),
+        "review_binding": record.get("review_binding"),
         "scores": scores, "reviewer": reviewer, "notes": notes,
     })

@@ -1,5 +1,6 @@
 """Content fidelity, review invalidation, partial-preview and media guarantees."""
 from pathlib import Path
+import shutil
 import subprocess
 
 import pytest
@@ -7,7 +8,7 @@ import pytest
 from engine.core import FilmError, digest, ffmpeg, probe, read, write
 from engine.lyrics import (
     burn_subtitles, export_subtitles, prepare_lyrics, save_timing,
-    timing_fingerprint, validate_lyrics,
+    lyrics_review_fingerprint, timing_fingerprint, validate_lyrics,
 )
 
 
@@ -94,13 +95,104 @@ def test_partial_preview_and_review_cannot_approve_incomplete_timing(project):
 def test_timing_edit_invalidates_review_shot_edit_does_not(project):
     doc = timed(project, reviewer="Director")
     timing_hash = timing_fingerprint(doc)
+    review_hash = lyrics_review_fingerprint(project, doc)
     write(project / "manifest/shots.json", [{"id": "S001", "in_ms": 100}])
+    write(project / "bible/style.yaml", {"palette": "changed visual palette"})
     assert timing_fingerprint(validate_lyrics(project, 2000, strict=True)[0]) == timing_hash
+    assert lyrics_review_fingerprint(project, doc) == review_hash
+    assert validate_lyrics(project, 2000, strict=True)[0]["review"] == doc["review"]
     doc["cues"][0]["start_ms"] = 100
     write(project / "lyrics/lyrics_timed.json", doc)
     with pytest.raises(FilmError, match="reviewed"):
         validate_lyrics(project, 2000, strict=True)
     assert validate_lyrics(project, 2000)[0]["review"] is None
+
+
+def test_legacy_timing_only_review_requires_explicit_subtitle_review(project):
+    doc = timed(project, reviewer="Director")
+    assert doc["review"]["schema_version"] == 2
+    assert doc["review"]["lyrics_review_sha256"] == lyrics_review_fingerprint(project, doc)
+    doc["review"].pop("schema_version")
+    doc["review"].pop("lyrics_review_sha256")
+    write(project / "lyrics/lyrics_timed.json", doc)
+    before = digest(project / "lyrics/lyrics_timed.json")
+    preview, warnings = validate_lyrics(project, 2000)
+    assert preview["review"] is None
+    assert preview["cues"] == doc["cues"]
+    assert any("subtitle settings and font" in warning for warning in warnings)
+    assert digest(project / "lyrics/lyrics_timed.json") == before
+    with pytest.raises(FilmError, match="subtitle settings and font"):
+        validate_lyrics(project, 2000, strict=True)
+    save_timing(project, doc, reviewer="Director")
+    assert validate_lyrics(project, 2000, strict=True)[1] == []
+
+
+@pytest.mark.parametrize("group,field,value", [
+    ("subtitles", "font_size", 18),
+    ("subtitles", "font_name", "DejaVu Serif"),
+    ("subtitles", "margin_bottom", 30),
+    ("format", "width", 640),
+    ("format", "height", 480),
+    ("format", "fps", 30),
+])
+def test_subtitle_presentation_change_requires_review_without_retiming(project, group, field, value):
+    doc = timed(project, reviewer="Director")
+    old_binding = doc["review"]["lyrics_review_sha256"]
+    config = read(project / "project.yaml")
+    config.setdefault(group, {})[field] = value
+    write(project / "project.yaml", config)
+    preview, warnings = validate_lyrics(project, 2000)
+    assert preview["review"] is None
+    assert preview["cues"] == doc["cues"]
+    assert timing_fingerprint(preview) == doc["review"]["timing_sha256"]
+    assert lyrics_review_fingerprint(project, preview) != old_binding
+    assert any("subtitle settings and font" in warning for warning in warnings)
+    with pytest.raises(FilmError, match="subtitle settings and font"):
+        validate_lyrics(project, 2000, strict=True)
+    revised = save_timing(project, preview, reviewer="Director")
+    assert revised["review"]["lyrics_review_sha256"] != old_binding
+    assert validate_lyrics(project, 2000, strict=True)[1] == []
+
+
+def test_custom_font_content_is_bound_and_project_relocation_preserves_review(project):
+    paths = [Path(subprocess.run(["fc-match", "-f", "%{file}", family],
+                                capture_output=True, text=True, check=True).stdout)
+             for family in ("DejaVu Sans", "DejaVu Serif")]
+    assert paths[0].is_file() and paths[1].is_file()
+    assert digest(paths[0]) != digest(paths[1])
+    target = project / "fonts/captions.ttf"
+    target.parent.mkdir()
+    shutil.copyfile(paths[0], target)
+    config = read(project / "project.yaml")
+    config["subtitles"] = {"font_file": "fonts/captions.ttf", "font_name": "Project Caption Font"}
+    write(project / "project.yaml", config)
+    doc = timed(project, reviewer="Director")
+    old_binding = lyrics_review_fingerprint(project, doc)
+    file_hashes = {str(path.relative_to(project)): digest(path) for path in project.rglob("*") if path.is_file()}
+    assert lyrics_review_fingerprint(project, doc) == old_binding
+    assert file_hashes == {str(path.relative_to(project)): digest(path) for path in project.rglob("*") if path.is_file()}
+
+    moved = project.parent / (project.name + "_moved")
+    shutil.copytree(project, moved)
+    assert lyrics_review_fingerprint(moved, doc) == old_binding
+    assert validate_lyrics(moved, 2000, strict=True)[0]["review"] == doc["review"]
+
+    shutil.copyfile(paths[1], target)
+    assert lyrics_review_fingerprint(project, doc) != old_binding
+    assert validate_lyrics(project, 2000)[0]["review"] is None
+    with pytest.raises(FilmError, match="subtitle settings and font"):
+        validate_lyrics(project, 2000, strict=True)
+    renewed = save_timing(project, doc, reviewer="Director")
+    assert renewed["cues"] == doc["cues"]
+    assert validate_lyrics(project, 2000, strict=True)[1] == []
+
+    target.unlink()
+    preview, warnings = validate_lyrics(project, 2000)
+    assert preview["review"] is None
+    assert preview["cues"] == doc["cues"]
+    assert any("font_file does not exist" in warning for warning in warnings)
+    with pytest.raises(FilmError, match="font_file does not exist"):
+        validate_lyrics(project, 2000, strict=True)
 
 
 def test_json_cannot_replace_source_text_and_invalid_preview_is_excluded(project):

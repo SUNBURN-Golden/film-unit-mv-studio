@@ -1,8 +1,9 @@
 """Source-faithful, independently reviewed lyric timing and subtitle exports.
 
 No alignment is guessed. An untimed source produces an incomplete Preview, and
-Final requires a reviewer bound to the exact source and timing content. Section
-labels are metadata; an empty repeated section needs an explicit expansion.
+Final requires a reviewer bound to the exact source, timing and subtitle
+presentation, independently of the visual timeline. Section labels are
+metadata; an empty repeated section needs an explicit expansion.
 """
 from __future__ import annotations
 
@@ -19,6 +20,7 @@ import tempfile
 from .core import FilmError, atomic_text, digest, now, object_hash, probe, read, safe_path, write
 
 SCHEMA_VERSION = 1
+REVIEW_SCHEMA_VERSION = 2
 _MARKER = re.compile(r"^\[([^\[\]]+)\]$")
 
 
@@ -137,6 +139,30 @@ def timing_fingerprint(document):
                         "cues": document.get("cues", [])})
 
 
+def lyrics_review_fingerprint(project, document):
+    """Bind lyric approval to text, cues, subtitle settings and actual font bytes.
+
+    This is read-only and intentionally excludes shots, visual bibles, locks,
+    reviewer metadata and machine-specific resolved font paths. A custom font
+    is identified by its content and family, so moving an intact project does
+    not revoke its approval, while replacing font bytes at the same path does.
+    """
+    config = read(Path(project) / "project.yaml")
+    fmt = config.get("format", {})
+    settings = dict(config.get("subtitles", {}))
+    settings.pop("font_file", None)
+    _, font = _font(project, config, "".join(cue["text"] for cue in document.get("cues", [])))
+    return object_hash({
+        "schema_version": REVIEW_SCHEMA_VERSION,
+        "timing_sha256": timing_fingerprint(document),
+        "subtitles": settings,
+        "canvas": {"width": fmt.get("width", 1440), "height": fmt.get("height", 1080),
+                   "fps": fmt.get("fps", 24)},
+        "font": {"sha256": font.get("sha256"), "family": font["family"],
+                 "requested_family": font["requested_family"]},
+    })
+
+
 def _check(document, duration_ms):
     if type(duration_ms) is not int or duration_ms <= 0:
         raise FilmError("Lyrics duration must be positive integer milliseconds")
@@ -213,6 +239,18 @@ def validate_lyrics(project, duration_ms, strict=False):
         document = _new_document(document["source_sha256"], document["rows"], document.get("source_missing", False))
         document, warnings = _check(document, duration_ms)
         warnings.insert(0, f"Stored lyric timing was excluded from Preview: {exc}")
+    review = document.get("review")
+    if review is not None:
+        try:
+            valid = (review.get("schema_version") == REVIEW_SCHEMA_VERSION
+                     and review.get("lyrics_review_sha256") == lyrics_review_fingerprint(project, document))
+            reason = "Lyrics have not been reviewed for the current subtitle settings and font"
+        except (FilmError, OSError, KeyError, TypeError, ValueError) as exc:
+            valid = False
+            reason = f"Lyric subtitle review cannot be verified: {exc}"
+        if not valid:
+            document["review"] = None
+            warnings.append(reason)
     if strict and warnings:
         raise FilmError("Final lyrics are incomplete: " + "; ".join(warnings))
     return document, warnings
@@ -227,7 +265,7 @@ def _duration(project):
 
 
 def save_timing(project, document, reviewer=""):
-    """Validate exact text/timing; reviewer affirms this complete timing revision."""
+    """Validate text/timing; reviewer affirms the complete subtitle revision."""
     fresh = prepare_lyrics(project)
     if not isinstance(document, dict) or document.get("source_sha256") != fresh["source_sha256"]:
         raise FilmError("Lyrics source changed; reload before saving timing")
@@ -242,8 +280,10 @@ def save_timing(project, document, reviewer=""):
     if reviewer.strip():
         if candidate["unresolved_row_ids"] or not candidate["effective_rows"]:
             raise FilmError("Resolve every lyric row and repeat before approving timing")
-        candidate["review"] = {"reviewer": reviewer.strip(), "reviewed_at": now(),
-                               "timing_sha256": timing_fingerprint(candidate)}
+        candidate["review"] = {"schema_version": REVIEW_SCHEMA_VERSION,
+                               "reviewer": reviewer.strip(), "reviewed_at": now(),
+                               "timing_sha256": timing_fingerprint(candidate),
+                               "lyrics_review_sha256": lyrics_review_fingerprint(project, candidate)}
     candidate["updated_at"] = now()
     write(Path(project) / "lyrics/lyrics_timed.json", candidate)
     return candidate
@@ -362,7 +402,9 @@ def export_subtitles(project, output_dir, duration_ms, strict=False):
         warnings.append("ASS rounds boundaries to centiseconds; JSON and SRT preserve exact integer milliseconds")
     atomic_text(srt, "\n".join(srt_blocks))
     atomic_text(ass, header + "\n".join(ass_events) + "\n")
-    write(folder / "subtitle_report.json", {"warnings": warnings, "font": report, "timing_sha256": timing_fingerprint(document)})
+    write(folder / "subtitle_report.json", {"warnings": warnings, "font": report,
+                                           "timing_sha256": timing_fingerprint(document),
+                                           "lyrics_review_sha256": lyrics_review_fingerprint(project, document)})
     return {"document": document, "warnings": warnings, "ass": ass, "srt": srt,
             "timed": timed, "source": source, "font_report": report}
 
