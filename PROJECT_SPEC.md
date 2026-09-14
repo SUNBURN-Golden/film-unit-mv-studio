@@ -1,98 +1,90 @@
-# Project specification / v0.2
+# Project specification / v0.3
 
-## Acceptance status
+## Goal and release boundary
 
-| Stage | Expected | Status in this delivery |
+Given a measured master track, authoritative lyric text and a full-song shot plan, compile the current cut at any stage, replace individual shots and retain every previous build. The director establishes the approved film; generation tools render particular shots and do not direct the whole MV.
+
+v0.3 prioritizes lyrics/subtitles, Preview fallback, immutable builds and generic production defaults. Timeline edit operations and a four-minute regression/CI configuration accompany that core. Existing spend/LOCK/take-reuse safeguards remain. New provider integrations, element/reference video generation and semantic PASS/FAIL QC are deferred.
+
+A rendered Preview is a review artifact, not proof of finished animation. A locked camera does not mean frozen subjects. LIMITED_MOTION and FULL_GENERATIVE need real approved motion in a finished animated production; local image hold/pan/zoom is a preview aid. STATIC is an explicit editorial choice, with no automatic savings quota. The compiler itself does not impose one animation style on all songs.
+
+## Files and authority
+
+| Path within `projects/<project>/` | Purpose |
+|---|---|
+| `project.yaml` | Output settings, budget, renderer settings, data schema declarations |
+| `input/master.mp3` or `master.wav` | Original master, protected by SHA-256 |
+| `input/brief.md`, `input/lyrics.txt` | Director brief and authoritative lyric source |
+| `analysis/audio.json`, `waveform.png` | Measured audio features and visualization |
+| `bible/`, `characters/`, `locations/` | Editable production direction and references |
+| `manifest/sequence.json`, `shots.json`, `locks.json` | Full-duration visual plan and production approval |
+| `manifest/assets.json` | Selected draft/final takes and exact review binding |
+| `manifest/timeline_edits.json` | Visual edit events; lyrics are independent |
+| `storyboard/` | First frames, contact sheet and review HTML |
+| `lyrics/lyrics_source.txt`, `lyrics_timed.json`, `history/` | Source mirror, independent cues and superseded source-bound timing |
+| `render/` | Retained renderer requests/state/takes, imported assets and local compile cache |
+| `qc/` | Technical and semantic-review records |
+| `builds/B####/` | A new build for each compile attempt |
+| `migrations/` | Original metadata backup and explicit migration report |
+| `output/` | Compatibility exports from the legacy renderer pipeline |
+
+A completed build contains `MASTER_CLEAN.mp4`, `MASTER_SUBBED.mp4`, `lyrics.ass`, `lyrics.srt`, `lyrics_source.txt`, `lyrics_timed.json`, `subtitle_report.json`, captured font files, source snapshots, normalized timeline clips and `build.json`. It contains independent copies of selected inputs. `build.json` records source/clip hashes, selected source windows, asset counts, LOCK provenance, warnings, output format and file inventory. Failed attempts retain separate IDs and are not completed exports.
+
+## Schemas and timing
+
+| Data | Version |
+|---|---|
+| Project | 3 |
+| Shot | 2 |
+| Lyrics | 1 |
+| Build | 1 |
+| Audio | 1 |
+
+These versions are independent of package version 0.3.0. Existing audio documents labelled `0.1` retain their established field semantics. Explicit migration backs up and updates project metadata, without rewriting approved production files. Legacy shot records remain compatible without a per-record schema field. Existing assets and lock bytes are preserved; future unsupported versions fail explicitly.
+
+A shot requires `id`, `sequence`, `in_ms`, `out_ms`, `duration_ms`, `description`, `characters`, `locations`, `composition`, `camera`, `motion`, `references`, `render_mode`, `renderer`, `status`. New records also identify shot schema 2. IDs are unique S001-style values. Ranges use integer milliseconds, are contiguous and non-overlapping, cover measured duration and produce at least one frame. Render mode is STATIC, LIMITED_MOTION or FULL_GENERATIVE. Absolute boundary rounding prevents accumulating independent per-shot rounding errors.
+
+Audio analysis includes duration, estimated BPM, beats/onsets, energy, candidate section boundaries, silence regions and peaks. Feature timestamps are measurement estimates, not word alignment or known verse/chorus annotations. The input limit remains ten minutes.
+
+Lyric schema 1 stores source SHA, source rows, explicit repeat expansions and cues. Each cue has a unique ID, `source_row_id`, exact `text`, `start_ms` and `end_ms`; optional `char_start`/`char_end` split a source row into phrases. Every non-whitespace source span and explicit repeated span must be covered before review can approve Final. Timing must be ordered, non-overlapping and within the measured song. The system does not infer vocal timing from beat positions or equal divisions of the track.
+
+## Compile contracts
+
+| Condition | Preview | Final |
 |---|---|---|
-| A | 30-second audio → analysis → storyboard → Mock → MP4 | PASS with original synthetic test signal |
-| B | Three actual AI-generated shots in the same 30 seconds | NOT RUN; provider bridge schema/receipt lifecycle tested without spending |
-| C | 60-second animated pilot: actual motion for every animated shot, including at least three provider-generated shots | Mock 60-second export PASS; finished animated pilot remains pending |
-| D | Full supplied Suno song | Awaiting the user's MP3/WAV and approved production art |
+| Valid master hash, measured timeline, FFmpeg | Required | Required |
+| Selected final video | Preferred; review may be pending | Must have current hash-bound review |
+| Selected draft video | Used when final is unavailable | Rejected |
+| Storyboard | Used when clips are unavailable | Only imported, deliberately STATIC shots under valid LOCK |
+| Missing visual | Labelled placeholder | Rejected |
+| Production LOCK | Can be absent/stale; recorded | Current and not mock-only |
+| Incomplete or invalid lyric timing | Warning; valid available cues or no cues | Rejected |
+| Missing/unverified font glyphs | Warning | Rejected |
+| Provider calls during compile | None | None |
+| Result location | New PREVIEW build | New FINAL build |
 
-This is an operational Mock-first MVP, not completion of the full real-generation acceptance criterion. No real Suno audio or earlier actual character/storyboard image was attached to this task. Memory and prose do not substitute for those files.
+Corrupt or unusable selected media can fall through the Preview hierarchy. "Always compilable" does not hide invalid timeline structure, modified/missing audio or unavailable runtime/storage. A Preview with an empty subtitle track still produces both MP4 names and explicitly records incomplete lyrics; that file is not a finished lyric MV.
 
-## Animation direction (2026-09-11 clarification)
+Default Final video is 4:3, 1440×1080, 24fps, H.264, CRF 18, yuv420p. Draft Preview limits width to 960 while preserving aspect ratio. Only the original master contributes audio; generated-clip audio is stripped. AAC 320kbps is a lossy derivative, with no loudness normalization or time stretch. JSON/SRT retain milliseconds; ASS rounds to centiseconds. Output duration is verified within frame/codec tolerance, not promised sample-exact as an MP4 container field.
 
-The deliverable is a 2D character-animation music video. Characters, expressions, props and environmental elements perform the approved actions within each shot. A locked camera is compatible with animated subjects. Economical acting does not mean replacing most of the film with camera motion over still images; a stop-motion aesthetic is not the target.
+Font coverage is measured against rendered cue characters. A full glyph-covering font can be supplied through `subtitles.font_file` relative to the project; `font_name`, `font_size`, `margin_x` and `margin_bottom` configure presentation. ASS uses minimum 5% horizontal and 7% bottom margins. Human preview review remains necessary for phrase length, line breaks and readability.
 
-New production packages draft every shot as LIMITED_MOTION. The director upgrades complex actions to FULL_GENERATIVE and may deliberately choose STATIC for an editorial hold. There is no automatic 40% STATIC quota. Existing packages and their approvals are not rewritten. Mock hold/pan/zoom remains a timing-preview tool and does not satisfy final animation acceptance. LIMITED_MOTION is not automatically a free local effect: the current local renderer has no character rigging or subject-animation engine.
+## Editing and reproducibility
 
-For a four-minute film, initial budget planning therefore covers 240 seconds of animation until the actual shot plan establishes any intentional holds or reuse. At the quoted 350 credits per five-second job, 48 jobs cost 16,800 credits for a first pass; 15 additional jobs provide about 30% retry allowance for a total of 22,050. The current two-retry-per-shot reservation policy instead reserves up to 50,400. These are video-only planning scenarios at 720p with audio off, not a final 1080p quote or a guarantee of successful takes. Storyboard/reference generation and unused clip portions add cost.
+Split, merge, move cut and snap-to-measured-beat/onset preserve full visual coverage. Merge is limited to neighboring shots in the same sequence and keeps the left direction/reference. Changed shots lose their selected asset authorization and need review; lyrics and completed builds remain unchanged.
 
-## Files
+Each saved build keeps the original selected assets as well as normalized per-shot clips, audio and subtitle/font inputs. Replaying a verified build needs no current project files. Historical exports retain their exact bytes; newly encoding them across FFmpeg versions is not guaranteed byte-identical. SHA inventories detect modified captured files but are not signed archival attestations. Local cache reuse avoids normalizing unchanged shot/source/window/format combinations again.
 
-```text
-FILM_UNIT/
-  app/control_panel.py
-  engine/
-  templates/
-  docs/
-  tests/
-  projects/<project>/
-    project.yaml
-    input/master.wav or master.mp3
-    input/lyrics.txt
-    input/brief.md
-    analysis/audio.json
-    analysis/waveform.png
-    bible/style_bible.yaml
-    bible/story.md
-    bible/characters.yaml
-    bible/locations.yaml
-    characters/
-    locations/
-    storyboard/S001.png ...
-    storyboard/contact_sheet.jpg
-    storyboard/storyboard.html
-    manifest/sequence.json
-    manifest/shots.json
-    manifest/locks.json
-    render/draft/<run>/
-    render/final/<run>/
-    render/manual/
-    render/requests/
-    render/responses/
-    render/estimate.json
-    render/approval.json
-    render/ledger.json
-    render/economy.json
-    render/profiles/
-    render/takes/
-    render/progress/
-    render/edit_decisions.json
-    qc/frames/
-    qc/reviews/
-    qc/report.json
-    output/
-```
+## Budget and generation boundary
 
-## Shot schema
+The compiler Preview/Final functions call no generation provider. Existing advanced renderer operations still use exact quote approval, cumulative project reservations, separate credits/USD caps, bounded retries and ambiguous-submission recovery. Defaults remain 10,000 credits, USD 0 and two retries after the first attempt. They are project caps, not an account-wide subscription budget. No historical price snapshot is a live quote.
 
-Required fields: `id`, `sequence`, `in_ms`, `out_ms`, `duration_ms`, `description`, `characters`, `locations`, `composition`, `camera`, `motion`, `references`, `render_mode`, `renderer`, `status`.
+OpenArt remains an image-to-video Work bridge; Manual can import completed external work. Economy, fal and benchmark stay at their old import paths for compatibility and are experimental. Numeric semantic review remains evidence-driven and blocks unreviewed generated shots in the old pipeline. No new automatic vision evaluator or multi-reference generation capability is claimed.
 
-IDs are unique `S001`-style strings. Ranges are contiguous, non-overlapping, integer milliseconds. Duration equals `out_ms - in_ms`. Every included shot needs at least one output frame. `render_mode` is STATIC, LIMITED_MOTION or FULL_GENERATIVE. `renderer: mock` can opt a particular motion shot into local processing in a Manual/OpenArt run; STATIC always stays local. Provider name overrides must exist in the current configured capability set.
+## Acceptance and evidence
 
-## Audio schema
+The v0.3 compiler regression fixture is a **240-second synthetic track, 48 shots, 7 selected final clips, 13 drafts, 25 storyboard images, 3 placeholders and 82 timed synthetic lyric lines**. It checks clean/subbed output duration and stream properties, then changes S024 and verifies a new build with the other 47 source hashes, audio hash and lyric timing unchanged. It uses 320×240, 24fps media for economical CI execution. Tests also cover fallback from corrupt/missing assets, invalid timeline rejection, strict Final gates, review binding, replay and tamper detection, lyrics, schemas and cut editing.
 
-`duration_ms`, estimated `tempo_bpm`, `beat_times_ms`, `onsets_ms`, `energy_curve`, `section_boundaries_ms`, `silence_regions`, `major_peaks_ms`, source hash and measurement settings. Curve points use actual decoded-audio timings. Silence has an absolute -45 dBFS threshold and minimum 250 ms region length. No arbitrary verse labels or lyric alignments are invented.
+GitHub Actions is configured for Ubuntu, Python 3.11/3.12, FFmpeg, fonts and pytest. Remote success must be confirmed from an actual Actions run. See tests and the delivered execution report for what was run; configuration alone is not a PASS.
 
-## Budgets
-
-Default caps: 10,000 OpenArt credits and USD 0 for fal. Default retries: two additional attempts after the first. Draft: 960×720 local output; final: 1440×1080. Provider-native output size depends on its verified form; final delivery may normalize it. Each selected output pass has an exact approval, but identical paid generation inputs reuse source clips across Draft and Final without a new generation charge. Provider setting changes require a distinct take. Economy budgets each attempt's chosen provider in its own currency pool. These are cumulative project reservations, not account-wide monthly spending.
-
-v0.2 adds multiple configured profiles, cost ordering within each service, explicit provider priority, per-shot fallback sequences, resumable Work actions, duplicate-submission protection, cached original takes and local source-window edits. Work handles actual external tool calls and evidence-backed semantic review. A fully autonomous vision worker and actual paid 60-second animated pilot remain pending. See [Economy compiler operations](docs/ECONOMY_COMPILER.md).
-
-The source brief's sample prices are illustrative and not hardcoded. A read-only OpenArt quote on 2026-09-11 returned 350 credits for one Seedance 2.0 Fast image-to-video job at 720p, 5 seconds, 4:3, audio off. Other settings cost differently and the final price is determined at generation. This sample is not a quote for the entire user's MV and has not been authorized or spent.
-
-## Export contract
-
-Default video: 4:3, 1440×1080, 24fps, H.264, CRF 18, yuv420p. Default audio: AAC 320 kbps from the sole original master input. No loudness normalization, time stretch or generated-clip audio. Exact source file is retained separately. Main output is atomically promoted only after validation; incomplete `.pending.mp4` files are never shown as completed exports.
-
-## Next concrete input
-
-Upload the final Suno MP3/WAV, optionally lyrics and the earlier chosen character/art reference. Work can then build a song-specific production bible and real storyboard, obtain an exact three-shot quote, lock the package, request that one batch approval, and execute the real-render pilot.
-
-
-## 저가 애니메이션 renderer 추가 (2026-09-11)
-
-fal Wan 2.2 Turbo adapter와 OpenArt PixVerse V6 schema 지원을 추가했다. fal USD 예산은 OpenArt credits와 별도 한도·예약액으로 관리한다. 비동기 제출 전에 상태를 저장하고, 응답이 불확실하면 배치를 중단해 중복 결제를 방지한다. 3×5초의 실제 인물 동작 비교 입력을 생성하는 benchmark 명령을 제공한다. 현재 유료 생성은 0건이며 실제 품질 검증이 남았다. 세부 설정·한계·증거는 [저가 애니메이션 테스트](docs/CHEAP_ANIMATION_TEST.md)를 참고한다.
+Earlier 30/60-second Mock tests remain recorded in `docs/ACCEPTANCE_REPORT.md`. Actual paid provider generations remain 0 in the established project evidence. The synthetic four-minute regression does not claim correct alignment of a real singer, AI animation quality, an approved 1080p song or the user's completed MV. The separately supplied song/artwork and their production review remain work at the project level, not prerequisites for exercising the generic compiler.

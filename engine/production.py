@@ -1,25 +1,53 @@
 """Editable production drafts. No fabricated narrative or generated artwork."""
 from pathlib import Path
+from copy import deepcopy
 import html
 import math
+import re
+import sys
 import textwrap
 from PIL import Image, ImageDraw, ImageFont
 from .core import FilmError, atomic_text, read, write, safe_path, timecode, validate_manifest
+from .schema import SHOT_SCHEMA
 
 
 STYLE = {
     "format": {"aspect_ratio": "4:3", "resolution": "1440x1080", "fps": 24},
-    "visual_style": {"medium": "2D character animation", "background": "warm gray paper", "line": "thin black ink", "shading": "minimal", "camera": "mostly locked; characters and scene elements animate within the frame"},
-    "palette": {"paper": "#ECEAE4", "ink": "#181818", "teal": "#48A6A0"},
-    "rules": ["no photorealism", "no cinematic dramatic lighting", "no unnecessary camera movement", "no text unless explicitly specified", "emotion should be understated", "movement should be economical but depict actual character or scene action", "no stop-motion aesthetic", "do not substitute camera-only pan or zoom for character or scene animation"],
+    "visual_style": {"medium": "Director review required", "background": "Director review required", "camera": "Director review required"},
+    "palette": {},
+    "rules": ["Follow the approved production bible and shot references", "Director review required before production"],
     "draft": True,
 }
 
 
-def make_package(project, target_shot_ms=5000):
+def load_preset(name=None):
+    """Return fresh draft data; presets never mutate global defaults."""
+    if not name or name == "neutral":
+        return {
+            "style": deepcopy(STYLE),
+            "characters": {"draft": True, "characters": [{"id": "CHAR_01", "variants": [], "invariants": {}, "behavior": "Director review required", "reference_images": []}]},
+            "locations": {"draft": True, "locations": [{"id": "LOC_01", "description": "Director review required", "reference_images": [], "required_views": ["wide", "medium", "prop"]}]},
+            "directing": {"characters": ["CHAR_01"], "locations": ["LOC_01"], "composition": "Director review required", "camera": {"type": "unspecified", "movement": "Director review required"}, "motion": {"complexity": "unspecified", "instruction": "Director review required: specify the subject action and its timing.", "local_effect": "hold"}, "render_mode": "LIMITED_MOTION", "identity_priority": "unspecified", "review_note": "Choose the visual medium, cast, locations, composition and movement for this song. A technical placeholder or local pan/zoom preview does not establish the intended production style."},
+        }
+    if not isinstance(name, str) or not re.fullmatch(r"[a-z][a-z0-9_-]*", name):
+        raise FilmError("Invalid preset name")
+    roots = [Path(__file__).resolve().parent.parent / "presets", Path(sys.prefix) / "share/film-unit/presets"]
+    directory = next((root / name for root in roots if (root / name).is_dir()), None)
+    if directory is None:
+        raise FilmError(f"Unknown production preset: {name}")
+    return {key: read(directory / f"{key}.yaml") for key in ["style", "characters", "locations", "directing"]}
+
+
+def make_package(project, target_shot_ms=5000, preset=None):
     p = Path(project)
     if (p / "manifest/shots.json").exists():
         raise FilmError("Production package already exists; edit it instead of overwriting")
+    if type(target_shot_ms) is not int or target_shot_ms <= 0:
+        raise FilmError("Target shot duration must be a positive integer in milliseconds")
+    config = read(p / "project.yaml")
+    preset_name = preset if preset is not None else config.get("production", {}).get("preset", config.get("preset"))
+    package = load_preset(preset_name)
+    directing = package["directing"]
     audio = read(p / "analysis/audio.json")
     duration = audio["duration_ms"]
     beats = audio["beat_times_ms"]
@@ -35,33 +63,33 @@ def make_package(project, target_shot_ms=5000):
     section_starts = sorted(set([0] + [min(boundaries[:-1], key=lambda b: abs(b - c)) for c in audio["section_boundaries_ms"][1:-1]]))
     seq = [{"id": f"SEQ{i+1:02d}", "in_ms": a, "out_ms": b, "title": f"Section {i+1} — story review required", "boundary_source": "measured feature change, snapped to draft cut"} for i, (a, b) in enumerate(zip(section_starts, section_starts[1:] + [duration]))]
     brief = (p / "input/brief.md").read_text()
-    write(p / "bible/style_bible.yaml", STYLE)
-    write(p / "bible/characters.yaml", {"draft": True, "characters": [
-        {"id": "CHAR_A", "variants": ["A_20_FRONT", "A_20_SIDE", "A_40_FRONT", "A_60_FRONT", "A_OLD_FRONT"], "invariants": {"black_triangle_tie": True, "glasses": False}, "behavior": "restrained; minimal facial expression", "reference_images": []},
-        {"id": "CHAR_B", "variants": ["B_20_FRONT", "B_20_SIDE", "B_40_POLITICIAN", "B_60_POLITICIAN", "B_OLD_FRONT"], "invariants": {"round_glasses": True}, "behavior": "restrained", "reference_images": []},
-    ], "note": "Example cast from the project brief. Replace before real production; no character art generated yet."})
-    write(p / "bible/locations.yaml", {"draft": True, "locations": [{"id": f"LOC_{name}", "reference_images": [], "required_views": ["wide", "medium", "prop"]} for name in ["ROOM", "INTERROGATION", "OFFICE", "HOME", "ORPHANAGE", "NURSING_HOME", "POLITICAL_OFFICE", "STAGE"]]})
+    # Output dimensions belong to the project, even when the art direction is preset.
+    fmt = config["format"]
+    package["style"]["format"] = {"aspect_ratio": fmt.get("aspect_ratio", f"{fmt['width']}:{fmt['height']}"), "resolution": f"{fmt['width']}x{fmt['height']}", "fps": fmt["fps"]}
+    for name, filename in [("style", "style_bible.yaml"), ("characters", "characters.yaml"), ("locations", "locations.yaml"), ("directing", "directing.yaml")]:
+        write(p / "bible" / filename, package[name])
     atomic_text(p / "bible/story.md", "# Story draft\n\n" + brief + "\n\nThis is the supplied brief. Shot-level story, ages, actions and symbolism require director review. Section labels are not lyric transcription.\n")
     shots = []
     for i, (a, b) in enumerate(zip(boundaries, boundaries[1:])):
         # The director assigns complex actions or intentional holds after review.
         # A locked camera does not imply a static subject or a free local render.
-        mode = "LIMITED_MOTION"
+        mode = directing["render_mode"]
         shots.append({
+            "schema_version": SHOT_SCHEMA,
             "id": f"S{i+1:03d}", "sequence": next(s["id"] for s in seq if s["in_ms"] <= a < s["out_ms"]),
             "in_ms": a, "out_ms": b, "duration_ms": b-a,
             "description": f"Draft shot {i+1}. Director to specify the action and emotion.",
-            "characters": ["CHAR_A", "CHAR_B"], "locations": ["LOC_HOME", "LOC_POLITICAL_OFFICE"],
-            "composition": "vertical split screen", "camera": {"type": "locked", "movement": "none"},
-            "motion": {"complexity": "low", "instruction": "Animate the director-approved character or scene action with restrained movement. Start from the approved first frame and preserve its identity, style and composition. A locked camera must not freeze the subjects.", "local_effect": "hold"},
+            "characters": deepcopy(directing["characters"]), "locations": deepcopy(directing["locations"]),
+            "composition": directing["composition"], "camera": deepcopy(directing["camera"]),
+            "motion": deepcopy(directing["motion"]),
             "references": [f"storyboard/S{i+1:03d}.png"], "render_mode": mode, "renderer": "auto", "status": "storyboard",
-            "storyboard_kind": "placeholder", "identity_priority": "high",
+            "storyboard_kind": "placeholder", "identity_priority": directing["identity_priority"],
         })
-    validate_manifest(shots, duration)
+    validate_manifest(shots, duration, fmt["fps"])
     write(p / "manifest/sequence.json", seq)
     write(p / "manifest/shots.json", shots)
     generate_storyboard(p)
-    atomic_text(p / "bible/director_request.md", "# Work director handoff\n\nRead input/brief.md, input/lyrics.txt and analysis/audio.json. Write story.md, style_bible.yaml, characters.yaml, locations.yaml and shot descriptions against actual timecodes. Preserve contiguous full-duration coverage. The target is a 2D character-animation MV, not stop motion or a slideshow. Specify actual character, expression, prop or environmental action for each animated shot. LIMITED_MOTION still requires actual animation; assign FULL_GENERATIVE where the action needs it. Use STATIC only for an intentional director-approved hold, never to satisfy a savings quota. Mock/local hold, pan and zoom are timing-preview tools, not completed animation. Create character/location references and approved first frames using an image generator. Replace each placeholder via the Control Panel. Review all assets, then LOCK. No paid generation before a concrete batch quote is approved.\n")
+    atomic_text(p / "bible/director_request.md", "# Work director handoff\n\nRead input/brief.md, input/lyrics.txt and analysis/audio.json. Write story.md, style_bible.yaml, characters.yaml, locations.yaml and shot descriptions against actual timecodes. Preserve contiguous full-duration coverage. " + directing["review_note"] + " Create character/location references and approved first frames. Replace each placeholder via the Control Panel. Review all assets, then LOCK. No paid generation before a concrete batch quote is approved.\n")
     return shots
 
 
@@ -73,30 +101,29 @@ def font(size):
 
 
 def placeholder(shot, path):
-    # Exact layout diagram / technical slate, not generated character artwork.
+    # Neutral timing slate. It deliberately makes no claims about finished artwork.
     w, h = 1440, 1080
-    im = Image.new("RGB", (w, h), "#ECEAE4")
+    im = Image.new("RGB", (w, h), "#F3F3F3")
     d = ImageDraw.Draw(im)
-    ink, teal, gray = "#181818", "#48A6A0", "#CBC9C3"
-    d.text((72, 56), "FILM UNIT   /   TIMING ANIMATIC", font=font(26), fill=ink)
+    ink, gray = "#181818", "#B8B8B8"
+    d.text((72, 56), "FILM UNIT   /   TIMING PREVIEW", font=font(26), fill=ink)
     d.text((72, 130), shot["id"], font=font(100), fill=ink)
     d.text((w-440, 151), f"{timecode(shot['in_ms'])} — {timecode(shot['out_ms'])}", font=font(25), fill=ink)
     d.line((72, 275, w-72, 275), fill=ink, width=2)
-    for x, label, identity in [(72, "CHAR_A", "TRIANGLE TIE"), (744, "CHAR_B", "ROUND GLASSES")]:
-        d.rectangle((x, 322, x+624, 790), outline=gray, width=2)
-        d.text((x+28, 347), "SUBJECT PLACEHOLDER", font=font(19), fill=ink)
-        d.ellipse((x+245, 415, x+379, 549), outline=ink, width=3)
-        d.rectangle((x+213, 560, x+411, 710), outline=ink, width=3)
-        if label == "CHAR_A":
-            d.polygon([(x+298, 580), (x+326, 580), (x+312, 625)], fill=ink)
-        else:
-            d.ellipse((x+264, 458, x+302, 496), outline=ink, width=3)
-            d.ellipse((x+322, 458, x+360, 496), outline=ink, width=3)
-            d.line((x+302, 475, x+322, 475), fill=ink, width=3)
-        d.text((x+28, 735), label + " / " + identity, font=font(21), fill=ink)
-    d.rectangle((72, 816, 1368, 827), fill=teal)
+    d.rectangle((72, 322, w-72, 790), outline=gray, width=2)
+    d.text((100, 352), "DIRECTOR REVIEW REQUIRED", font=font(36), fill=ink)
+    lines = ["Characters: " + ", ".join(shot.get("characters", [])),
+             "Locations: " + ", ".join(shot.get("locations", [])),
+             "Composition: " + shot.get("composition", "Unspecified"),
+             shot.get("description", "")]
+    y = 434
+    for line in lines:
+        for wrapped in textwrap.wrap(line, width=72)[:2]:
+            d.text((100, y), wrapped, font=font(25), fill=ink)
+            y += 40
     d.text((72, 862), shot["render_mode"].replace("_", " "), font=font(35), fill=ink)
-    d.text((72, 923), "LOCKED CAMERA   /   DIAGRAM ONLY   /   NO AI VIDEO", font=font(23), fill=ink)
+    d.text((72, 923), "PLACEHOLDER   /   NO GENERATED ART OR VIDEO", font=font(23), fill=ink)
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
     im.save(path)
 
 
@@ -110,7 +137,7 @@ def generate_storyboard(p, regenerate_id=None):
                 raise FilmError("Imported artwork can only be replaced with an uploaded image")
             placeholder(s, path)
     cols, thumb_w, thumb_h = 3, 400, 340
-    sheet = Image.new("RGB", (cols * thumb_w, math.ceil(len(shots)/cols) * thumb_h + 70), "#ECEAE4")
+    sheet = Image.new("RGB", (cols * thumb_w, math.ceil(len(shots)/cols) * thumb_h + 70), "#F3F3F3")
     d = ImageDraw.Draw(sheet)
     d.text((20, 18), "FILM UNIT / STORYBOARD REVIEW", font=font(22), fill="#181818")
     cards = []
@@ -123,7 +150,7 @@ def generate_storyboard(p, regenerate_id=None):
         image_path = Path(s["references"][0]).name
         cards.append(f'<article><img src="{html.escape(image_path)}"><h2>{s["id"]} · {timecode(s["in_ms"])} → {timecode(s["out_ms"])}</h2><p>{html.escape(s["description"])}</p><small>{s["render_mode"]} · {s.get("storyboard_kind", "imported")}</small></article>')
     sheet.save(p / "storyboard/contact_sheet.jpg", quality=90)
-    atomic_text(p / "storyboard/storyboard.html", '<!doctype html><html lang="en"><meta charset="utf-8"><title>FILM UNIT — Storyboard</title><style>body{background:#eceae4;color:#181818;font:16px system-ui;margin:40px}main{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:24px}img{width:100%}article{border-bottom:1px solid #aaa;padding-bottom:24px}h2{font-size:18px}small{color:#407975}</style><h1>FILM UNIT / Storyboard review</h1><p>Review each first frame and its timing before production LOCK.</p><main>' + ''.join(cards) + '</main></html>')
+    atomic_text(p / "storyboard/storyboard.html", '<!doctype html><html lang="en"><meta charset="utf-8"><title>FILM UNIT — Storyboard</title><style>body{background:#f3f3f3;color:#181818;font:16px system-ui;margin:40px}main{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:24px}img{width:100%}article{border-bottom:1px solid #aaa;padding-bottom:24px}h2{font-size:18px}small{color:#555}</style><h1>FILM UNIT / Storyboard review</h1><p>Review each first frame and its timing before production LOCK.</p><main>' + ''.join(cards) + '</main></html>')
 
 
 def import_frame(project, shot_id, source):

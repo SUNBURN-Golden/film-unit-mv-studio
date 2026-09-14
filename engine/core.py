@@ -12,6 +12,7 @@ import tempfile
 from datetime import datetime, timezone
 
 import yaml
+from .schema import schema_metadata
 
 
 class FilmError(RuntimeError):
@@ -124,18 +125,18 @@ def init_project(root, name, audio, brief, lyrics="", synthetic=False):
     seconds = float(metadata["format"].get("duration", 0))
     if not 1 <= seconds <= 600.1:
         raise FilmError("Audio must be between 1 second and 10 minutes")
-    for d in ["input", "analysis", "bible", "characters", "locations", "storyboard", "manifest", "render/draft", "render/final", "render/manual", "render/requests", "render/responses", "qc/reviews", "output"]:
+    for d in ["input", "analysis", "bible", "characters", "locations", "storyboard", "manifest", "lyrics", "builds", "render/draft", "render/final", "render/manual", "render/requests", "render/responses", "qc/reviews", "output"]:
         (p / d).mkdir(parents=True, exist_ok=True)
     dest = p / "input" / ("master" + audio.suffix.lower())
     shutil.copyfile(audio, dest)
     atomic_text(p / "input/brief.md", brief)
     atomic_text(p / "input/lyrics.txt", lyrics)
     write(p / "project.yaml", {
-        "schema_version": "0.1", "name": name, "created_at": now(),
+        **schema_metadata(), "name": name, "created_at": now(),
         "audio": {"path": str(dest.relative_to(p)), "sha256": digest(dest), "synthetic_test_audio": synthetic},
         "format": {"width": 1440, "height": 1080, "fps": 24, "aspect_ratio": "4:3", "crf": 18},
         "budget": {"max_credits": 10000, "max_usd": 0, "max_retry_per_shot": 2, "draft_resolution": "720p", "final_resolution": "1080p"},
-        "qc": {"threshold": 85, "semantic_review_required": True},
+        "qc": {"threshold": 85},
         "renderer": {"default": "mock", "mode": "AUTO"},
     })
     return p
@@ -171,11 +172,19 @@ def production_fingerprint(p):
     p = Path(p)
     config = read(p / "project.yaml")
     paths = [config["audio"]["path"], "input/brief.md", "input/lyrics.txt", "analysis/audio.json", "manifest/sequence.json", "manifest/shots.json", "bible/style_bible.yaml", "bible/story.md", "bible/characters.yaml", "bible/locations.yaml"]
+    # New caption revisions and optional directing bibles participate in LOCK.
+    # Existing projects without these files retain their original fingerprint.
+    paths += [r for r in ["lyrics/lyrics_timed.json", "bible/directing.yaml"] if (p / r).is_file()]
+    if config.get("subtitles", {}).get("font_file"):
+        paths.append(config["subtitles"]["font_file"])
     for s in read(p / "manifest/shots.json"):
         paths += s["references"]
     for folder in ["characters", "locations"]:
         paths += [str(f.relative_to(p)) for f in sorted((p / folder).rglob("*")) if f.is_file()]
-    return object_hash({"format": config["format"], "files": {r: digest(safe_path(p, r)) for r in sorted(set(paths))}})
+    inputs = {"format": config["format"], "files": {r: digest(safe_path(p, r)) for r in sorted(set(paths))}}
+    if "subtitles" in config:
+        inputs["subtitles"] = config["subtitles"]
+    return object_hash(inputs)
 
 
 def lock_production(p, reviewer, mock_only=False):

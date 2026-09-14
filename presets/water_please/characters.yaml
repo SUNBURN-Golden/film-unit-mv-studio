@@ -1,0 +1,27 @@
+draft: true
+characters:
+- id: CHAR_A
+  variants:
+  - A_20_FRONT
+  - A_20_SIDE
+  - A_40_FRONT
+  - A_60_FRONT
+  - A_OLD_FRONT
+  invariants:
+    black_triangle_tie: true
+    glasses: false
+  behavior: restrained; minimal facial expression
+  reference_images: []
+- id: CHAR_B
+  variants:
+  - B_20_FRONT
+  - B_20_SIDE
+  - B_40_POLITICIAN
+  - B_60_POLITICIAN
+  - B_OLD_FRONT
+  invariants:
+    round_glasses: true
+  behavior: restrained
+  reference_images: []
+note: Water Please example cast. Director review and generated reference art are required
+  before production.

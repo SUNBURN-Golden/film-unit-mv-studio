@@ -6,6 +6,7 @@ from .renderers import AwaitingRender, RenderBlocked, RenderResult, MockRenderer
 from . import budget, takes
 from .qc import inspect_clip
 from .assemble import assemble, exports
+from .resolver import register_asset
 
 
 def prepare(project, duration_seconds=None, mode="mock", quality="final"):
@@ -138,6 +139,18 @@ def _compile(p, seconds, mode, quality, output_name, progress):
                           profile=getattr(active, "profile", active.name), reused_take=reused,
                           raw_path=str(raw.relative_to(p)) if generated else None,
                           selected_duration_ms=shot["duration_ms"], source_in_ms=source_in_ms)
+                # Selection is a local index, not a new generation. Never promote
+                # failed/unreviewed clips to an approved Final. Pilot fragments
+                # cannot replace the same ID's full-song shot.
+                original = next(s for s in read(p / "manifest/shots.json") if s["id"] == shot["id"])
+                if shot["out_ms"] == original["out_ms"] and generated and qc["status"] in {"PASS", "NEEDS_REVIEW"}:
+                    try:
+                        register_asset(p, original, target, quality,
+                            reviewer=qc.get("reviewer", "") if qc["status"] == "PASS" else "",
+                            evidence=qc.get("evidence_notes", "") if qc["status"] == "PASS" else "",
+                            production_id=estimate["production"], generated=True)
+                    except (FilmError, OSError) as exc:
+                        raise RenderBlocked(f"Local asset registration failed: {exc}") from exc
                 if qc["status"] in {"PASS", "PASS_LOCAL"}:
                     clips.append(target)
                     report["shots"].append(qc)

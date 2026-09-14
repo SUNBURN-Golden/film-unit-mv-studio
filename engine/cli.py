@@ -26,8 +26,38 @@ def main(argv=None):
     benchmark.add_argument("--reference", required=True)
     benchmark.add_argument("--name", default="animation_benchmark")
     benchmark.add_argument("--root", default="projects")
-    for name in ["analyze", "package", "lock", "estimate", "approve", "compile", "import-frame", "economy-init", "work-status", "edit-take", "claim-job"]:
+    for name in ["compile-preview", "compile-final", "lyrics-prepare", "lyrics-import", "migrate", "builds", "import-asset", "split-shot", "merge-shots", "move-cut", "snap-cut"]:
         p = sub.add_parser(name)
+        p.add_argument("project")
+        if name in {"compile-preview", "compile-final"}:
+            p.add_argument("--quality", choices=["draft", "final"], default="draft" if name == "compile-preview" else "final")
+        if name == "lyrics-import":
+            p.add_argument("--file", required=True, help="UTF-8 lyrics_timed.json with measured or reviewed timing")
+            p.add_argument("--reviewer", default="")
+        if name == "import-asset":
+            p.add_argument("shot")
+            p.add_argument("source")
+            p.add_argument("--kind", choices=["draft", "final"], default="draft")
+            p.add_argument("--reviewer", default="")
+            p.add_argument("--evidence", default="", help="Final clip review evidence")
+            p.add_argument("--source-in-ms", type=int, default=0)
+        if name in {"split-shot", "move-cut", "snap-cut"}:
+            p.add_argument("shot")
+        if name in {"split-shot", "move-cut"}:
+            p.add_argument("--at-ms", type=int, required=True)
+        if name == "merge-shots":
+            p.add_argument("left")
+            p.add_argument("right")
+        if name == "snap-cut":
+            p.add_argument("--to", choices=["beat", "onset"], default="beat")
+            p.add_argument("--around-ms", type=int)
+    verify = sub.add_parser("verify-build")
+    verify.add_argument("build_dir")
+    replay = sub.add_parser("replay-build")
+    replay.add_argument("build_dir")
+    replay.add_argument("--output", required=True)
+    for name in ["analyze", "package", "lock", "estimate", "approve", "compile", "import-frame", "economy-init", "work-status", "edit-take", "claim-job"]:
+        p = sub.add_parser(name, help="Legacy shot generation/resume (may call paid renderers); use compile-preview for a local full-song build" if name == "compile" else None)
         p.add_argument("project")
         if name in {"estimate", "compile"}:
             p.add_argument("--seconds", type=float)
@@ -35,6 +65,8 @@ def main(argv=None):
             p.add_argument("--quality", choices=["draft", "final"], default="final")
         if name == "compile":
             p.add_argument("--output")
+        if name == "package":
+            p.add_argument("--preset", choices=["neutral", "water_please"], help="Optional production preset; new projects default to neutral")
         if name == "lock":
             p.add_argument("--reviewer", required=True)
             p.add_argument("--mock-only", action="store_true")
@@ -51,7 +83,48 @@ def main(argv=None):
             p.add_argument("job")
     a = parser.parse_args(argv)
     try:
-        if a.command == "economy-init":
+        if a.command in {"compile-preview", "compile-final"}:
+            from .compiler import compile_final, compile_preview
+            compile_fn = compile_preview if a.command == "compile-preview" else compile_final
+            result = compile_fn(a.project, quality=a.quality,
+                progress=lambda i, n, s: print(f"[{i}/{n}] {s}", file=sys.stderr, flush=True))
+        elif a.command == "lyrics-prepare":
+            from .lyrics import prepare_lyrics
+            with project_mutex(a.project):
+                result = prepare_lyrics(a.project)
+        elif a.command == "lyrics-import":
+            from .lyrics import save_timing
+            with project_mutex(a.project):
+                result = save_timing(a.project, json.loads(Path(a.file).read_text(encoding="utf-8")), reviewer=a.reviewer)
+        elif a.command == "migrate":
+            from .schema import migrate_project
+            result = migrate_project(a.project)
+        elif a.command == "builds":
+            from .builds import list_builds
+            result = list_builds(a.project)
+        elif a.command == "verify-build":
+            from .builds import verify_build
+            result = verify_build(a.build_dir)
+        elif a.command == "replay-build":
+            from .builds import replay_build
+            result = replay_build(a.build_dir, a.output)
+        elif a.command == "import-asset":
+            from .compiler import import_asset
+            result = import_asset(a.project, a.shot, a.source, kind=a.kind,
+                reviewer=a.reviewer, evidence=a.evidence, source_in_ms=a.source_in_ms)
+        elif a.command == "split-shot":
+            from .timeline import split_shot
+            result = split_shot(a.project, a.shot, a.at_ms)
+        elif a.command == "merge-shots":
+            from .timeline import merge_shots
+            result = merge_shots(a.project, a.left, a.right)
+        elif a.command == "move-cut":
+            from .timeline import move_cut
+            result = move_cut(a.project, a.shot, a.at_ms)
+        elif a.command == "snap-cut":
+            from .timeline import snap_cut
+            result = snap_cut(a.project, a.shot, a.to, a.around_ms)
+        elif a.command == "economy-init":
             from .economy import initialize
             result = initialize(a.project)
         elif a.command == "work-status":
@@ -73,7 +146,7 @@ def main(argv=None):
             import tempfile
             with tempfile.TemporaryDirectory() as tmp:
                 audio = synth_test_audio(Path(tmp) / "test.wav", a.seconds)
-                p = init_project(a.root, a.name, audio, "Pipeline acceptance test. Two parallel subject placeholders, restrained static framing, warm gray paper and teal. This is not the final creative treatment for 물 좀 주소.", synthetic=True)
+                p = init_project(a.root, a.name, audio, "Synthetic pipeline acceptance fixture. Neutral visual placeholders; director review required.", synthetic=True)
             analyze(p)
             make_package(p)
             lock_production(p, "automated synthetic acceptance fixture", mock_only=True)
@@ -81,7 +154,7 @@ def main(argv=None):
         elif a.command == "analyze":
             result = analyze(a.project)
         elif a.command == "package":
-            result = {"shots": len(make_package(a.project))}
+            result = {"shots": len(make_package(a.project, preset=a.preset))}
         elif a.command == "lock":
             lock_production(a.project, a.reviewer, a.mock_only)
             result = {"locked": True, "mock_only": a.mock_only}
@@ -99,7 +172,7 @@ def main(argv=None):
         else:
             result = compile_project(a.project, a.seconds, a.renderer, a.quality, a.output,
                 progress=lambda i, n, s: print(f"[{i}/{n}] {s}", file=sys.stderr, flush=True))
-        print(json.dumps(result, indent=2, ensure_ascii=False))
+        print(json.dumps(result, indent=2, ensure_ascii=False, default=str))
     except (FilmError, ValueError, OSError) as e:
         print(f"FILM UNIT: {e}", file=sys.stderr)
         return 1

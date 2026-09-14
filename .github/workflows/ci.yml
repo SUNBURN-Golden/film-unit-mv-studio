@@ -1,0 +1,32 @@
+name: Compiler regression
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Python ${{ matrix.python-version }} / FFmpeg
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.11', '3.12']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: Install video and font dependencies
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg fonts-dejavu-core fonts-noto-cjk
+      - name: Install compiler and test dependencies
+        run: python -m pip install -e '.[test]'
+      - name: Check Python syntax
+        run: python -m compileall -q engine app tests
+      - name: Run regressions including the four-minute mixed-media build
+        run: python -m pytest -q --durations=10
