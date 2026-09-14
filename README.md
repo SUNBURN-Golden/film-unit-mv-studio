@@ -1,111 +1,146 @@
-# FILM UNIT — ASTRA MV STUDIO v0.2
+# FILM UNIT — ASTRA MV STUDIO v0.3
 
-음원 분석 → 제작 문서 → 샷·콘티 → LOCK → 렌더링 → QC → FFmpeg 편집 → MP4.
+**Suno 음원과 가사를 기준으로 전체 MV를 설계하고, 샷을 교체할 때마다 새 빌드로 컴파일하는 로컬 제작 도구입니다.** 중심은 가사 타임라인, 기존 영상·콘티 선택, FFmpeg 편집, 빌드 보관입니다.
 
-**v0.2: Work가 여러 생성 도구와 편집을 이어서 처리하는 Economy 모드**를 추가했습니다. 장면별로 승인된 저가 후보를 선택하고, 실패 컷만 재시도하며, 생성 원본은 출력 크기 변경과 편집에 재사용합니다. [설정·Work 운영 안내](docs/ECONOMY_COMPILER.md). 실제 유료 생성과 무인 의미 QC는 아직 검증·연결하지 않았습니다.
+`Upload Song → Analyze → Production Package → Lyrics / Storyboard Review → Compile Preview → Replace Shots → LOCK → Compile Final`
 
-**MockRenderer로 30초와 60초의 실제 MP4 출력을 검증한 로컬 제작 도구입니다.** 이번 샘플은 합성 테스트 음원과 콘티 배치 도식입니다. Suno 음원이나 완성된 「물 좀 주소」 MV가 아닙니다. 실제 생성형 영상은 아직 제출하지 않았으며 사용 크레딧은 0입니다.
-
-**최종 목표는 인물의 행동·표정과 장면 속 요소가 실제로 움직이는 2D 애니메이션 MV입니다.** 고정 카메라에서도 피사체는 움직입니다. 새 제작 패키지는 모든 샷을 LIMITED_MOTION 초안으로 만들고, 감독이 복잡한 동작이나 의도적인 정지 구간을 지정합니다. 정지 이미지에 pan/zoom만 적용한 Mock 영상은 콘티·타이밍 테스트용입니다.
+**Preview는 완성된 애니메이션을 뜻하지 않습니다.** 영상이 없는 샷도 콘티나 임시 화면으로 연결해 곡 전체를 볼 수 있습니다. Final은 제작 LOCK, 샷 검수, 빠짐없이 검토한 가사 타이밍과 글꼴 검증을 요구합니다. 실제 외부 AI 영상 생성은 이 저장소의 검증 기록상 **0건**이며, 자동 시각 의미 QC와 완성된 실곡 MV는 아직 검증하지 않았습니다.
 
 ## 실행
 
-Python 3.11+와 FFmpeg/ffprobe가 필요합니다. 검증 환경은 Linux / Python 3.12입니다. macOS에서도 사용할 수 있으며 Windows는 WSL을 권장합니다. 프로젝트 동시 실행 잠금에 `fcntl`을 사용합니다.
+Python 3.11 이상, FFmpeg/ffprobe, FFmpeg의 `libass` 자막 필터가 필요합니다. Linux/macOS에서 실행하며 Windows는 WSL을 사용합니다. 동시 실행 잠금은 `fcntl`을 사용합니다.
 
 ```bash
-cd FILM_UNIT
+git clone https://github.com/BeautifulMind-JT/film-unit-mv-studio.git
+cd film-unit-mv-studio
 python -m venv .venv
 source .venv/bin/activate
 python -m pip install -e '.[test]'
 python -m streamlit run app/control_panel.py
 ```
 
-로컬 브라우저에서 `http://localhost:8501`을 엽니다. 사용자 계정·웹 호스팅은 필요하지 않습니다. 서버는 기본적으로 127.0.0.1에만 바인딩합니다. 공개 SaaS용 인증·작업 큐·멀티테넌시는 포함하지 않습니다.
+브라우저에서 `http://localhost:8501`을 엽니다. 기본 바인딩은 127.0.0.1입니다. GitHub는 코드 보관에 사용하며, 이 로컬 제작 흐름에는 Vercel·Supabase·웹서비스 계정이 필요하지 않습니다.
 
-## 지금 바로 재현하는 테스트
+## 비용 없이 전체 Preview 만들기
 
 ```bash
-python -m engine.cli demo --name my_test --seconds 65
-python -m engine.cli compile projects/my_test --seconds 30 --output TEST_A_30S.mp4
-python -m engine.cli compile projects/my_test --seconds 60 --output PILOT_60S.mp4
-python -m pytest -q
+python -m engine.cli demo --name preview_demo --seconds 240
+python -m engine.cli compile-preview projects/preview_demo
+python -m engine.cli builds projects/preview_demo
 ```
 
-`demo`는 자체 합성 음원을 만들고 테스트 전용 LOCK을 설정합니다. 실제 프로젝트에서는 사람이 콘티를 검토하고 LOCK해야 합니다. `--seconds`를 생략하면 동일한 전체 곡 manifest를 사용해 곡 끝까지 편집합니다. 입력은 최대 10분입니다.
+`demo`는 합성 테스트 음원과 명시적인 임시 콘티를 만듭니다. 가사가 없으므로 Preview에는 가사 미완료 경고가 남습니다. 실제 노래·완성 애니메이션·가사 동기화 테스트를 대신하지 않습니다. 이 컴파일 명령은 외부 영상 API를 호출하지 않습니다.
 
-전달 ZIP에는 `projects/pipeline_demo/output/TEST_A_30S.mp4`, `PILOT_60S.mp4` 샘플이 포함됩니다. GitHub에서는 미디어를 추적하지 않으므로 위 `demo` 명령으로 재현합니다.
+각 실행은 새 `builds/B0001`, `B0002` 디렉터리를 만듭니다. 기본 Preview 화질은 최대 960px 너비이며, `--quality final`을 주면 프로젝트 출력 크기를 사용합니다. 화질을 높여도 Preview가 검수된 Final로 바뀌지는 않습니다.
 
-## 실제 Suno 음원으로 시작하기
-
-1. Control Panel에서 새 프로젝트 → MP3/WAV와 creative brief 업로드.
-2. ANALYZE → GENERATE PRODUCTION PACKAGE.
-3. Work에서 `bible/director_request.md`와 입력·분석 파일을 바탕으로 이야기와 실제 그림을 제작합니다. 파일의 이야기·나이·장소·샷 설명을 검토하고, 각 샷의 승인할 첫 프레임을 업로드합니다.
-4. STORYBOARD에서 전체 확인 → LOCK ALL. 도식만으로 테스트할 때는 “콘티 테스트용 LOCK”을 선택합니다.
-5. Mock은 무료 로컬 렌더입니다. 실제 영상은 Manual로 가져오거나 [OpenArt 연결 안내](docs/OPENART_BRIDGE.md)에 따라 Work에서 생성합니다. 저가 후보인 fal Wan 2.2 Turbo와 OpenArt PixVerse V6는 [애니메이션 비교 테스트](docs/CHEAP_ANIMATION_TEST.md)를 참고합니다.
-6. 비용을 확인하고 해당 배치를 승인 → GENERATE / RESUME → QC 검토 → EXPORT.
+## 실제 곡과 가사로 작업하기
 
 ```bash
-python -m engine.cli init project_001 --audio /path/master.wav --brief /path/brief.md
+python -m engine.cli init project_001 --audio /path/master.mp3 --brief /path/brief.md --lyrics /path/lyrics.txt
 python -m engine.cli analyze projects/project_001
 python -m engine.cli package projects/project_001
-python -m engine.cli lock projects/project_001 --reviewer Director --mock-only
-python -m engine.cli compile projects/project_001 --seconds 30
+python -m engine.cli lyrics-prepare projects/project_001
+python -m engine.cli compile-preview projects/project_001
 ```
 
-## 구현 범위
+입력은 최대 10분이며, 모든 샷은 측정한 곡 전체 길이를 연속해서 덮습니다. `package`의 기본값은 `CHAR_01`, `LOC_01`, 감독 검토가 필요한 중립적인 미술 방향입니다. 「물 좀 주소」 설정은 새 패키지를 만들 때만 명시적으로 선택합니다.
 
-| 기능 | 현재 상태 |
+```bash
+python -m engine.cli package projects/project_001 --preset water_please
+```
+
+이미 패키지가 있으면 덮어쓰지 않습니다. 기존 프로젝트를 수정하거나 다른 프로젝트 ID를 사용하세요. Storyboard의 기본 이미지는 제작용 캐릭터 그림이 아닌 타이밍 확인용 슬레이트입니다.
+
+가사의 원본은 `input/lyrics.txt`입니다. `lyrics-prepare`는 원문을 보관하고 `lyrics/lyrics_timed.json`의 원문 행과 빈 타이밍을 준비합니다. **글자 수나 곡 길이로 보컬 시점을 추측하지 않습니다.** 실제 음원을 들으며 JSON을 편집하거나, 별도 정렬 도구에서 얻은 타이밍을 원문과 대조해 가져옵니다. 보컬 분리 파일을 필수로 요구하지 않으며, 자동 ASR·강제 정렬 모델은 이 컴파일러에 연결되어 있지 않습니다.
+
+```bash
+python -m engine.cli lyrics-import projects/project_001 --file /path/reviewed_lyrics_timed.json --reviewer Director
+```
+
+`--reviewer`는 실제 보컬·구절 시작과 끝·누락·반복을 검토했다는 기록입니다. 검토 전에는 생략합니다. `[hook]` 같은 반복 표시는 원문 구간을 명시적으로 연결해야 하며, 번역·새 가사·자동 생략으로 처리하지 않습니다. 원문을 바꾸면 기존 타이밍을 이력에 보관하고 다시 검토합니다. 영상 컷 편집은 가사 타이밍을 움직이지 않습니다.
+
+검수와 전체 LOCK은 별도로 관리합니다.
+
+| 수정 | 다시 검토할 대상 |
 |---|---|
-| 실제 음원 길이·BPM·비트·onset·에너지·무음·피크 | 구현·실행 검증 |
-| 곡 전체 shot manifest / 30·60초 창으로 편집 | 구현·실행 검증 |
-| Style / Character / Location Bible | 편집 가능한 템플릿·LOCK 구현 |
-| 서사·캐릭터 그림 자동 창작 | Work 감독 단계; 독립 Python LLM 호출은 미연결 |
-| 콘티 PNG·contact sheet·HTML | 구현; 기본값은 명시적 배치 도식 |
-| Mock / Manual / OpenArt / fal abstraction | 구현; fal은 오류 주입 검증, 실제 유료 호출 미검증 |
-| OpenArt PixVerse V6 | 첫 프레임 schema·견적·AUTO 선택 지원 |
-| fal Wan 2.2 Turbo | 달러 예산·비동기 요청·재개·다운로드 구현; API 키 필요 |
-| OpenArt AUTO routing | 검증된 form·견적 설정이 있는 모델만 선택 |
-| Economy 다중 모델·서비스 경로 | 같은 서비스 내 가격순, 서비스 우선순위와 샷별 후보 지정; 개별 USD·credits 상한 |
-| 원본 보관·Draft/Final 재사용·구간 편집 | 동일 입력은 재과금 없이 원본 재사용; 편집 결과 변경 시 QC 필요 |
-| Work 작업 목록·중복 접수 차단 | 제출·검토·복구 작업 구분, 불확실한 접수는 재제출 차단 |
-| 독립 로컬 앱에서 OpenArt 직접 호출 | 미구현; Work MCP 작업 파일 방식 사용 |
-| 기술 QC·5프레임 추출 | 자동 |
-| 인물·화풍·소품·텍스트·동작 QC | 근거가 있는 검토 기록을 읽는 인터페이스; 무인 시각 모델 미연결 |
-| QC 실패 수정 지시·최대 2회 재시도·이어하기 | 구현·오류 주입 검증 |
-| H.264 1440×1080 24fps + 원곡 AAC | 30초·60초 출력 검증 |
-| 실제 AI 영상 3샷 | 연결 준비 및 요청 파일 테스트; 실제 생성 미실행 |
-| Git | 비공개 GitHub 저장소에 소스와 개발 이력 관리 |
+| 가사 타이밍·자막 설정·폰트 | 가사 검수와 전체 LOCK; 영상 검수 유지 |
+| 두 샷 사이 컷 | 인접 두 샷과 전체 LOCK; 다른 샷 검수 유지 |
+| 한 샷의 콘티·영상·사용 구간 | 해당 샷; 콘티·연출 변경 시 전체 LOCK |
+| 공통 스타일·캐릭터·이야기·가사 원문 | 전체 영상 검수와 LOCK; 원문 변경은 가사도 재검토 |
 
-## 결과물
+검수 기록은 새 범위를 증명하는 schema 2로 저장합니다. 이전 전역 해시 기반 영상 검수나 타이밍만 포함한 가사 검수는 자동 승계하지 않으므로 한 번 다시 검토해야 합니다. 과거 빌드의 파일은 그대로 보존됩니다.
 
-`output/`에는 선택한 메인 MP4, `YOUTUBE.mp4`, `teaser_30s.mp4`, `poster.jpg`, `thumbnail.jpg`, `metadata.md`와 JSON 검증 기록이 생깁니다. Mock 기본 이름은 `ANIMATIC.mp4`, 실제 외부 영상을 검토해 편집하는 경우는 `MASTER.mp4`입니다. 샘플의 `PILOT_60S.mp4`도 Mock임이 영상·메타데이터·QC에 표시됩니다.
+## 한글 자막과 Final
 
-원본 음원 파일의 SHA-256은 전후 동일합니다. 분석용 WAV는 별도로 만들며 원본을 덮어쓰지 않습니다. 완성 MP4의 AAC 320kbps는 손실 인코딩이므로 원본과 비트 단위로 동일하지 않습니다. 음량 정규화·속도 변경·영상 생성 모델의 소리 혼합은 하지 않습니다. Pilot은 원곡 시작부터 요청 길이만 사용합니다.
+한글·영문 등 실제 가사의 모든 문자를 포함하는 글꼴을 프로젝트 안에 두고 `project.yaml`에 지정하세요. 짧은 샘플용 글꼴 부분 집합은 전체 곡의 문자를 보장하지 않습니다.
 
-24fps의 프레임 경계는 약 41.667ms입니다. 원시 timecode는 정수 ms로 보존하고, 각 경계를 **곡 전체 기준**으로 반올림해 프레임을 배분합니다. 샷마다 독립적으로 길이를 반올림하지 않아 누적 싱크 오차가 생기지 않습니다. 음악 특징 검출의 시간 해상도는 약 23.22ms이며 추정치입니다.
-
-초기 브리프의 STATIC 40% 비용 절감 비율은 현재 제작 목표에 적용하지 않습니다. LIMITED_MOTION도 인물·장면 요소의 실제 애니메이션이 필요하며, 현재 로컬 renderer의 hold/pan/zoom만으로 이를 구현하지는 못합니다. 4분 본편은 우선 전체 240초의 애니메이션을 기준으로 예산을 잡고, 실제 콘티에서 승인한 정지 구간·재사용 및 각 생성 클립의 과금 길이를 반영해 견적을 확정합니다.
-
-## Git 보관과 GitHub
-
-제공 ZIP 안의 `film-unit-history.bundle`로 Git 이력을 복원할 수 있습니다.
-
-```bash
-git clone film-unit-history.bundle film-unit-source
+```yaml
+subtitles:
+  font_name: Noto Sans KR
+  font_file: input/fonts/NotoSansKR-Regular.ttf
+  font_size: 48
+  margin_x: 72
+  margin_bottom: 76
 ```
 
-소스 저장소: [BeautifulMind-JT/film-unit-mv-studio](https://github.com/BeautifulMind-JT/film-unit-mv-studio). 비공개 저장소이며 개발 단계별 커밋을 보존합니다.
+글꼴 파일은 별도로 준비해야 합니다. 지정하지 않으면 시스템 글꼴을 찾지만, 기본 DejaVu Sans는 한글 전체를 지원하지 않습니다. Final은 실제 cue 문자에 대한 cmap 검증이 실패하거나 확인되지 않으면 중단합니다. 선택한 글꼴은 빌드에 복사됩니다. 자막은 좌우 최소 5%, 아래 최소 7%의 여백을 사용합니다. 긴 구절의 줄바꿈과 읽기 속도는 감독이 Preview에서 확인해야 합니다.
+
+검토한 첫 프레임을 가져오고 제작 LOCK을 한 뒤, 완성 샷 영상은 검토자와 근거를 기록해 선택합니다.
 
 ```bash
-git clone https://github.com/BeautifulMind-JT/film-unit-mv-studio.git
-cd film-unit-mv-studio
+python -m engine.cli import-frame projects/project_001 S001 /path/S001.png
+python -m engine.cli lock projects/project_001 --reviewer Director
+python -m engine.cli import-asset projects/project_001 S001 /path/S001.mp4 --kind final --reviewer Director --evidence "인물, 화풍, 움직임, 소품과 불필요한 글자를 확인함"
+python -m engine.cli compile-final projects/project_001
 ```
 
-음원·생성 영상·API 설정은 `.gitignore`에서 제외했습니다. 공유할 미디어는 별도 제공하고 코드 저장소는 가볍게 유지합니다.
+위 예의 한 샷뿐 아니라 모든 필요한 샷과 가사가 조건을 충족해야 Final이 나옵니다. 의도적으로 `STATIC`으로 승인한 샷은 LOCK된 가져온 이미지를 사용할 수 있습니다. `LIMITED_MOTION`과 `FULL_GENERATIVE`에는 검토한 최종 영상이 필요합니다. 콘티 테스트용 LOCK은 Final을 승인하지 않습니다.
 
-## 참고
+## 샷 교체와 빌드 이력
 
-- [Streamlit file uploader 공식 문서](https://docs.streamlit.io/develop/api-reference/widgets/st.file_uploader)
-- [librosa 공식 프로젝트](https://github.com/librosa/librosa)
-- [FFmpeg 공식 문서](https://ffmpeg.org/ffmpeg.html)
-- 이번 환경에서 조회한 OpenArt 모델·form 스냅샷: `templates/`. 실제 제출 전에는 다시 조회해야 합니다.
+| 작업 | 명령 예시 |
+|---|---|
+| 초안 영상 선택 | `import-asset projects/project_001 S024 /path/take.mp4 --kind draft` |
+| 샷 분할 | `split-shot projects/project_001 S024 --at-ms 120700` |
+| 인접한 같은 시퀀스 샷 병합 | `merge-shots projects/project_001 S024 S025` |
+| 다음 샷과의 컷 이동 | `move-cut projects/project_001 S024 --at-ms 125700` |
+| 측정 비트·온셋에 맞추기 | `snap-cut projects/project_001 S024 --to beat` |
+| 전체 재컴파일 | `compile-preview projects/project_001` |
+| 저장 빌드 무결성 검사 | `verify-build projects/project_001/builds/B0001` |
+| 저장 입력으로 다시 편집 | `replay-build projects/project_001/builds/B0001 --output /path/replay_B0001` |
+
+표의 명령 앞에는 `python -m engine.cli`를 붙입니다. 분할한 새 샷은 독립된 콘티 파일을 갖습니다. 오른쪽 그림을 교체해도 왼쪽 이미지 바이트는 유지됩니다. 컷 변경은 해당 샷 선택과 검수를 다시 요구하며 기존 빌드·가사 시간은 유지합니다. 빌드에는 선택한 원본, 정규화한 샷 영상, 원곡, 제작 문서, 자막, 글꼴, SHA-256 목록이 복사됩니다. 원본 프로젝트가 바뀌어도 과거 빌드의 MP4를 열거나 저장 입력으로 재편집할 수 있습니다. 다른 FFmpeg 버전에서 새로 인코딩한 결과의 바이트까지 동일하다고 보장하지는 않습니다.
+
+완료 빌드의 기본 결과물은 다음 네 개입니다.
+
+- `MASTER_CLEAN.mp4`
+- `MASTER_SUBBED.mp4`
+- `lyrics.ass`
+- `lyrics.srt`
+
+`build.json`의 PREVIEW/FINAL 모드, 선택 자산 종류, 미완료 샷, 가사 경고를 함께 확인하세요. Preview의 `COMPLETE`는 편집 파일 생성 완료를 뜻합니다. 소스·범위·화질이 같으면 로컬 정규화 캐시를 재사용합니다. 실패한 빌드도 별도 번호로 남으며 완료 빌드를 덮어쓰지 않습니다.
+
+## 기존 프로젝트와 영상 생성
+
+```bash
+python -m engine.cli migrate projects/existing_project
+```
+
+명시적 migration은 원래 `project.yaml`을 백업하고 데이터 버전을 갱신합니다. 기존 음원·샷·콘티·LOCK·유료 take 파일은 다시 쓰지 않습니다. 프로젝트 3 / 샷 2 / 가사 1 / 빌드 1 / 오디오 1 버전은 패키지 0.3.0과 별도로 관리합니다.
+
+기존 `compile` 명령과 UI의 **샷 생성 · 고급**은 Mock/Manual/OpenArt/fal/Economy 렌더·QC·이어하기 경로입니다. `compile-preview`와 다르게 선택한 렌더러에 따라 유료 요청을 준비하거나 제출할 수 있어 기존 견적·배치 승인·예산·중복 제출 방지를 유지합니다. **새 컴파일 명령 자체는 영상 생성을 요청하지 않습니다.** API 연결 없이도 완성한 외부 샷을 `import-asset`으로 사용할 수 있습니다.
+
+Economy/fal/benchmark는 호환성을 위해 기존 파일 위치에 남겨 둔 실험 기능입니다. 이번 버전에서는 새 provider를 추가하지 않았습니다. OpenArt는 기존 Work 작업 파일을 이용한 image-to-video 연결이며 다중 element/reference 영상, 자동 시각 의미 QC, 숫자 QC의 PASS/FAIL 전환은 후속 작업입니다. [기존 OpenArt 운영](docs/OPENART_BRIDGE.md), [Economy 운영](docs/ECONOMY_COMPILER.md).
+
+## 검증 범위
+
+```bash
+python -m pytest -q
+python -m pytest tests/test_compiler_v03.py -q
+```
+
+새 핵심 회귀는 **240초 / 48샷 / final 7·draft 13·storyboard 25·placeholder 3 / 가사 82줄**을 실제 MP4로 편집하고 한 샷을 바꾼 다음 나머지 47개 소스 해시·음원 해시·가사 타이밍이 유지되는지 검사합니다. CI 비용을 줄이기 위해 합성 음원과 320×240 영상을 사용합니다. 이 테스트는 실제 가창 정렬, 생성 모델의 애니메이션 품질, 1080p 실곡 완성을 입증하지 않습니다.
+
+GitHub Actions에는 Ubuntu / Python 3.11·3.12 / FFmpeg·CJK 글꼴 / pytest가 구성되어 있습니다. 원격 실행 성공 여부는 해당 커밋의 Actions 결과로 확인해야 합니다. [v0.3 실행 기록](docs/V03_ACCEPTANCE_REPORT.md)과 이전 30초·60초 [Mock 검증 기록](docs/ACCEPTANCE_REPORT.md)을 함께 제공합니다.
+
+원본 음원 파일은 SHA-256으로 보호하고 분석용 WAV를 따로 만듭니다. 최종 MP4는 그 원곡만 AAC 320kbps로 인코딩하며 생성 클립의 소리는 제거합니다. AAC는 손실 형식이므로 원본 파일과 비트 단위로 같지는 않습니다. 정수 ms 컷을 곡 전체 기준 프레임으로 반올림해 샷별 누적 드리프트를 막습니다.

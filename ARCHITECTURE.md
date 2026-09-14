@@ -1,65 +1,79 @@
-# Architecture
+# Architecture / v0.3
 
-The compiler is a file-based local application. ChatGPT/Work is the director; renderers receive locked shots. No provider receives the whole movie and decides its edit.
+FILM UNIT is a local, file-based music-video compiler. Work and the director establish the story, art direction and approved shot inputs. The central path selects existing assets, compiles the entire song and preserves a new build. Generation is a separate workflow with its existing spend and approval controls.
 
-## Modules
+## Sources of truth
+
+| Source | Authority |
+|---|---|
+| `input/master.mp3` or `master.wav` | Original audio bytes and unshifted musical timeline |
+| `input/lyrics.txt` | Exact lyric text; timing cannot substitute a transcription |
+| `manifest/shots.json` | Visual order, absolute cut boundaries and direction |
+| `lyrics/lyrics_timed.json` | Independent, source-bound cue timing and review |
+| `builds/B####/build.json` | Captured selection, hashes, format, warnings and build identity |
+
+Audio analysis yields measured duration, estimated tempo/beats/onsets and feature-change candidates. It does not identify sung words or invent verse labels. Absolute milliseconds map to frames with `frame_at(ms) = floor((ms * fps + 500) / 1000)`. Each clip receives the difference between mapped global boundaries. The source audio remains on its original timeline; its file hash is checked around compilation. AAC export is lossy even though source bytes remain unchanged.
+
+## Core modules
 
 | Module | Responsibility |
 |---|---|
-| `core.py` | Atomic metadata writes, asset path bounds, SHA-256 locks, FFmpeg helpers, global frame clock |
-| `audio.py` | Decode analysis derivative; librosa tempo/onsets/beats; candidate boundaries; waveform |
-| `production.py` | Editable bible drafts, measured beat-aligned cuts, clearly labelled layout placeholders |
-| `renderer_router.py` | Capability/configuration-constrained provider preferences |
-| `economy.py` | Verified profile selection, approved retry/fallback paths, separate currency pools |
-| `takes.py` | Durable paid source cache and hash-bound local source-window edits |
-| `work_queue.py` | Read-only submission/review/reconciliation actions for the Work operator |
-| `renderers.py` | Common renderer interface; local, imported, Work/OpenArt bridge; normalization |
-| `openart_bridge.py` | Store verified forms, references and quotes; bind history IDs; import output receipts |
-| `budget.py` | Concrete estimate, batch approval binding, durable conservative reservations |
-| `qc.py` | Technical checks, sampled frames, evidence-backed semantic review |
-| `pipeline.py` | Resume state, bounded attempts, corrections, cache, gates |
-| `assemble.py` | Ordered normalized clips, sole master soundtrack, validation and exports |
-| `cli.py` / Streamlit | Operator interfaces over the same engine |
+| `core.py`, `audio.py` | Atomic metadata, bounded paths, master hashes, production LOCK, frame clock, measured audio analysis |
+| `production.py`, `presets/` | Neutral editable package, explicit water_please preset, beat-snapped draft cuts and technical storyboard slates |
+| `schema.py` | Separate data versions; explicit, backed-up legacy metadata migration |
+| `lyrics.py` | Exact source mapping, explicit repeats, reviewed cues, ASS/SRT, font coverage and burn-in |
+| `timeline.py` | Split, merge, move and snap cuts without moving lyric cues |
+| `resolver.py` | Hash-bound existing take selection and Final review binding |
+| `compiler.py` | Preview/Final gates, local clip normalization/cache, complete-song mux and build capture |
+| `builds.py` | Append-only build allocation, copies/inventory, verification and replay |
+| `cli.py`, `app/control_panel.py` | Interfaces over the same engine; whole-song compile separated from advanced shot generation |
 
-## Timing
+Existing `pipeline.py`, `renderers.py`, `openart_bridge.py`, `budget.py`, `takes.py`, `work_queue.py`, `economy.py`, `fal_renderer.py`, `benchmark.py`, `qc.py` and legacy `assemble.py` remain in place for compatibility. Economy/fal/benchmark are advanced experimental paths, not new dependencies of the local compiler. Their physical relocation is deferred.
 
-Audio is measured once for the entire source, up to 600 seconds. Sequence and shots always cover that measured duration. Pilot compile selects a prefix without mutating the full manifest. Integer milliseconds remain the editorial source of truth. `frame_at(ms) = floor((ms * fps + 500) / 1000)` maps absolute boundaries to the constant frame clock. Clip frame count is the difference of mapped boundaries. Audio remains on its unshifted source timeline.
+## Preview and Final
 
-Structural changes are candidate energy/spectral shifts, not inferred verse or chorus names. The baseline shot plan is a draft. Tempo is a measurement estimate, especially unreliable for rubato, silence or syncopated material.
+Preview tries each shot's selected final video, selected draft video, first storyboard reference, then a labelled placeholder. Stale shot selections, missing files, hash mismatches, corrupt or unsuitable clips can fall through to the next source. Local normalization strips clip audio, respects source windows and assigns exact frame counts. It does not submit provider requests or convert still imagery into claimed character animation.
 
-## Production identity and approval
+An always-compilable Preview means **missing creative assets do not block a structurally valid project**. It does not suppress a missing/changed master, invalid or gapped timeline, unavailable FFmpeg, unreadable configuration or filesystem failure. Those errors remain explicit. Missing or invalid lyric timing is reported and omitted instead of guessed. A completed Preview can contain zero valid lyric cues and unfinished visuals; `mode`, `preview_incomplete_shots`, `asset_counts`, fallback reasons and subtitle warnings distinguish it from a finished MV.
 
-LOCK stores a digest over master bytes, brief, lyrics, measured analysis, story, bibles, sequence, shot content, reference images and format. Any edit invalidates it. Shot status is not overwritten during render; execution state is stored separately. Test placeholder LOCK cannot authorize real generation.
+Final requires a current production LOCK that is not mock-only, complete reviewed source-faithful lyric cues, verified glyph coverage, and eligible assets for every shot. A final take needs reviewer/evidence bound to its bytes, shot definition, reference-image bytes, source window and shared visual context. The whole production fingerprint is provenance, not a video-review dependency. An imported storyboard is eligible for an intentionally STATIC shot under the production LOCK. Drafts and placeholders do not satisfy Final. Naming an asset `final` or choosing final resolution alone grants no approval.
 
-The estimate binds production digest, effective pilot shot ranges, renderer, quality, exact provider config, QC threshold and retry policy. Economy adds the exact per-attempt profile path and separate USD/credits pools. A stale approval cannot authorize a changed configuration. Estimates cover every possible attempt conservatively, including cached inputs; paid source reuse makes no new reservation. Reservations are durable and idempotent by job ID, and count against a cumulative project cap. Failed or pending jobs retain their reservations; refunds are not guessed. Compilation is single-writer per project via an OS file lock.
+Review dependencies have three layers. `visual_context_fingerprint()` hashes brief, source lyric text, story/style/character/location/directing bibles, shared character/location assets and format. Each video review adds only its own shot definition, references, clip bytes and source window. Lyric review independently hashes source/cues/repeats, subtitle settings, canvas/FPS and resolved font bytes/family. Production LOCK still covers the complete visual timeline, all references, lyrics revision and configured presentation.
 
-Provider prices can change at submission time. Work must obtain a fresh exact price before submitting and stop if it differs from the approved row. Local accounting cannot impose a provider-side credit ceiling across unrelated jobs initiated outside this compiler.
+Consequently lyric timing/font changes require lyric re-review and re-LOCK, while existing visual approvals survive. A cut edit invalidates its adjacent shots, not unrelated shots. Shared style changes invalidate all visual approvals. Changing one storyboard's bytes invalidates only its shot review, plus the global LOCK. The renderer QC path uses the same scope and checks its exact review binding before registering a normalized clip; stale QC cannot be rebound to newly edited inputs.
 
-## Render state
+## Lyrics and subtitles
 
-Each run has a configuration digest. Paid attempts use a canonical `take_<hash>` job ID bound to provider generation settings, approved direction/references, attempt and correction. Local export dimensions and renewed price evidence do not create a different paid input. Manual/Mock retain per-run IDs. Paid originals are retained in `render/takes/`; a generation-plan state preserves the chosen attempt across local output sizes. Source edits and source-window decisions invalidate normalized caches. An OpenArt job writes an outbox request and pauses. Work claims it as SUBMITTING before the external call, then records the returned history ID immediately. Unknown submissions require reconciliation; completed clips have history- and hash-bound receipts.
+`prepare_lyrics()` mirrors the exact UTF-8 source into `lyrics/lyrics_source.txt`, parses source rows and creates an empty timing document. Source changes archive prior timing and clear its current review. Section headings are metadata. Empty repeated headings require explicit expansion to the full corresponding source section; the compiler does not silently duplicate or omit lyrics.
 
-Economy sorts prices only within a service; provider order is explicit, not a fictitious exchange rate. An optional per-shot profile sequence overrides sorting while respecting an explicit locked renderer. Pending review or ambiguous transport errors never trigger a paid fallback. See [Work operations](docs/ECONOMY_COMPILER.md) for claim, review and local-edit steps.
+Cues reference source row IDs and optional character spans. Validation enforces unchanged text, integer-ms ranges within the song, ordered non-overlapping cues, source order and complete non-whitespace coverage. Review schema 2 additionally binds subtitle configuration and actual font identity. The reviewer attests that these times match the actual vocal; no ASR, forced alignment or automatic listening verification is connected. Final currently requires lyrics; an instrumental/no-lyrics exemption is not implemented. Legacy timing-only or globally bound video approvals are not automatically promoted to the new scope: their inputs lack the required scoped proof, so one explicit re-review is required. Saved historical builds remain intact.
 
-Technical or explicitly scored semantic failure adds concrete correction notes to the next attempt. Missing semantic review pauses without consuming a retry. Exhaustion stops that shot without substituting a different scene. Generated clips are stripped of audio, normalized to the target video format, and trimmed to the planned frame count. Short clips are rejected rather than silently stretched or frozen.
+SRT preserves integer milliseconds. ASS rounds to centiseconds, records that limitation and uses the project canvas with at least 5% horizontal and 7% bottom margins. FontTools checks selected font cmap coverage for actual cue characters. Missing/unverified coverage warns in Preview and blocks Final. `subtitles.font_file` must stay inside the project when supplied. Fonts, source text, timing and subtitle reports are copied into each build. Safe-area margins and glyph coverage do not replace visual review of long lines, readability or subtitle placement.
 
-## QC meaning
+## Immutable builds and local caching
 
-Technical tests inspect exact dimensions, frame rate, frame count, decodability and absence of clip audio. Samples are taken from first, quarter, middle, three-quarter and final actual frame. Small clips may produce fewer distinct samples. Color statistics are diagnostic data, not a character or style score.
+A project mutex serializes compile work. Each attempt allocates a new `B####` directory; failure records `FAILED` and never overwrites a completed build. Build ordering is numeric, including B10000 after B9999. Inputs are independent byte copies, not hard links to mutable project assets. A build captures the selected raw sources, normalized timeline clips, original audio, creative documents and references, lyric source/timing, ASS/SRT and available font files.
 
-Semantic items have no numeric default. A review must contain the normalized clip hash, production digest, reviewer, notes and every requested score. Each dimension must reach the threshold; a high average cannot hide identity failure. A future vision reviewer can write the same schema. No neural visual evaluator, OCR or face matcher is silently claimed to exist.
+The normalized clip cache is keyed by compiler version, shot hash, source hash, source window, selection kind and format. Cache bytes are hash-checked and media-probed. A new selection changes the affected key, while unrelated clips can be reused without rendering or purchasing them again. Clip cache entries are copied into the build before assembly.
 
-## Local motion and art
+A complete build records output and input SHA-256 inventory, shot-level source/clip hashes, review/LOCK provenance, warnings and Python/FFmpeg versions. `verify_build()` detects missing or changed inventoried files. `replay_build()` verifies that inventory and reassembles captured clips/audio/ASS in a new directory, without consulting live project files. Stored MP4s preserve historical bytes. A new encode on a different FFmpeg/font rendering environment is not promised to be bit-identical. This is an application-level append-only convention and integrity record, not signed or write-protected archival storage.
 
-The included mock generator draws an exact layout diagram, not original production art. Approved first frames are supplied through Work or imported. Local video supports hold, pan and zoom; pan/zoom are rejected when the shot says camera movement is none. Split screen can be authored directly into the locked first frame. General layered character animation, per-limb rigging, lip-sync, rotoscoping and dynamic split-screen composition are future features.
+## Editing, locks and migration
 
-The production target is actual 2D character/scene animation. New draft manifests default to LIMITED_MOTION throughout instead of allocating a quota of static shots. A locked camera never implies frozen subjects. Work must specify and review actual subject motion; Mock camera effects are previews and do not satisfy animation acceptance. STATIC remains available for deliberate editorial holds, and FULL_GENERATIVE for director-specified complex actions. Existing locked packages remain unchanged.
+Split preserves the left ID and allocates a new right ID. Merge accepts adjacent shots in the same sequence and retains the left direction/reference. Moving/snapping a cut preserves full-duration coverage and rejects sub-frame shots. Affected selections and QC state become stale; the production fingerprint requires renewed review. Timeline operations never rewrite lyrics or prior builds.
 
-## Platform scope
+New projects declare project schema 3, shot schema 2, lyrics schema 1, build schema 1 and audio schema 1 separately from package 0.3.0. Explicit `migrate_project()` backs up original project metadata and updates version declarations. Legacy shot fields are compatible and remain byte-for-byte unchanged; missing optional fields use consumer defaults. Master files, storyboards, paid takes and LOCK records are preserved. Migration neither fabricates review nor authorizes changed production content. Unsupported future versions are rejected.
 
-Streamlit is a local control panel, not a hosted SaaS. Python does not possess Work's connector credentials. No invented OpenArt REST endpoint or secret-token extraction is used. Authentication, multiuser concurrency, hosted workers and scheduled jobs are deliberately outside v0.1. Browser access to the local panel was blocked by the Work browser environment; Streamlit's execution testing framework was used instead.
+## Generation and QC retained
 
+The prior generation path still binds production, output scope, renderer configuration, exact quote and retry policy to batch approval. Separate USD and credits pools, durable reservations, canonical paid-take IDs, raw take reuse and source-window review remain in force. Ambiguous provider submission is reconciled rather than resubmitted. Failed/pending jobs keep their reservations; refunds are not invented.
 
-## 저가 애니메이션 renderer 추가 (2026-09-11)
+OpenArt remains a Work outbox/receipt image-to-video bridge, not an independent Python connection using extracted connector credentials. The existing pipeline may wait for generation or semantic review; the separate Preview compiler can meanwhile assemble available assets. Legacy generation exports in `output/` remain supported, but versioned whole-song outputs use `builds/`.
 
-fal Wan 2.2 Turbo adapter와 OpenArt PixVerse V6 schema 지원을 추가했다. fal USD 예산은 OpenArt credits와 별도 한도·예약액으로 관리한다. 비동기 제출 전에 상태를 저장하고, 응답이 불확실하면 배치를 중단해 중복 결제를 방지한다. 3×5초의 실제 인물 동작 비교 입력을 생성하는 benchmark 명령을 제공한다. 현재 유료 생성은 0건이며 실제 품질 검증이 남았다. 세부 설정·한계·증거는 [저가 애니메이션 테스트](docs/CHEAP_ANIMATION_TEST.md)를 참고한다.
+Technical QC and sample extraction exist. Semantic QC still reads explicit evidence-backed numeric review under the old schema; it is not an automatic neural evaluator. PASS/FAIL semantic review redesign and element/reference/start-end/video-edit capabilities are deferred. No additional provider was added for v0.3.
+
+## Verification boundary
+
+Tests include a real FFmpeg 240-second mixed-asset build, 82 synthetic timed lines, a one-shot replacement, unchanged source/audio/lyric checks, replay/tamper checks, strict Final gates, lyric validation, schemas and timeline editing. The long regression renders synthetic 320×240 media to constrain CI cost. It does not validate actual singer alignment or provider animation quality.
+
+GitHub Actions is configured for Ubuntu with Python 3.11/3.12, FFmpeg, CJK fonts and pytest. Configuration is not evidence that a remote run passed; use the commit's Actions result. The control panel is local, with no hosted authentication, tenancy or background worker infrastructure.

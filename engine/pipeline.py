@@ -6,6 +6,7 @@ from .renderers import AwaitingRender, RenderBlocked, RenderResult, MockRenderer
 from . import budget, takes
 from .qc import inspect_clip
 from .assemble import assemble, exports
+from .resolver import register_asset
 
 
 def prepare(project, duration_seconds=None, mode="mock", quality="final"):
@@ -133,11 +134,25 @@ def _compile(p, seconds, mode, quality, output_name, progress):
                     write(target.with_suffix(".cache.json"), {"sha256": digest(target), "generated": generated, "input_hash": inputs()})
                 else:
                     generated = cache["generated"]
-                qc = inspect_clip(target, shot, p, fmt, generated, estimate["production"])
+                qc = inspect_clip(target, shot, p, fmt, generated, estimate["production"], source_in_ms=source_in_ms)
                 qc.update(attempt=attempt, job_id=job_id, provider=active.name,
                           profile=getattr(active, "profile", active.name), reused_take=reused,
                           raw_path=str(raw.relative_to(p)) if generated else None,
                           selected_duration_ms=shot["duration_ms"], source_in_ms=source_in_ms)
+                # Selection is a local index, not a new generation. Never promote
+                # failed/unreviewed clips to an approved Final. Pilot fragments
+                # cannot replace the same ID's full-song shot.
+                original = next(s for s in read(p / "manifest/shots.json") if s["id"] == shot["id"])
+                if shot["out_ms"] == original["out_ms"] and generated and qc["status"] in {"PASS", "NEEDS_REVIEW"}:
+                    try:
+                        register_asset(p, original, target, quality,
+                            reviewer=qc.get("reviewer", "") if qc["status"] == "PASS" else "",
+                            evidence=qc.get("evidence_notes", "") if qc["status"] == "PASS" else "",
+                            production_id=estimate["production"], generated=True,
+                            visual_context_id=qc["visual_context_id"],
+                            qc_review_binding=qc["review_binding"], qc_source_in_ms=source_in_ms)
+                    except (FilmError, OSError) as exc:
+                        raise RenderBlocked(f"Local asset registration failed: {exc}") from exc
                 if qc["status"] in {"PASS", "PASS_LOCAL"}:
                     clips.append(target)
                     report["shots"].append(qc)

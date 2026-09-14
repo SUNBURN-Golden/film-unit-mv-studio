@@ -21,9 +21,10 @@ st.markdown("""<style>
 [data-testid="stSidebar"]{background:#e1ddd4}.stButton>button{border-radius:3px}
 [data-testid="stMetric"]{border-top:1px solid #b6b3aa;padding-top:12px}
 </style>""", unsafe_allow_html=True)
-st.caption("FILM UNIT   /   ASTRA MV COMPILER   /   0.2")
+st.caption("FILM UNIT   /   ASTRA MV COMPILER   /   0.3")
 st.title("한 곡에서, 한 편으로.")
-st.write("음원을 분석하고, 콘티를 확정한 뒤, 장면을 연결합니다.")
+st.write("곡 전체를 먼저 보고, 장면과 가사 자막을 고쳐 새 빌드로 저장합니다.")
+PROJECTS.mkdir(parents=True, exist_ok=True)
 projects = sorted(p.name for p in PROJECTS.iterdir() if p.is_dir() and (p / "project.yaml").exists())
 chosen = st.sidebar.selectbox("프로젝트", ["새 프로젝트", *projects], index=(len(projects) if projects else 0))
 
@@ -45,7 +46,7 @@ if chosen == "새 프로젝트":
         name = st.text_input("프로젝트 ID", "project_001")
         audio = st.file_uploader("Suno MP3 / WAV", type=["mp3", "wav"])
         brief = st.text_area("어떤 영상으로 만들까요?", placeholder="그림체, 인물, 이야기, 반복되는 이미지 등을 자유롭게 적어주세요.")
-        lyrics = st.text_area("가사 · 선택")
+        lyrics = st.text_area("가사 원문", help="가사 자막의 원본입니다. 타이밍은 곡을 들으며 별도로 검토합니다.")
         submit = st.form_submit_button("프로젝트 만들기", type="primary")
     if submit:
         if not audio or not brief.strip():
@@ -65,7 +66,7 @@ audio_path = p / config["audio"]["path"]
 if config["audio"].get("synthetic_test_audio"):
     st.info("파이프라인 검증용 합성 음원입니다. 콘티 그림은 배치 확인용 도식입니다.")
 st.sidebar.audio(str(audio_path))
-tabs = st.tabs(["01 · PROJECT", "02 · DIRECTOR", "03 · STORYBOARD", "04 · RENDER", "05 · FINAL"])
+tabs = st.tabs(["01 · PROJECT", "02 · DIRECTOR", "03 · STORYBOARD", "04 · LYRICS", "05 · TIMELINE", "06 · COMPILE / BUILDS", "07 · RENDER · 고급"])
 
 with tabs[0]:
     st.subheader("음원 분석")
@@ -77,17 +78,19 @@ with tabs[0]:
         data = read(p / "analysis/audio.json")
         cols = st.columns(3)
         cols[0].metric("길이", f"{data['duration_ms']/1000:.3f}s")
-        cols[1].metric("추정 BPM", f"{data['tempo_bpm']:.1f}" if data['tempo_bpm'] else "미검출")
-        cols[2].metric("검출 비트", len(data["beat_times_ms"]))
-        st.image(str(p / "analysis/waveform.png"))
+        cols[1].metric("추정 BPM", f"{data['tempo_bpm']:.1f}" if data.get("tempo_bpm") else "미검출")
+        cols[2].metric("검출 비트", len(data.get("beat_times_ms", [])))
+        if (p / "analysis/waveform.png").exists():
+            st.image(str(p / "analysis/waveform.png"))
         st.caption("섹션 경계는 음향 변화 후보입니다. 벌스·후렴 명칭은 감독 검토 후 지정합니다.")
 
 with tabs[1]:
     st.subheader("제작 패키지")
     st.write("실제 비트에 맞춘 샷과 편집 가능한 제작 문서를 준비합니다. 초기 콘티는 배치 도식이며, 실제 연출과 이미지는 Work에서 완성해 넣습니다.")
+    preset = st.selectbox("시작 템플릿", ["neutral", "water_please"], format_func=lambda value: "중립 · 새 작품" if value == "neutral" else "물 좀 주소 · 기존 작품 preset")
     if st.button("GENERATE PRODUCTION PACKAGE", disabled=not (p / "analysis/audio.json").exists()):
-        guarded(lambda: make_package(p), "제작 패키지 생성 완료")
-    bible_files = ["story.md", "style_bible.yaml", "characters.yaml", "locations.yaml"]
+        guarded(lambda: make_package(p, preset=preset), "제작 패키지 생성 완료")
+    bible_files = ["story.md", "style_bible.yaml", "characters.yaml", "locations.yaml", "directing.yaml"]
     for name in bible_files:
         path = p / "bible" / name
         if path.exists():
@@ -95,13 +98,14 @@ with tabs[1]:
                 content = st.text_area("내용", path.read_text(), height=260, key=name)
                 if st.button("저장", key="save_"+name):
                     def save_bible():
-                        if path.suffix == ".yaml":
-                            value = yaml.safe_load(content)
-                            if not isinstance(value, dict):
-                                raise FilmError("YAML must contain an object")
-                            write(path, value)
-                        else:
-                            atomic_text(path, content)
+                        with project_mutex(p):
+                            if path.suffix == ".yaml":
+                                value = yaml.safe_load(content)
+                                if not isinstance(value, dict):
+                                    raise FilmError("YAML must contain an object")
+                                write(path, value)
+                            else:
+                                atomic_text(path, content)
                     guarded(save_bible, "저장했습니다. 변경된 제작 패키지는 다시 LOCK해주세요.")
     if (p / "bible/director_request.md").exists():
         st.download_button("Work 감독 작업 지시서", (p / "bible/director_request.md").read_text(), "director_request.md")
@@ -119,20 +123,28 @@ with tabs[2]:
         for row in range(0, len(shots), 3):
             for col, shot in zip(st.columns(3), shots[row:row+3]):
                 with col:
-                    st.image(str(p / shot["references"][0]))
+                    references = shot.get("references", [])
+                    if references and (p / references[0]).is_file():
+                        st.image(str(p / references[0]))
+                    else:
+                        st.info("첫 프레임 없음 · Preview에서는 임시 화면을 사용합니다.")
                     st.caption(f"{shot['id']} · {shot['in_ms']/1000:.3f}–{shot['out_ms']/1000:.3f}s · {shot['render_mode']}")
                     with st.expander("EDIT / REPLACE", expanded=False):
                         desc = st.text_area("장면", shot["description"], key="desc_"+shot["id"])
-                        instruction = st.text_area("움직임", shot["motion"]["instruction"], key="motion_"+shot["id"])
+                        instruction = st.text_area("움직임", shot.get("motion", {}).get("instruction", ""), key="motion_"+shot["id"])
                         kind = st.selectbox("렌더 방식", ["STATIC", "LIMITED_MOTION", "FULL_GENERATIVE"], index=["STATIC", "LIMITED_MOTION", "FULL_GENERATIVE"].index(shot["render_mode"]), key="mode_"+shot["id"])
                         if st.button("연출 저장", key="edit_"+shot["id"]):
-                            current = read(p / "manifest/shots.json")
-                            target = next(s for s in current if s["id"] == shot["id"])
-                            target.update(description=desc, render_mode=kind)
-                            target["motion"]["instruction"] = instruction
-                            write(p / "manifest/shots.json", current)
-                            generate_storyboard(p)
-                            st.rerun()
+                            def save_direction():
+                                with project_mutex(p):
+                                    current = read(p / "manifest/shots.json")
+                                    target = next(s for s in current if s["id"] == shot["id"])
+                                    target.update(description=desc, render_mode=kind)
+                                    target.setdefault("motion", {})["instruction"] = instruction
+                                    write(p / "manifest/shots.json", current)
+                                    generate_storyboard(p)
+                                return True
+                            if guarded(save_direction):
+                                st.rerun()
                         uploaded = st.file_uploader("승인할 첫 프레임", type=["png", "jpg", "jpeg"], key="frame_"+shot["id"])
                         if uploaded and st.button("이미지 교체", key="replace_"+shot["id"]):
                             guarded(lambda: import_frame(p, shot["id"], uploaded), "교체 완료; 다시 LOCK해주세요.")
@@ -148,9 +160,10 @@ with tabs[2]:
             if result:
                 st.rerun()
 
-with tabs[3]:
-    st.subheader("렌더링")
-    renderer = st.selectbox("Renderer", ["mock", "economy", "manual", "openart", "fal"], format_func=lambda x: {"mock":"Mock · 비용 없는 콘티 테스트", "economy":"Economy · 장면별 도구 선택과 재사용", "manual":"Manual · 생성한 영상 가져오기", "openart":"OpenArt · Work 작업 연결", "fal":"fal · Wan 2.2 Turbo"}[x])
+with tabs[6]:
+    st.subheader("샷 생성 · 고급")
+    st.caption("기존 렌더러로 개별 장면을 생성하거나 이어서 실행합니다. 전체 영상을 보려면 COMPILE / BUILDS의 Preview를 사용하세요.")
+    renderer = st.selectbox("Renderer", ["mock", "economy", "manual", "openart", "fal"], format_func=lambda x: {"mock":"Mock · 비용 없는 콘티 테스트", "economy":"Economy · 실험 기능", "manual":"Manual · 생성한 영상 가져오기", "openart":"OpenArt · Work 작업 연결", "fal":"fal · 실험 기능"}[x])
     quality = st.radio("Quality", ["draft", "final"], index=1, horizontal=True)
     length = st.radio("길이", ["30초 테스트", "60초 Pilot", "곡 전체"], horizontal=True)
     seconds = {"30초 테스트": 30, "60초 Pilot": 60, "곡 전체": None}[length]
@@ -235,14 +248,179 @@ with tabs[3]:
                                     return select_window(p, record["shot_id"], offset, notes)
                             guarded(edit_window, "저장했습니다. RESUME 후 편집된 영상을 검토해주세요.")
 
-with tabs[4]:
-    st.subheader("완성 파일")
-    outputs = sorted(f for f in (p / "output").glob("*.mp4") if ".pending." not in f.name)
-    if outputs:
-        selected = st.selectbox("영상", outputs, format_func=lambda f: f.name)
-        st.video(str(selected))
-        st.download_button("EXPORT MP4", selected.read_bytes(), selected.name, "video/mp4")
-        if selected.with_suffix(".json").exists():
-            st.json(read(selected.with_suffix(".json")))
+with tabs[3]:
+    from engine.lyrics import prepare_lyrics, save_timing, validate_lyrics
+    st.subheader("가사와 자막")
+    st.write("원문을 보존하고, 실제 보컬에 맞춘 밀리초 타이밍을 검토합니다. 영상 컷을 바꿔도 가사 타이밍은 움직이지 않습니다.")
+    with st.expander("자막 글꼴 설정"):
+        st.caption("한글은 Noto Sans CJK KR 등 한글을 포함한 글꼴을 선택하세요. Final은 실제 글자 지원 여부를 검사합니다.")
+        font_name = st.text_input("글꼴 이름", config.get("subtitles", {}).get("font_name", "DejaVu Sans"))
+        font_file = st.text_input("글꼴 파일 · 프로젝트 내부 경로 (선택)", config.get("subtitles", {}).get("font_file", ""))
+        if st.button("자막 글꼴 저장"):
+            def save_font():
+                with project_mutex(p):
+                    current = read(p / "project.yaml")
+                    current.setdefault("subtitles", {})["font_name"] = font_name
+                    if font_file.strip():
+                        from engine.core import safe_path
+                        if not safe_path(p, font_file).is_file():
+                            raise FilmError("글꼴 파일을 확인해주세요.")
+                        current["subtitles"]["font_file"] = font_file.strip()
+                    else:
+                        current["subtitles"].pop("font_file", None)
+                    write(p / "project.yaml", current)
+            guarded(save_font, "저장했습니다. Final 전에 가사 검수와 LOCK을 다시 진행해주세요. 영상 검수는 유지됩니다.")
+    source_path = p / "input/lyrics.txt"
+    source = st.text_area("가사 원문", source_path.read_text(encoding="utf-8") if source_path.exists() else "", height=250, key="lyrics_source_" + chosen)
+    if st.button("원문 저장 / 자막 문서 준비"):
+        def save_source():
+            with project_mutex(p):
+                atomic_text(source_path, source)
+                return prepare_lyrics(p)
+        if guarded(save_source, "저장했습니다. 변경된 원문의 기존 타이밍은 보관하고 다시 검토합니다.") is not None:
+            st.rerun()
+    timed_path = p / "lyrics/lyrics_timed.json"
+    if timed_path.exists():
+        document = read(timed_path)
+        st.dataframe(document.get("cues", []), hide_index=True, width="stretch")
+        if (p / "analysis/audio.json").exists():
+            def validate_timing():
+                with project_mutex(p):
+                    return validate_lyrics(p, read(p / "analysis/audio.json")["duration_ms"])
+            validation = guarded(validate_timing)
+            if validation:
+                _, warnings = validation
+                if warnings:
+                    for warning in warnings:
+                        st.warning(str(warning))
+                else:
+                    st.success("현재 자막 문서의 시간 범위와 원문 연결을 확인했습니다.")
+        with st.expander("타이밍 JSON 편집 / 가져오기", expanded=not document.get("cues")):
+            st.caption("cues의 source_row_id는 rows의 ID를 사용합니다. start_ms/end_ms는 원음 기준이며 시간을 균등 분배해 만들지 않습니다. 반복 표시는 실제 반복할 원문 행을 먼저 지정하세요.")
+            timing_upload = st.file_uploader("검토할 lyrics_timed.json", type=["json"], key="timing_upload")
+            timing_text = st.text_area("타이밍 문서", json.dumps(document, ensure_ascii=False, indent=2), height=330, key="timing_json_" + chosen + "_" + str(document.get("source_sha256", "")))
+            reviewer = st.text_input("자막 검토자", key="lyrics_reviewer")
+            reviewed = st.checkbox("실제 보컬과 구절의 시작·끝, 누락·반복 및 자막 표시 설정을 확인했습니다.", key="lyrics_reviewed")
+            if st.button("타이밍 저장"):
+                def import_timing():
+                    content = timing_upload.getvalue().decode("utf-8") if timing_upload else timing_text
+                    if reviewed and not reviewer.strip():
+                        raise FilmError("검토자 이름을 입력해주세요.")
+                    with project_mutex(p):
+                        return save_timing(p, json.loads(content), reviewer=reviewer if reviewed else "")
+                if guarded(import_timing, "자막 타이밍을 저장했습니다.") is not None:
+                    st.rerun()
+        st.download_button("타이밍 JSON 내보내기", timed_path.read_bytes(), "lyrics_timed.json", "application/json")
     else:
-        st.write("콘티를 LOCK하고 렌더링하면 여기에 영상이 나타납니다.")
+        st.info("원문 저장 / 자막 문서 준비를 누르면 검토할 원문 행과 빈 타이밍 문서를 만듭니다.")
+
+with tabs[4]:
+    from engine.timeline import merge_shots, move_cut, snap_cut, split_shot
+    st.subheader("영상 타임라인")
+    st.caption("수정한 샷의 영상 선택과 LOCK은 다시 검토합니다. 이미 저장한 빌드와 가사 타이밍은 유지됩니다.")
+    if (p / "manifest/shots.json").exists():
+        timeline_shots = read(p / "manifest/shots.json")
+        st.dataframe([{k: s[k] for k in ["id", "sequence", "in_ms", "out_ms", "duration_ms", "description"]} for s in timeline_shots], hide_index=True, width="stretch")
+        selected_id = st.selectbox("편집할 샷", [s["id"] for s in timeline_shots], key="timeline_shot")
+        selected_index = next(i for i, s in enumerate(timeline_shots) if s["id"] == selected_id)
+        selected_shot = timeline_shots[selected_index]
+        split_at = st.number_input("분할 위치 (원음 기준 ms)", min_value=0, value=(selected_shot["in_ms"] + selected_shot["out_ms"]) // 2, step=100, key="split_ms_" + selected_id + "_" + str(selected_shot.get("visual_revision", 0)))
+        if st.button("SPLIT SHOT"):
+            if guarded(lambda: split_shot(p, selected_id, int(split_at)), "분할 완료"):
+                st.rerun()
+        if selected_index + 1 < len(timeline_shots):
+            next_shot = timeline_shots[selected_index + 1]
+            cut_at = st.number_input("다음 샷과의 컷 (원음 기준 ms)", min_value=0, value=selected_shot["out_ms"], step=100, key="cut_ms_" + selected_id + "_" + str(selected_shot.get("visual_revision", 0)))
+            if st.button("MOVE CUT"):
+                if guarded(lambda: move_cut(p, selected_id, int(cut_at)), "컷 이동 완료"):
+                    st.rerun()
+            for col, offset in zip(st.columns(4), [-500, -100, 100, 500]):
+                if col.button(f"{offset:+d} ms", key="offset_" + str(offset)):
+                    if guarded(lambda: move_cut(p, selected_id, selected_shot["out_ms"] + offset), "컷 이동 완료"):
+                        st.rerun()
+            col_beat, col_onset, col_merge = st.columns(3)
+            if col_beat.button("SNAP TO BEAT"):
+                if guarded(lambda: snap_cut(p, selected_id, "beat", int(cut_at)), "비트에 맞췄습니다."):
+                    st.rerun()
+            if col_onset.button("SNAP TO ONSET"):
+                if guarded(lambda: snap_cut(p, selected_id, "onset", int(cut_at)), "온셋에 맞췄습니다."):
+                    st.rerun()
+            if col_merge.button("MERGE NEXT", disabled=selected_shot["sequence"] != next_shot["sequence"]):
+                if guarded(lambda: merge_shots(p, selected_id, next_shot["id"]), "병합 완료; 앞 샷의 연출과 첫 프레임을 유지합니다."):
+                    st.rerun()
+        else:
+            st.caption("마지막 샷의 끝은 원곡 길이에 고정됩니다.")
+
+with tabs[5]:
+    from engine.compiler import compile_final, compile_preview, import_asset
+    from engine.builds import list_builds, verify_build
+    st.subheader("곡 전체 컴파일")
+    st.write("Preview는 final → draft → storyboard → 임시 화면 순으로 모든 샷을 연결합니다. Final은 LOCK, 최종 영상 검수, 가사 검토 조건을 통과해야 저장됩니다.")
+    st.caption("각 실행은 B0001, B0002처럼 새 빌드로 보관됩니다. 이 버튼은 유료 영상 생성을 요청하지 않습니다.")
+    compile_quality = st.radio("출력 화질", ["draft", "final"], horizontal=True, key="compile_quality")
+    ready = (p / "analysis/audio.json").exists() and (p / "manifest/shots.json").exists()
+    col_preview, col_final = st.columns(2)
+    start_preview = col_preview.button("COMPILE PREVIEW · 곡 전체", type="primary", disabled=not ready)
+    start_final = col_final.button("COMPILE FINAL · 검수본", disabled=not ready)
+    if start_preview or start_final:
+        progress = st.progress(0, text="곡 전체 빌드 준비 중")
+        compile_fn = compile_preview if start_preview else compile_final
+        result = guarded(lambda: compile_fn(p, quality=compile_quality,
+            progress=lambda i, n, label: progress.progress(min(1.0, i / max(n, 1)), text=f"{label} · {i}/{n}")))
+        if result:
+            st.session_state["last_build_" + chosen] = result
+            st.success(f"{result['build_id']} 저장 완료")
+    if not ready:
+        st.info("음원 분석과 제작 패키지를 먼저 준비해주세요.")
+    if ready:
+        with st.expander("생성하거나 편집한 샷 영상 가져오기"):
+            import_shots = read(p / "manifest/shots.json")
+            asset_shot = st.selectbox("대상 샷", [s["id"] for s in import_shots], key="asset_shot")
+            asset_upload = st.file_uploader("샷 영상", type=["mp4", "mov", "webm", "mkv"], key="asset_upload")
+            asset_kind = st.radio("용도", ["draft", "final"], horizontal=True, key="asset_kind")
+            asset_offset = st.number_input("원본 영상 사용 시작점 (ms)", min_value=0, value=0, step=100, key="asset_offset")
+            asset_reviewer = st.text_input("최종 영상 검토자", key="asset_reviewer")
+            asset_evidence = st.text_area("검수 근거", key="asset_evidence", placeholder="인물, 스타일, 구도, 카메라, 움직임, 소품, 불필요한 글자 등을 직접 확인한 결과")
+            asset_reviewed = st.checkbox("선택한 최종 영상 전체를 현재 제작 기준과 대조해 검수했습니다.", key="asset_reviewed")
+            if st.button("샷 영상 보관 / 선택", disabled=asset_upload is None):
+                def save_asset():
+                    if asset_reviewed and (not asset_reviewer.strip() or not asset_evidence.strip()):
+                        raise FilmError("최종 검수에는 검토자와 근거가 필요합니다.")
+                    with tempfile.TemporaryDirectory() as tmp:
+                        source_file = Path(tmp) / ("clip" + Path(asset_upload.name).suffix.lower())
+                        source_file.write_bytes(asset_upload.getvalue())
+                        return import_asset(p, asset_shot, source_file, kind=asset_kind,
+                            reviewer=asset_reviewer if asset_reviewed else "",
+                            evidence=asset_evidence if asset_reviewed else "",
+                            source_in_ms=int(asset_offset))
+                guarded(save_asset, "샷을 보관했습니다. 새 Preview에서 확인해주세요.")
+    st.divider()
+    st.subheader("보관한 빌드")
+    builds = list_builds(p)
+    if builds:
+        selection = st.selectbox("빌드", builds, format_func=lambda b: f"{b['build_id']} · {b.get('mode', '')} · {b.get('status', '')}")
+        build_dir = Path(selection["build_dir"])
+        outputs = [build_dir / name for name in ["MASTER_SUBBED.mp4", "MASTER_CLEAN.mp4"] if (build_dir / name).exists()]
+        if outputs:
+            selected = st.selectbox("영상", outputs, format_func=lambda f: f.name, key="build_output")
+            st.video(str(selected))
+            st.download_button("EXPORT MP4", selected.read_bytes(), selected.name, "video/mp4")
+        for name in ["lyrics.ass", "lyrics.srt"]:
+            subtitle = build_dir / name
+            if subtitle.exists():
+                st.download_button(name + " 내보내기", subtitle.read_bytes(), name)
+        if st.button("빌드 파일 무결성 확인"):
+            verified = guarded(lambda: verify_build(build_dir))
+            if verified:
+                st.json(verified)
+        if (build_dir / "build.json").exists():
+            with st.expander("이 빌드의 소스와 검증 기록"):
+                st.json(read(build_dir / "build.json"))
+    else:
+        st.caption("첫 Preview를 컴파일하면 빌드 이력이 여기에 나타납니다.")
+    legacy_outputs = sorted(f for f in (p / "output").glob("*.mp4") if ".pending." not in f.name)
+    if legacy_outputs:
+        with st.expander("이전 방식으로 만든 출력"):
+            legacy = st.selectbox("이전 출력", legacy_outputs, format_func=lambda f: f.name)
+            st.video(str(legacy))
+            st.download_button("이전 MP4 내보내기", legacy.read_bytes(), legacy.name, "video/mp4")

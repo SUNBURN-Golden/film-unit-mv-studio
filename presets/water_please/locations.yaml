@@ -1,0 +1,50 @@
+draft: true
+locations:
+- id: LOC_ROOM
+  reference_images: []
+  required_views:
+  - wide
+  - medium
+  - prop
+- id: LOC_INTERROGATION
+  reference_images: []
+  required_views:
+  - wide
+  - medium
+  - prop
+- id: LOC_OFFICE
+  reference_images: []
+  required_views:
+  - wide
+  - medium
+  - prop
+- id: LOC_HOME
+  reference_images: []
+  required_views:
+  - wide
+  - medium
+  - prop
+- id: LOC_ORPHANAGE
+  reference_images: []
+  required_views:
+  - wide
+  - medium
+  - prop
+- id: LOC_NURSING_HOME
+  reference_images: []
+  required_views:
+  - wide
+  - medium
+  - prop
+- id: LOC_POLITICAL_OFFICE
+  reference_images: []
+  required_views:
+  - wide
+  - medium
+  - prop
+- id: LOC_STAGE
+  reference_images: []
+  required_views:
+  - wide
+  - medium
+  - prop

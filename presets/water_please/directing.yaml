@@ -1,0 +1,27 @@
+name: water_please
+title: 물 좀 주소
+draft: true
+characters:
+- CHAR_A
+- CHAR_B
+locations:
+- LOC_HOME
+- LOC_POLITICAL_OFFICE
+composition: vertical split screen
+camera:
+  type: locked
+  movement: none
+motion:
+  complexity: low
+  instruction: Animate the director-approved character or scene action with restrained
+    movement. Start from the approved first frame and preserve its identity, style
+    and composition. A locked camera must not freeze the subjects.
+  local_effect: hold
+render_mode: LIMITED_MOTION
+identity_priority: high
+review_note: The target is a 2D character-animation MV, not stop motion or a slideshow.
+  Specify actual character, expression, prop or environmental action for each animated
+  shot. LIMITED_MOTION still requires actual animation; assign FULL_GENERATIVE where
+  the action needs it. Use STATIC only for an intentional director-approved hold,
+  never to satisfy a savings quota. Mock/local hold, pan and zoom are timing-preview
+  tools, not completed animation.
