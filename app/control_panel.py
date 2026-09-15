@@ -87,7 +87,8 @@ with tabs[0]:
 with tabs[1]:
     st.subheader("제작 패키지")
     st.write("실제 비트에 맞춘 샷과 편집 가능한 제작 문서를 준비합니다. 초기 콘티는 배치 도식이며, 실제 연출과 이미지는 Work에서 완성해 넣습니다.")
-    preset = st.selectbox("시작 템플릿", ["neutral", "water_please"], format_func=lambda value: "중립 · 새 작품" if value == "neutral" else "물 좀 주소 · 기존 작품 preset")
+    preset_labels = {"neutral": "중립 · 새 작품", "water_please": "물 좀 주소 · 기존 작품 preset", "concrete_glide": "Concrete Glide · 군청 도시 애니마틱"}
+    preset = st.selectbox("시작 템플릿", list(preset_labels), format_func=preset_labels.get)
     if st.button("GENERATE PRODUCTION PACKAGE", disabled=not (p / "analysis/audio.json").exists()):
         guarded(lambda: make_package(p, preset=preset), "제작 패키지 생성 완료")
     bible_files = ["story.md", "style_bible.yaml", "characters.yaml", "locations.yaml", "directing.yaml"]

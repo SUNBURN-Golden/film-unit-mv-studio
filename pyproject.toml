@@ -19,6 +19,7 @@ filmunit = "engine.cli:main"
 include = ["engine*"]
 
 [tool.setuptools.data-files]
+"share/film-unit/presets/concrete_glide" = ["presets/concrete_glide/style.yaml", "presets/concrete_glide/characters.yaml", "presets/concrete_glide/locations.yaml", "presets/concrete_glide/directing.yaml"]
 "share/film-unit/presets/water_please" = ["presets/water_please/style.yaml", "presets/water_please/characters.yaml", "presets/water_please/locations.yaml", "presets/water_please/directing.yaml"]
 
 [tool.pytest.ini_options]
