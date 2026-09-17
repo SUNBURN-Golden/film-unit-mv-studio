@@ -56,6 +56,15 @@ def main(argv=None):
     replay = sub.add_parser("replay-build")
     replay.add_argument("build_dir")
     replay.add_argument("--output", required=True)
+    flow_export = sub.add_parser("flow-export", help="Export a manual Google Flow Music package; no provider call")
+    flow_export.add_argument("project")
+    flow_export.add_argument("--output")
+    flow_import = sub.add_parser("flow-import-result", help="Register one downloaded whole-song Flow result across exact shot windows")
+    flow_import.add_argument("project")
+    flow_import.add_argument("source")
+    flow_import.add_argument("--kind", choices=["draft", "final"], default="draft")
+    flow_import.add_argument("--reviewer", default="")
+    flow_import.add_argument("--evidence", default="")
     for name in ["analyze", "package", "lock", "estimate", "approve", "compile", "import-frame", "economy-init", "work-status", "edit-take", "claim-job"]:
         p = sub.add_parser(name, help="Legacy shot generation/resume (may call paid renderers); use compile-preview for a local full-song build" if name == "compile" else None)
         p.add_argument("project")
@@ -108,6 +117,12 @@ def main(argv=None):
         elif a.command == "replay-build":
             from .builds import replay_build
             result = replay_build(a.build_dir, a.output)
+        elif a.command == "flow-export":
+            from .flow_music import export_flow_music
+            result = export_flow_music(a.project, output=a.output)
+        elif a.command == "flow-import-result":
+            from .flow_music import import_flow_result
+            result = import_flow_result(a.project, a.source, kind=a.kind, reviewer=a.reviewer, evidence=a.evidence)
         elif a.command == "import-asset":
             from .compiler import import_asset
             result = import_asset(a.project, a.shot, a.source, kind=a.kind,
