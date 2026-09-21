@@ -430,16 +430,21 @@ A designated-auditor result is recorded with AUDITOR_IDENTITY_OR_SESSION and
 AUDITOR_DESIGNATION_POINTER; it is never recorded as an Astra result.
 A HEAD change invalidates any prior PASS regardless of who issued it.
 
-Astra FAIL:
+AUDIT_RESULT=FAIL:
 relay findings unchanged to the same writer.
 
-Astra DECISION_REQUIRED:
+AUDIT_RESULT=DECISION_REQUIRED:
 record blocker and emit normalized decision request.
 
 Audit results must also match the outstanding AUDIT_REQUEST_ID.
 Re-audit starts with the prior audited SHA delta and unresolved findings,
 checks affected dependencies/contracts, then issues a new current-SHA result.
 A writer evidence index is navigation, never an independent proof.
+
+Bind each audit request to the accepted auditor identity and applicable User
+designation pointer. Result identity/session must match the authenticated sender
+and that request's auditor. Revoking or changing the designation invalidates
+outstanding requests and gate results under that designation.
 
 ## 15. Consequential decision gate
 

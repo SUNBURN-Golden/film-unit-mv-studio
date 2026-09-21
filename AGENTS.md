@@ -219,6 +219,11 @@ Approved consequential contract must change:
 stop → Astra analysis → User decision → durable GitHub decision/task revision
 → resume.
 
+Across these three documents, audit execution, evidence verification and result
+handling attributed to Astra apply equally to the independent auditor designated
+under the author-conflict rule. Architecture analysis and User decision authority
+are not transferred.
+
 ## 9. Audit results
 
 Only:
