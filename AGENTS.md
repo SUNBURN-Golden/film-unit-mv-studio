@@ -3,140 +3,301 @@
 NO STANDING ROUTINES.
 NO POLLING.
 NO REASONING WHEN A RULE CAN DECIDE.
-ONE EVENT → ONE SHORT DISPATCH → RESET CHAT.
+ONE NORMALIZED EVENT → ONE SHORT ACTION → END SESSION.
 
 User decides. Astra designs and audits. Grok routes and relays.
-Devin engineers. GitHub remembers. Slack coordinates.
-Cheap mechanical triggers carry events. Grok is not the event bus.
+Devin owns engineering tickets. GitHub stores durable truth. Slack is a cockpit.
+The mechanical layer validates and carries events. Grok is not the event bus.
 
-## Precedence
+## 1. Separation of concerns
 
-This section defines cross-agent authority and orchestration.
+These three files have separate authority:
+
+- `AGENTS.md` — actor authority, safety boundaries, source-of-truth rules.
+- `TASKS/TEMPLATE.md` — task-envelope data shape only.
+- `RUNBOOKS/DISPATCH.md` — deterministic event/claim/gate procedure only.
+
 Repository-specific technical contracts, locked files, architecture documents,
-ADRs, task documents, and safety rules remain authoritative in their technical
-domains.
+ADRs, immutable task documents, phase gates and safety rules remain
+authoritative in their technical domains.
+
+If rules conflict, do not guess. Return `DECISION_REQUIRED` with exact
+pointers.
+
+## 2. Roles
+
+| Role | Job | Must not |
+|---|---|---|
+| USER | Final authority: product scope, consequential architecture choice, risk acceptance, merge | Be silently substituted by an agent |
+| ASTRA | Principal Architect + Independent Auditor | Implement audit fixes |
+| GROK | Stateless dispatcher / relay for normalized events | Engineer, architect, reviewer, event bus, polling daemon |
+| DEVIN | Primary ticket owner: investigate → implement → test → debug → PR/evidence | Change approved architecture silently |
+| CHEAP_WORKER | Explicitly authorized mechanical work or independent read-only review | Become a second writer on a Devin ticket |
+| MECHANICAL_LAYER | Actor validation, task serialization, durable control record, event dedupe, gate aggregation | Perform semantic engineering judgment |
+| SLACK | Command/status/decision cockpit | Persistent source of technical truth |
+| GITHUB | Persistent source of truth and durable control-record projection | Be treated as an atomic lock merely because comments exist |
 
 User explicit decisions outrank every agent.
-Architecture-affecting decisions require Astra analysis, then User decision.
-Grok never reinterprets or weakens User/Astra output.
+Architecture-affecting decisions require Astra analysis followed by User
+decision and a durable GitHub pointer.
 
-If this control-plane section conflicts with a repository-specific technical
-rule below, do not guess. Return DECISION_REQUIRED with exact pointers.
+## 3. Mechanical control layer is mandatory
 
-## Roles
+Raw Slack/GitHub/provider events do not directly authorize Grok actions.
 
-| Role | Job | Not |
-|---|---|---|
-| USER | Final authority: scope, priority, architecture choice, risk, merge | Implementation |
-| ASTRA | Principal Architect + Independent Auditor | Implementer |
-| GROK | Stateless dispatcher / clerk | Engineer, architect, reviewer, event bus |
-| DEVIN | Ticket owner: investigate → implement → test → debug → PR → proof | Product owner |
-| CHEAP_WORKER | Narrow low-risk work or explicitly allowed read-only review | Primary owner of a substantive Devin ticket |
-| SLACK | Command / event / status cockpit | Source of truth |
-| GITHUB | Persistent source of truth | Chat log |
-| ACTIONS / WEBHOOKS / SLACK WORKFLOW | Cheap mechanical nervous system | Reasoning |
+Before Grok is invoked, the mechanical layer must:
 
-## Grok may do
+1. validate the event actor/source against configured allowlists;
+2. map the event to one canonical `TASK_KEY = REPO + TASK_ID`;
+3. process control-state mutation under a single-writer serialization primitive
+   for that TASK_KEY;
+4. load/update the canonical control record;
+5. reject stale/duplicate/self-generated events;
+6. emit a normalized event containing the required identifiers.
 
-- Identify configured project, repo and task ID.
-- Apply `RUNBOOKS/DISPATCH.md`.
-- Fill `TASKS/TEMPLATE.md` by substitution only.
-- Start at most one writer session for one dispatch event.
-- Collect pointers: issue, PR, URL, SHA, CI/check status.
-- Relay exact findings and exact User/Astra decisions.
-- Record dispatch/status markers.
-- Write one short status.
-- End session.
+A GitHub issue/comment may be the durable projection of the control record, but
+**comment existence is not an atomic claim**. The implementation must use a
+real per-task serialization primitive such as a queue, lock, or GitHub Actions
+concurrency group with one writer for control-state mutation.
 
-## Grok must not do
+Automation is not considered ready until this mechanical contract is actually
+implemented and actor identities are configured.
 
-- Architecture, protocol, schema, API, security, concurrency, consistency,
-  financial/blockchain design, major refactor, scope expansion, option selection.
-- Rewrite requirements or invent missing policy.
-- Perform semantic code review or debugging.
-- Poll, stand by, create routines, or monitor in the background.
-- Re-read long worker transcripts.
-- Summarize work another agent already did when a pointer exists.
-- Auto-merge.
-- Appoint another model as replacement dispatcher after quota exhaustion.
+## 4. Canonical task and ownership
 
-## Devin
+EVENT_ID identifies one delivery/event.
+TASK_ID identifies one engineering job.
+They are not interchangeable.
 
-Devin is the primary autonomous software engineer.
+Every task has exactly one canonical GitHub issue/task pointer and one durable
+control record.
 
-Default substantive flow:
+A different EVENT_ID for the same TASK_ID must reuse the existing control
+record and owner. It must not create a second writer.
 
-investigate → understand → implement inside approved boundaries → run → test →
-debug → fix → retest → PR → exact HEAD SHA → proof.
+One substantive task has:
 
-Prefer one task → one owner → one writer → one PR.
-Do not micromanage Devin line-by-line.
-If an approved contract/invariant/architecture must change, Devin must stop and
-return DECISION_REQUIRED.
+ONE TASK
+→ ONE CANONICAL TASK RECORD
+→ ONE ACTIVE OWNER
+→ ONE WRITER
+→ ONE DELIVERABLE LINEAGE
 
-## Audit depths
+Independent reviewers are read-only and are never a second writer.
 
-A0 NO AUDIT — typo / formatting only; no behavior change.
-A1 STANDARD — correctness, acceptance criteria, tests, regression, contract/scope compliance.
-A2 DEEP — A1 plus relevant concurrency, state machine, persistence, payments, security, protocol.
-A3 ARCHITECTURE GATE — invariant, schema, public contract, Sui/blockchain architecture, financial semantics.
+## 5. Grok authority
 
-Touching an already-approved A3 area does not itself require a new architecture
-decision. If the approved contract can be preserved, Devin may implement and
-Astra audits at A3. If the approved contract itself must change:
-DECISION_REQUIRED → Astra analysis → User decision → GitHub record → resume.
+Grok operates only on normalized events defined by
+`RUNBOOKS/DISPATCH.md`.
 
-## Audit results
+Grok may:
 
-PASS — no merge-blocking finding.
-PASS_WITH_NOTES — non-blocking improvements only; no unresolved correctness/invariant/security/contract issue.
-FAIL — merge-blocking correctness, regression, invariant, security, contract, or acceptance failure.
-DECISION_REQUIRED — architecture/requirements choice rather than ordinary implementation defect.
+- read the canonical task envelope and exact pointers;
+- apply deterministic project/runbook fields;
+- launch the one worker named by an accepted normalized dispatch event;
+- relay exact CI/review/audit/blocker pointers;
+- post one short status;
+- return a launch receipt;
+- end the session.
 
-Grok does not soften FAIL.
-Every audit is bound to the exact audited HEAD SHA.
-If HEAD moves, the prior audit is not the final gate for the new SHA.
+Grok must not:
 
-## Quota failover
+- infer architecture, protocol, schema, API, security, concurrency,
+  consistency, financial or blockchain design;
+- decide between consequential options;
+- rewrite requirements or task specifications;
+- semantically classify code/diffs;
+- debug CI;
+- perform code review;
+- poll or monitor;
+- repeatedly read worker transcripts;
+- create a second writer;
+- auto-merge;
+- appoint another model as replacement dispatcher.
 
-IF GROK_QUOTA_UNAVAILABLE:
-write `[BLOCKED] Reason: GROK_QUOTA`.
-Do not appoint Cursor, ChatGPT, another Grok session, or another model as dispatcher.
-USER may manually hand the existing GitHub task package to Devin.
-Fail closed.
+If a deterministic rule cannot decide, Grok stops rather than improvises.
 
-## Credentials
+## 6. Devin autonomy
 
-Router uses a dedicated least-privilege identity/tokens.
-GitHub: only repository read, issue/comment and checks/PR read capabilities
-actually needed by the runbook. No admin, secrets, delete, org admin, or merge.
-Slack: control/decision/audit + configured project channels only.
-Do not park a personal main GitHub/Slack session on the Grok computer.
+Devin is a ticket owner, not a keyboard proxy.
 
-## Source of truth
+Inside approved architecture, contracts, scope and invariants, Devin may choose
+ordinary implementation algorithms, data structures, refactors necessary to
+the ticket, debugging strategy and test/fix iterations without escalating merely
+because multiple implementation choices exist.
 
-1. approved repository contracts / ADRs / architecture docs
-2. accepted GitHub issue/task package
-3. exact source at known SHA
-4. CI/test evidence
-5. Slack transient communication
-6. agent memory
+Devin must escalate only when completing the task requires a consequential
+change outside approved boundaries, such as changing an approved invariant,
+schema contract, public contract, authority/security boundary, protocol
+semantics, financial semantics, or approved architecture.
 
-Slack is not memory. Agent memory is not authoritative.
-Consequential decisions must be recorded back to GitHub.
+Normal loop:
 
-## Success
+investigate
+→ implement
+→ test
+→ fail
+→ debug
+→ fix
+→ retest
+→ PR/evidence.
 
-Correct task → correct worker → pointers not essays → worker finishes →
-only consequential judgment escalated → exact SHA audited as required →
-GitHub records durable decisions → User controls merge.
+A CI failure does not terminate this loop. Grok only relays the exact failure
+pointer to the same owner.
 
-Less Grok reasoning is better.
+Devin may explicitly report `STALLED` when it cannot make progress. A
+mechanical budget/cost guard may also emit `BUDGET_LIMIT_REACHED`. Grok does
+not infer "stalled" from repeated failures.
+
+## 7. Cheap-worker / A0 qualification
+
+Grok never decides that a change is trivial by reading the task or diff.
+
+`CHEAP_MECHANICAL/A0` is allowed only when the canonical task envelope already
+contains:
+
+- `EXECUTION_CLASS: CHEAP_MECHANICAL`;
+- `A0_AUTHORIZATION_POINTER` from User/Astra or an explicitly approved
+  deterministic intake policy;
+- project-specific A0 eligibility.
+
+If any required field is absent, default to `DEVIN_STANDARD` and A1.
+
+After completion, the mechanical layer validates objective facts such as
+changed paths and forbidden/locked paths. If A0 qualification no longer holds,
+the task is promoted to A1 and must receive the normal independent review and
+Astra audit.
+
+A0 never overrides repository-specific locked-file, evidence, bookkeeping or
+validation requirements.
+
+## 8. Audit model
+
+Audit depth is cumulative:
+
+- **A0** — no Astra audit; only explicitly authorized typo/format/mechanical
+  changes that still satisfy project-specific rules.
+- **A1 STANDARD** — correctness, acceptance criteria, tests/evidence,
+  regression, scope and contract compliance.
+- **A2 DEEP** — A1 plus relevant concurrency, state machine, persistence,
+  payment, security and protocol behavior.
+- **A3 ARCHITECTURE GATE** — A1 + applicable A2 risks + invariant/schema/public
+  contract/blockchain/financial/authority-boundary verification.
+
+Worker-reported `TOUCHED_AREAS` and
+`CONTRACT_CHANGE_REQUIRED` are evidence only. They are not authoritative
+classification.
+
+Astra must independently verify the actual diff/evidence against authoritative
+docs and report:
+
+- `VERIFIED_TOUCHED_AREAS`;
+- `VERIFIED_CONTRACT_CHANGE_REQUIRED`;
+- exact audited HEAD SHA or evidence SHA;
+- audit result.
+
+Approved A3 contract preserved:
+Devin may implement → independent review → A3 audit.
+
+Approved consequential contract must change:
+stop → Astra analysis → User decision → durable GitHub decision/task revision
+→ resume.
+
+## 9. Audit results
+
+Only:
+
+- `PASS`
+- `PASS_WITH_NOTES`
+- `FAIL`
+- `DECISION_REQUIRED`
+
+`PASS_WITH_NOTES` cannot contain an unresolved correctness, invariant,
+security, contract or acceptance failure.
+
+Grok relays results literally and never softens FAIL.
+
+Audit/review/CI evidence is bound to the exact current revision/head. When the
+relevant HEAD changes, stale gate facts do not transfer.
+
+## 10. Durable truth
+
+Persistent truth order:
+
+1. approved repository contracts / architecture / ADR / phase/task documents;
+2. canonical GitHub task + task revision;
+3. exact source at known SHA;
+4. current-head CI/review/audit evidence;
+5. Slack transient messages;
+6. agent memory.
+
+Slack is not memory.
+Agent memory is not authority.
+Consequential decisions and audit outcomes must have durable GitHub pointers.
+
+## 11. Credentials and actor validation
+
+Use dedicated least-privilege identities.
+
+The mechanical layer must maintain configured actor identities for at least:
+
+- USER;
+- ASTRA;
+- Grok router;
+- Devin/provider integration;
+- independent reviewer lane;
+- GitHub/CI source.
+
+Ordinary text containing "PASS", "DECISION", or similar words is never promoted
+to a control event unless the configured actor/source and required identifiers
+are validated.
+
+Router credentials should normally have read + issue/comment/status capabilities
+only. Grok does not require source write, PR creation, admin, secrets, delete or
+merge permission.
+
+Repo-scoped credentials are preferred over one all-repositories write token.
+
+## 12. Quota and outage behavior
+
+Grok quota/outage is detected by the caller/mechanical layer, not by Grok
+reasoning after Grok is unavailable.
+
+The mechanical layer records:
+
+`[BLOCKED] Reason: GROK_QUOTA`
+
+No model is automatically appointed as replacement dispatcher.
+
+Manual dispatch must still use the canonical task/control record and must not
+launch when an owner exists or launch state is `UNKNOWN`.
+
+## 13. Merge
+
+Grok never merges.
+Astra PASS is not a merge command.
+Only User authorizes merge.
+
+`READY_FOR_MERGE` is a derived mechanical predicate for the current task
+revision and current HEAD. It is not a status string that an arbitrary actor
+may assert.
+
+## 14. Cost discipline
+
+No standing routines.
+No polling.
+No raw Slack firehose.
+No long transcript re-reading.
+No duplicated semantic analysis by Grok.
+No Cloud Devin for status lookup/grep/typo when an authorized cheap lane exists.
+
+The ideal Grok invocation receives one normalized event, performs one
+deterministic action, returns one structured result, and ends.
 
 ## Repository-specific engineering constraints
 
-Read `README.md` and the task-linked production/validation documents before work.
-Existing production locks, lyrics/subtitle timing rules, asset provenance,
-render-budget/approval rules, build reproducibility and evidence requirements
-remain authoritative. Do not infer renderer approval or paid generation authority
-from this control-plane document.
+Read `README.md` and task-linked production/validation documents before work.
+Existing lyrics/subtitle timing, LOCK, asset provenance, renderer/budget
+approval, build-history/reproducibility and Preview/Final rules remain
+authoritative. Paid generation or production approval is never inferred from
+this control-plane policy.
