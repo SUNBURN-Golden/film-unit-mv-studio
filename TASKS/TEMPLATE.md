@@ -1,128 +1,92 @@
-# TASK ENVELOPE v2
+# TASK ENVELOPE v3
 
-This file is a pointer envelope, not a second task specification.
-Do not copy authoritative documents into it.
-Do not paraphrase source requirements when a durable pointer exists.
+Store this envelope on the canonical GitHub task, not as a new runtime file.
+Link the existing specification; do not rewrite or duplicate it.
 
-## Required identity
+## Required intake
 
 TASK_ID:
 PROJECT:
 REPO:
 CANONICAL_TASK_POINTER:
-CONTROL_RECORD_POINTER:
 TASK_REVISION:
-
-<!-- TASK_KEY is mechanically derived as REPO + TASK_ID. -->
-
-## Required source pointers
-
-OBJECTIVE_POINTER:
 TASK_SPEC_POINTER:
 TASK_SPEC_REVISION:
 APPROVAL_POINTER:
 AUTHORITATIVE_DOC_POINTERS:
 
-## Dispatch classification
+The pinned specification must identify objective, scope, exclusions,
+constraints/contracts and acceptance/verification criteria. Exact section
+pointers suffice; the same issue may supply every section. No separate
+Astra approval is required for an already authorized, well-scoped task.
+Missing consequential requirements need clarification; repository investigation
+and ordinary implementation choices belong to Devin.
 
-EXECUTION_CLASS: DEVIN_STANDARD | CHEAP_MECHANICAL
-DELIVERABLE_MODE: PR | NO_CHANGE_ALLOWED | NON_CODE_EVIDENCE
-AUDIT_FLOOR: A0 | A1 | A2 | A3
+## Fixed defaults from RUNBOOKS/DISPATCH.md
 
-A0_AUTHORIZATION_POINTER:
-<!-- REQUIRED when EXECUTION_CLASS=CHEAP_MECHANICAL; otherwise N/A -->
+EXECUTION_CLASS: DEVIN_STANDARD
+DELIVERABLE_MODE: PR
+AUDIT_FLOOR: A1
+REVIEW_POLICY: REQUIRED_NON_A0
+REVIEWER_LANE_ID: CONFIG_REQUIRED
 
-A0_CHANGE_KIND: TYPO | FORMAT_ONLY | DOC_MECHANICAL | N/A
-A0_ALLOWED_PATHS:
-A0_FORBIDDEN_PATHS:
-<!--
-For A0, these are REQUIRED and must be exact paths/globs approved by the
-authorization pointer. Grok does not derive them.
--->
+REPO/PROJECT must match the project map. Verification/post-merge policy comes
+from that map and the repository rules. Overrides require a durable authorized
+pointer; Grok never classifies the task or invents missing requirements.
+Before dispatch, resolve the required reviewer identity. An unavailable lane
+cannot silently waive review.
 
-## Project policy pointers
+## Conditional pointers
 
-REVIEW_POLICY:
-REVIEWER_LANE_ID:
-VERIFICATION_POLICY:
-POST_MERGE_POLICY:
-
-## Boundary pointers
-
-SCOPE_POINTER:
-NON_SCOPE_POINTER:
 CONTRACT_POINTERS:
 INVARIANT_POINTERS:
 LOCKED_AREAS_POINTERS:
 PHASE_OR_LAYER_POINTER:
-<!-- Use N/A only when the project has no such gate. -->
 
-## Required output from writer
+Use exact task-spec sections or existing repository documents; N/A is allowed
+only when no such requirement applies. Existing project-specific requirements
+remain mandatory, including KIX immutable docs/tasks specifications.
 
-- exact task revision consumed;
-- deliverable result: PR | NO_CHANGE | NON_CODE_EVIDENCE;
-- PR pointer when applicable;
-- exact HEAD SHA when applicable;
-- verification evidence pointers;
-- TOUCHED_AREAS self-report;
-- CONTRACT_CHANGE_REQUIRED: NO | YES self-report;
-- BLOCKED or STALLED report when applicable.
+For CHEAP_MECHANICAL/A0 only:
+A0_AUTHORIZATION_POINTER:
+A0_CHANGE_KIND: TYPO | FORMAT_ONLY | DOC_MECHANICAL
+A0_ALLOWED_PATHS:
+A0_FORBIDDEN_PATHS:
 
-TOUCHED_AREAS self-report may use:
+Other allowed DELIVERABLE_MODE values:
+NO_CHANGE_ALLOWED | NON_CODE_EVIDENCE.
+Other AUDIT_FLOOR values: A0 | A2 | A3.
+A0 requires the runbook's final qualification.
 
-NONE
-CONCURRENCY
-STATE_MACHINE
-PERSISTENCE
-PAYMENTS
-SECURITY
-PROTOCOL
-INVARIANT
-SCHEMA
-PUBLIC_CONTRACT
-SUI
-BLOCKCHAIN
-FINANCIAL_SEMANTICS
-AUTHORITY_BOUNDARY
+## Dispatch references
 
-These reports are evidence only. Astra independently verifies classification.
+CONTROL_RECORD_POINTER:
+CANONICAL_SLACK_THREAD:
 
-## Escalation boundary
+These are provisioned by intake/User before execution; they are not invented
+by Grok. If Slack is used, task and thread link to each other. Mutable
+claim/session/HEAD/gate state belongs in the control record, not the task spec.
 
-Devin does NOT escalate merely because two ordinary implementation approaches
-exist.
+## Owner instruction
 
-Escalate only when completing the approved task requires a consequential change
-outside approved scope/contracts/architecture, including a required change to:
+Follow the pinned task and repository rules. Investigate, implement, debug,
+test/fix/retest and deliver the PR without routine plan approval.
+Preserved approved A3 contracts permit implementation followed by A3 audit.
+Required consequential contract changes require DECISION_REQUIRED with the
+exact question and evidence before implementing that change.
+CI/review/audit feedback returns to the same active owner.
 
-- invariant;
-- schema contract;
-- public contract;
-- authority/security boundary;
-- protocol semantics;
-- blockchain/Sui architecture;
-- financial semantics;
-- approved product/architecture decision.
+## Completion evidence index
 
-Return:
+- task revision; observed base SHA; PR and exact final HEAD/evidence SHA;
+- complete changed paths and acceptance criterion -> test/CI evidence pointers;
+- actual commands/results and repository-required evidence;
+- TOUCHED_AREAS and CONTRACT_CHANGE_REQUIRED: NO | YES (advisory only);
+- independent review pointer when available;
+- unverified behavior, remaining risks, BLOCKED/STALLED when applicable.
 
-DECISION_REQUIRED
+Astra independently verifies touched areas and contract changes. This index
+does not replace repository evidence requirements or independent examination.
+No transcript, repeated status or mutable execution state belongs here.
 
-with exact source/evidence pointers.
-
-## Missing fields
-
-Grok does not invent required fields.
-
-If a required field is missing, return:
-
-[BLOCKED] Reason: INCOMPLETE_TASK_ENVELOPE
-
-and list field names only.
-
-## Execution state is not stored here
-
-Do not store mutable owner/session/CI/review/audit state in this envelope.
-
-Mutable execution facts belong only in the canonical mechanical control record
-defined by RUNBOOKS/DISPATCH.md.
+Missing required fields: BLOCKED / INCOMPLETE_TASK_ENVELOPE, field names only.

@@ -1,4 +1,4 @@
-# DISPATCH RUNBOOK v2
+# DISPATCH RUNBOOK v3
 
 This is a deterministic execution contract.
 Grok does not extend it mid-session.
@@ -17,6 +17,10 @@ SLACK_PROJECT: `#film-unit`
 SLACK_CONTROL: `#ai-control`
 SLACK_DECISIONS: `#ai-decisions`
 SLACK_AUDIT: `#ai-audit`
+
+OPERATING_MODE: `MANUAL_ONLY`
+AUTOMATED_ACTION_ADAPTER: `MECHANICAL`
+GROK_EVENT_OVERRIDES: `NONE`
 
 DEFAULT_EXECUTION_CLASS: `DEVIN_STANDARD`
 DEFAULT_AUDIT_FLOOR: `A1`
@@ -44,7 +48,7 @@ Before automation is enabled, the mechanical layer must have:
 
 - configured USER actor identity;
 - configured ASTRA actor identity;
-- configured Grok/router identity;
+- configured action-adapter identities (Grok only for explicit overrides);
 - configured Devin/provider identity;
 - configured independent reviewer identity/lane;
 - per-TASK_KEY single-writer serialization;
@@ -52,8 +56,9 @@ Before automation is enabled, the mechanical layer must have:
 - self-event filtering;
 - provider launch reconciliation or explicit UNKNOWN handling.
 
-Until these exist, these documents are policy only; they do not prove runtime
-enforcement.
+The implementation must receive an independent exact-SHA audit and explicit
+User activation after these checks. Documentation approval does not enable it.
+Until then the manual protocol in section 8 applies.
 
 ## 3. Raw event intake
 
@@ -116,6 +121,8 @@ Control record minimum facts:
 - TASK_KEY
 - TASK_REVISION
 - canonical task/spec pointer
+- CANONICAL_SLACK_THREAD (N/A until linked)
+- CONTROL_RECORD_VERSION and pending action/delivery IDs
 - CLAIM_ID
 - CLAIM_STATE
 - LAUNCH_REQUEST_ID
@@ -153,95 +160,51 @@ Both are required.
 
 ## 7. Claim and launch protocol
 
-### 7.1 Existing owner
+Under TASK_KEY serialization:
+- Existing active owner: relay eligible feedback to that owner; never launch another.
+- Existing unresolved claim/request: reuse it; never create a competing claim.
+- Otherwise persist CLAIM_ID, designated executor, stable LAUNCH_REQUEST_ID,
+  LAUNCH_STATE=NOT_STARTED and a durable pending dispatch action together.
 
-If OWNER_SESSION_ID exists:
-- do not create a new writer;
-- route eligible feedback to that owner;
-- record the new EVENT_ID as observed;
-- end.
+Before any external launch, atomically consume that action and persist
+LAUNCH_STATE=SUBMITTING. Only the executor holding that permission may send.
+NOT_STARTED therefore proves no send was authorized; resume only the same request.
+SUBMITTING after a crash is potentially sent: reconcile or mark UNKNOWN; never
+automatically launch again. Timeout/claim expiry alone does not authorize takeover.
 
-This remains true when the incoming EVENT_ID is new.
+Use LAUNCH_REQUEST_ID as the provider idempotency key when supported.
+Confirmed receipt records CONFIRMED + OWNER_SESSION_ID + worker/attempt.
+Provider proof of no session permits FAILED_PRESTART; a configured retry event
+may reauthorize that same task only after the prior executor is fenced.
+Ambiguous outcome records UNKNOWN and blocks relaunch until provider evidence
+or explicit User resolution proves the safe next step. Slack response loss
+never undoes a confirmed GitHub owner record.
 
-### 7.2 New owner claim
+State mutation and pending-action persistence must be atomic in the serialized
+store. GitHub holds the durable projection; projection failure blocks further
+launches until reconciled. Pending NOT_STARTED actions may be resumed by an
+explicit recovery event, not polling. This is not a claim of exactly-once
+external execution.
 
-Under TASK_KEY serialization, if there is no owner and no unresolved launch:
+## 8. Manual dispatch and outage
 
-1. create CLAIM_ID;
-2. set CLAIM_STATE=`CLAIMED`;
-3. create stable LAUNCH_REQUEST_ID;
-4. set LAUNCH_STATE=`NOT_STARTED`;
-5. persist the control record;
-6. emit normalized `DISPATCH_ALLOWED`.
+OPERATING_MODE=MANUAL_ONLY until the activation gate passes. All automatic
+dispatchers are disabled. User is the sole launch executor and control-record
+writer in this mode; a comment alone is not a concurrent lock.
 
-Only the designated launch executor may continue that claim.
+Before direct User -> Devin dispatch:
+1. identify canonical task/revision and existing owner/request;
+2. reuse an active owner; block if any unresolved SUBMITTING/UNKNOWN request exists;
+3. durably reserve CLAIM_ID/LAUNCH_REQUEST_ID and record SUBMITTING before launch;
+4. send only the task pointer/revision and record the resulting session ID.
+If the GitHub reservation cannot be recorded, do not launch. Response loss
+requires reconciliation, not a second session. Do not enable automation while
+a manual claim/send is unresolved.
 
-### 7.3 Launch
-
-Grok receives `DISPATCH_ALLOWED`, launches exactly the worker/class named in
-the canonical envelope, and returns a structured launch receipt containing the
-same CLAIM_ID and LAUNCH_REQUEST_ID.
-
-If the provider supports an idempotency key, LAUNCH_REQUEST_ID must be used.
-
-### 7.4 Confirmed success
-
-Mechanical layer records:
-
-LAUNCH_STATE=`CONFIRMED`
-OWNER_SESSION_ID=<provider session>
-OWNER_WORKER=<worker>
-ATTEMPT_ID=<attempt>
-
-Then derived state may become RUNNING.
-
-### 7.5 Confirmed pre-execution failure
-
-If the provider proves that no worker session was created:
-
-LAUNCH_STATE=`FAILED_PRESTART`
-
-A retry requires an explicit retry event/rule and reuses the same task control
-record. It does not create a competing owner.
-
-### 7.6 Unknown outcome
-
-If launch may have succeeded but the response is lost/ambiguous:
-
-LAUNCH_STATE=`UNKNOWN`
-
-Do not auto-relaunch.
-
-Reconcile using LAUNCH_REQUEST_ID/provider evidence if the provider supports it.
-If existence cannot be determined mechanically, stop and require User
-resolution.
-
-UNKNOWN is intentionally safer than duplicate execution.
-
-### 7.7 Crash after claim before launch
-
-If the record proves LAUNCH_STATE=`NOT_STARTED`, the designated launch
-executor may resume that exact CLAIM_ID/LAUNCH_REQUEST_ID.
-
-Do not create a new claim.
-
-## 8. Manual dispatch during Grok outage
-
-Grok quota/outage is recorded by the caller/mechanical layer.
-
-Before manual User dispatch, the same control record must be checked.
-
-Manual dispatch is forbidden when:
-
-- OWNER_SESSION_ID exists;
-- LAUNCH_STATE=`UNKNOWN`;
-- another active claim belongs to a different executor.
-
-A mechanical `MANUAL_CLAIM_ALLOWED` action should reserve the existing task
-before User launches Devin manually. The resulting provider session ID must be
-written back to the same control record.
-
-No replacement AI dispatcher is appointed.
+In automated mode manual dispatch requires a serialized MANUAL_CLAIM_ALLOWED
+action and the same launch protocol. Outage does not bypass ownership.
+The caller records and projects Grok quota failure itself. No replacement AI
+dispatcher is appointed; recovery requires an explicit event/User action.
 
 ## 9. Task-envelope use
 
@@ -261,6 +224,10 @@ use `DEVIN_STANDARD`.
 A0/CHEAP requires explicit A0 authorization.
 
 ## 10. Writer autonomy and feedback
+
+No routine Astra preflight, plan approval or progress review is required for
+an already authorized task. Devin investigates and selects implementation
+within approved contracts. CI failure has no arbitrary two-attempt cutoff.
 
 Normal writer feedback always returns to the same OWNER_SESSION_ID.
 
@@ -299,6 +266,13 @@ If a consequential User decision changes task scope/contract:
 - invalidate approvals tied to the older task revision where applicable;
 - only then resume the same owner or start an explicitly authorized new attempt.
 
+HEAD_CHANGED is accepted only after reading the live PR head under task
+serialization; delayed events cannot restore an old head. PR_OPEN may bind
+the authenticated owner's PR before DEVIN_DONE arrives. All result events
+must match TASK_REVISION and the current request/run attempt, not only SHA.
+A merged/terminal task cannot resume its writer from late pre-merge events.
+Post-merge verification uses MERGE_SHA and the post-merge phase, not PR HEAD.
+
 ## 12. Verification gate
 
 A single successful check is never equivalent to CI_GATE_PASS.
@@ -319,12 +293,16 @@ local evidence pointers.
 CI/verification failure:
 - update current-head verification facts;
 - emit one normalized failure event for the new gate state;
-- Grok relays exact failure pointers to the same owner;
+- The configured adapter relays exact failure pointers to the same owner;
 - Grok does not debug;
 - repeated identical raw check events do not repeatedly invoke Grok unless gate
   state materially changes.
 
 ## 13. Independent review gate
+
+Reviewer sends use the same NOT_STARTED -> SUBMITTING -> CONFIRMED/UNKNOWN
+protocol as writer launches, keyed by REVIEW_REQUEST_ID/REVIEW_ATTEMPT_ID.
+Persist the pending action with the request; a crash is not permission to resend.
 
 Review dispatch is itself idempotent and serialized.
 
@@ -338,7 +316,7 @@ task revision + HEAD/evidence SHA:
 5. persist the control record;
 6. emit exactly one `REVIEW_DISPATCH_ALLOWED`.
 
-Grok returns a review-launch receipt keyed by REVIEW_REQUEST_ID.
+The configured adapter returns a review-launch receipt keyed by REVIEW_REQUEST_ID.
 
 Confirmed reviewer launch records the reviewer session and
 REVIEW_LAUNCH_STATE=`CONFIRMED`.
@@ -354,7 +332,7 @@ read-only review before Astra audit.
 After verification gate success, the mechanical layer emits
 `REVIEW_DISPATCH_ALLOWED` if no current-head review exists.
 
-Grok launches the configured REVIEWER_LANE_ID in read-only mode and ends.
+The configured adapter launches the configured REVIEWER_LANE_ID in read-only mode and ends.
 
 If the reviewer lane is unavailable:
 
@@ -387,20 +365,23 @@ HEAD/evidence SHA.
 Before emitting `AUDIT_REQUIRED`, the mechanical layer:
 
 1. reuses an existing accepted audit result for that exact revision/SHA only;
-2. if a matching AUDIT_REQUEST_ID is already REQUESTED/DELIVERED, does not
+2. if a matching AUDIT_REQUEST_ID is already REQUESTED/DELIVERED/UNKNOWN, does not
    create a second request;
 3. otherwise creates stable AUDIT_REQUEST_ID, sets
-   AUDIT_REQUEST_STATE=`REQUESTED`, persists it, then emits one request.
+   AUDIT_REQUEST_STATE=`REQUESTED`, atomically persists the pending delivery,
+   then emits one request. Before sending, persist SUBMITTING; a crash or lost
+   response blocks resending until reconciled. Include SUBMITTING in dedupe.
 
 If audit-request delivery outcome is ambiguous:
 AUDIT_REQUEST_STATE=`UNKNOWN`.
 Do not blindly repost. Reconcile the existing request or require User action.
 
-Grok sends an audit packet to `#ai-audit` only on normalized
+The configured adapter sends an audit packet to `#ai-audit` only on normalized
 `AUDIT_REQUIRED`.
 
 Packet fields:
 
+AUDIT_REQUEST_ID:
 Project:
 Task:
 Task revision:
@@ -420,6 +401,7 @@ Astra independently reads the actual diff/evidence and authoritative docs.
 
 Astra must return:
 
+AUDIT_REQUEST_ID:
 AUDIT_RESULT: PASS | PASS_WITH_NOTES | FAIL | DECISION_REQUIRED
 AUDITED_TASK_REVISION:
 AUDITED_HEAD_OR_EVIDENCE_SHA:
@@ -436,6 +418,11 @@ relay findings unchanged to the same writer.
 
 Astra DECISION_REQUIRED:
 record blocker and emit normalized decision request.
+
+Audit results must also match the outstanding AUDIT_REQUEST_ID.
+Re-audit starts with the prior audited SHA delta and unresolved findings,
+checks affected dependencies/contracts, then issues a new current-SHA result.
+A writer evidence index is navigation, never an independent proof.
 
 ## 15. Consequential decision gate
 
@@ -473,6 +460,13 @@ If A0 qualification fails:
 promote to A1 → independent review → Astra audit.
 
 A0 never bypasses repository-specific evidence/bookkeeping rules.
+
+Path checks alone do not prove A0 semantics. Final A0 qualification also
+requires an authenticated User attestation of typo/format-only changes for
+the exact revision/HEAD, or an approved deterministic transform verifier.
+Otherwise promote to A1. For qualified A0 only, Astra audit and separate
+review are N/A unless repository rules require them; section 18 audit/depth
+predicates apply to A1+. All verification/blocker/merge gates still apply.
 
 ## 17. Derived states
 
@@ -556,22 +550,27 @@ derive DONE.
 
 Grok never merges.
 
-## 21. Status/event actions for Grok
+## 21. Fixed action ownership
 
-Grok handles only these normalized actions:
+ACTION_ADAPTER is configured per event below, not selected by Grok.
+Automation defaults to MECHANICAL for every row. A User-approved explicit
+mapping may select GROK for a limited launch/relay action; never both.
+No configuration silently falls back to another AI on error.
 
-| Normalized event | One Grok action |
-|---|---|
-| DISPATCH_ALLOWED | launch designated writer; return launch receipt; end |
-| WRITER_FEEDBACK_REQUIRED | relay exact pointer to existing owner; end |
-| REVIEW_DISPATCH_ALLOWED | launch configured read-only reviewer; return receipt; end |
-| AUDIT_REQUIRED | post exact audit packet to #ai-audit; end |
-| DECISION_REQUIRED | post exact decision packet to #ai-decisions; end |
-| BLOCKED_STATUS | post one short fields-only status; end |
-| READY_FOR_MERGE | post fields-only status; end |
-| DONE / DONE_NO_CHANGE | post fields-only status; end |
+| Normalized event | Action | Default adapter |
+|---|---|---|
+| DISPATCH_ALLOWED | launch designated owner using section 7; record receipt | MECHANICAL |
+| WRITER_FEEDBACK_REQUIRED | exact pointer to existing owner | MECHANICAL |
+| REVIEW_DISPATCH_ALLOWED | launch configured read-only reviewer | MECHANICAL |
+| AUDIT_REQUIRED | exact audit packet to #ai-audit | MECHANICAL |
+| DECISION_REQUIRED | exact decision packet to #ai-decisions | MECHANICAL |
+| BLOCKED_STATUS | durable blocker + short status/Human action | MECHANICAL |
+| READY_FOR_MERGE | project-thread notification only | MECHANICAL |
+| DONE / DONE_NO_CHANGE | project-thread final pointers | MECHANICAL |
 
-All other state aggregation is mechanical-layer work.
+When explicitly mapped to GROK: one normalized event, one authorized action,
+one receipt, end session. State mutation/aggregation stays mechanical.
+In MANUAL_ONLY mode User performs delivery with the same durable facts.
 
 ## 22. Slack
 
@@ -580,7 +579,12 @@ All other state aggregation is mechanical-layer work.
 `#ai-audit` — authenticated Astra audit request/result
 `#film-unit` — project task/status cockpit
 
-One task → one thread.
+One task → one canonical thread. GitHub task and Slack thread link both ways.
+Project statuses are projections of the durable control record, keyed by
+CONTROL_RECORD_VERSION; old/repeated projections are suppressed.
+Fields: task/revision, state, owner/session, PR/HEAD, verification/review/audit,
+blocker pointer, required Human action. Long context stays behind GitHub pointers.
+Astra attention is #ai-decisions/#ai-audit, never the project-channel firehose.
 
 Do not subscribe Grok to every Slack message.
 Only explicit commands or normalized workflow events invoke Grok.
@@ -607,7 +611,11 @@ before claiming least privilege is enforced.
 
 ## 24. Cost discipline
 
-Mechanical layer deduplicates raw repeats before Grok invocation.
-Only state transitions that require routing wake Grok.
-CI matrix/check chatter does not wake Grok check-by-check.
-Grok never waits for completion and never polls.
+Deduplicate raw events and aggregate CI matrices before any AI invocation.
+Unchanged state does not produce another status, review or audit request.
+Astra receives decision questions or gate-ready evidence, not progress chatter.
+Devin owns repository investigation and the entire test/fix loop.
+No polling, standing sessions or transcript surveillance.
+Measure per-completed-task agent cost, Astra usage, User interventions and
+audit rework; report unavailable usage metrics as unknown.
+

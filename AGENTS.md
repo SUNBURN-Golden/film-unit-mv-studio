@@ -60,8 +60,9 @@ A GitHub issue/comment may be the durable projection of the control record, but
 real per-task serialization primitive such as a queue, lock, or GitHub Actions
 concurrency group with one writer for control-state mutation.
 
-Automation is not considered ready until this mechanical contract is actually
-implemented and actor identities are configured.
+Automation remains disabled until the mechanical layer is implemented,
+independently audited at its exact SHA and explicitly enabled by User.
+Until then User may perform serialized manual dispatch under the runbook.
 
 ## 4. Canonical task and ownership
 
@@ -116,6 +117,8 @@ Grok must not:
 - appoint another model as replacement dispatcher.
 
 If a deterministic rule cannot decide, Grok stops rather than improvises.
+The runbook's fixed action mapping selects the executor; permitted Grok actions
+are not a requirement to invoke Grok on every event.
 
 ## 6. Devin autonomy
 
@@ -142,8 +145,9 @@ investigate
 → retest
 → PR/evidence.
 
-A CI failure does not terminate this loop. Grok only relays the exact failure
-pointer to the same owner.
+A CI failure does not terminate this loop. The configured relay delivers only
+the exact failure pointer to the same owner. No arbitrary two-failure cutoff.
+Do not request routine plan approval or involve Astra in ordinary debugging.
 
 Devin may explicitly report `STALLED` when it cannot make progress. A
 mechanical budget/cost guard may also emit `BUDGET_LIMIT_REACHED`. Grok does
@@ -231,8 +235,13 @@ Persistent truth order:
 5. Slack transient messages;
 6. agent memory.
 
-Slack is not memory.
-Agent memory is not authority.
+Slack tells everyone what is happening. GitHub records what is true.
+Agent memory and Devin reusable instructions are not independent authorities;
+they must reference the current GitHub rules.
+Do not commit per-task runtime status, dispatch/audit/review logs or transcripts.
+Existing immutable task specs, ADRs and required engineering evidence/bookkeeping
+remain valid repository documents. Issue/PR records contain canonical tasks,
+control projections, findings, decisions and evidence, not transcript dumps.
 Consequential decisions and audit outcomes must have durable GitHub pointers.
 
 ## 11. Credentials and actor validation
@@ -263,9 +272,9 @@ Repo-scoped credentials are preferred over one all-repositories write token.
 Grok quota/outage is detected by the caller/mechanical layer, not by Grok
 reasoning after Grok is unavailable.
 
-The mechanical layer records:
-
-`[BLOCKED] Reason: GROK_QUOTA`
+If a configured Grok action fails, the caller/mechanical layer records the
+blocker in GitHub and projects `[BLOCKED] Reason: GROK_QUOTA` to Slack itself.
+Mechanical routes do not require Grok quota.
 
 No model is automatically appointed as replacement dispatcher.
 
@@ -284,15 +293,25 @@ may assert.
 
 ## 14. Cost discipline
 
-No standing routines.
-No polling.
-No raw Slack firehose.
-No long transcript re-reading.
-No duplicated semantic analysis by Grok.
-No Cloud Devin for status lookup/grep/typo when an authorized cheap lane exists.
+Astra is invoked for consequential decisions, gate-ready independent audits,
+and re-audits after fixes. Clear approved tasks need no Astra preflight or
+routine plan approval. Devin investigates repository details itself.
 
-The ideal Grok invocation receives one normalized event, performs one
-deterministic action, returns one structured result, and ends.
+Reviewer evidence and the writer's acceptance-to-test index are navigation,
+not proof. Astra independently checks the actual diff, authoritative contracts
+and affected behavior; worker self-classification never sets the final depth.
+Re-audit starts at the previous audited SHA delta and unresolved findings,
+expands to affected dependencies, and issues a new result for the current
+revision/HEAD. Old PASS never transfers.
+
+No Cloud Devin for status/grep/typo when an authorized cheap lane exists.
+No standing routines, polling, raw Slack firehose, transcript surveillance or
+semantic analysis by Grok. Deterministic delivery uses the mechanical adapter;
+Grok is an optional configured relay, not a mandatory hop.
+Keep existing required review gates. Review scope must be explicit; no extra
+reviewer is added merely to restate another agent's report.
+Measure completed-task cost, Astra usage, User interventions and audit rework
+separately; do not claim token savings without observations.
 
 ## Repository-specific engineering constraints
 
