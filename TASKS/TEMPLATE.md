@@ -1,72 +1,66 @@
-# TASK PACKAGE
+# TASK ENVELOPE v2
 
-Copy this template mechanically. Fill variables from explicit User/Astra input,
-Slack source messages, GitHub issues, or authoritative repository documents.
-Do not rewrite source documents. Do not invent missing consequential requirements.
+This file is a pointer envelope, not a second task specification.
+Do not copy authoritative documents into it.
+Do not paraphrase source requirements when a durable pointer exists.
 
-EVENT_ID:
+## Required identity
+
 TASK_ID:
 PROJECT:
-WORKER: DEVIN | CHEAP_WORKER
-AUDIT_DEPTH_INITIAL: A0 | A1
-
-## OBJECTIVE
-
-OBJECTIVE:
-OBJECTIVE_SOURCE:
-
-## SOURCE OF TRUTH
-
 REPO:
-BASE_BRANCH: main
-ISSUE:
-BASE_SHA:
-AUTHORITATIVE_DOCS:
+CANONICAL_TASK_POINTER:
+CONTROL_RECORD_POINTER:
+TASK_REVISION:
 
-## SCOPE
+<!-- TASK_KEY is mechanically derived as REPO + TASK_ID. -->
 
-SCOPE:
-NON_SCOPE:
+## Required source pointers
 
-## EXISTING CONTRACTS
+OBJECTIVE_POINTER:
+TASK_SPEC_POINTER:
+TASK_SPEC_REVISION:
+APPROVAL_POINTER:
+AUTHORITATIVE_DOC_POINTERS:
 
-EXISTING_CONTRACTS:
+## Dispatch classification
 
-## INVARIANTS
+EXECUTION_CLASS: DEVIN_STANDARD | CHEAP_MECHANICAL
+DELIVERABLE_MODE: PR | NO_CHANGE_ALLOWED | NON_CODE_EVIDENCE
+AUDIT_FLOOR: A0 | A1 | A2 | A3
 
-INVARIANTS:
+A0_AUTHORIZATION_POINTER:
+<!-- REQUIRED when EXECUTION_CLASS=CHEAP_MECHANICAL; otherwise N/A -->
 
-## LOCKED AREAS
+## Project policy pointers
 
-LOCKED_AREAS:
+REVIEW_POLICY:
+REVIEWER_LANE_ID:
+VERIFICATION_POLICY:
+POST_MERGE_POLICY:
 
-## ACCEPTANCE CRITERIA
+## Boundary pointers
 
-ACCEPTANCE_CRITERIA:
+SCOPE_POINTER:
+NON_SCOPE_POINTER:
+CONTRACT_POINTERS:
+INVARIANT_POINTERS:
+LOCKED_AREAS_POINTERS:
+PHASE_OR_LAYER_POINTER:
+<!-- Use N/A only when the project has no such gate. -->
 
-## REQUIRED TESTS
+## Required output from writer
 
-REQUIRED_TESTS:
+- exact task revision consumed;
+- deliverable result: PR | NO_CHANGE | NON_CODE_EVIDENCE;
+- PR pointer when applicable;
+- exact HEAD SHA when applicable;
+- verification evidence pointers;
+- TOUCHED_AREAS self-report;
+- CONTRACT_CHANGE_REQUIRED: NO | YES self-report;
+- BLOCKED or STALLED report when applicable.
 
-## REQUIRED VERIFICATION
-
-REQUIRED_VERIFICATION:
-
-## EXPECTED OUTPUT
-
-- code or explicit no-code result
-- tests where required
-- PR
-- exact HEAD SHA
-- CI evidence
-- verification evidence
-- TOUCHED_AREAS
-- CONTRACT_CHANGE_REQUIRED: NO | YES
-- any DECISION_REQUIRED blocker
-
-## TOUCHED_AREAS
-
-Use zero or more exact values:
+TOUCHED_AREAS self-report may use:
 
 NONE
 CONCURRENCY
@@ -79,33 +73,48 @@ INVARIANT
 SCHEMA
 PUBLIC_CONTRACT
 SUI
+BLOCKCHAIN
 FINANCIAL_SEMANTICS
+AUTHORITY_BOUNDARY
 
-## ESCALATE_IF
+These reports are evidence only. Astra independently verifies classification.
 
-- architecture / contract / schema / security choice appears
-- approved invariant cannot be kept
-- two materially different designs require selection
-- acceptance criteria conflict
-- authoritative documents materially conflict
-- consequential scope expansion is required
+## Escalation boundary
 
-Return DECISION_REQUIRED with pointers and evidence instead of guessing.
+Devin does NOT escalate merely because two ordinary implementation approaches
+exist.
 
-## POINTERS_ONLY
+Escalate only when completing the approved task requires a consequential change
+outside approved scope/contracts/architecture, including a required change to:
 
-Objective source:
-Specification:
-Architecture:
-Relevant issue:
-Relevant PR:
-Relevant docs:
+- invariant;
+- schema contract;
+- public contract;
+- authority/security boundary;
+- protocol semantics;
+- blockchain/Sui architecture;
+- financial semantics;
+- approved product/architecture decision.
 
-## DISPATCH RECORD
+Return:
 
-After successful launch Grok records a machine-readable marker in the associated
-GitHub task/issue:
+DECISION_REQUIRED
 
-`<!-- GROK_DISPATCH event_id=<EVENT_ID> task_id=<TASK_ID> worker=<WORKER> -->`
+with exact source/evidence pointers.
 
-The same EVENT_ID must never create two worker sessions.
+## Missing fields
+
+Grok does not invent required fields.
+
+If a required field is missing, return:
+
+[BLOCKED] Reason: INCOMPLETE_TASK_ENVELOPE
+
+and list field names only.
+
+## Execution state is not stored here
+
+Do not store mutable owner/session/CI/review/audit state in this envelope.
+
+Mutable execution facts belong only in the canonical mechanical control record
+defined by RUNBOOKS/DISPATCH.md.
