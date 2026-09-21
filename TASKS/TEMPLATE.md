@@ -32,6 +32,14 @@ AUDIT_FLOOR: A0 | A1 | A2 | A3
 A0_AUTHORIZATION_POINTER:
 <!-- REQUIRED when EXECUTION_CLASS=CHEAP_MECHANICAL; otherwise N/A -->
 
+A0_CHANGE_KIND: TYPO | FORMAT_ONLY | DOC_MECHANICAL | N/A
+A0_ALLOWED_PATHS:
+A0_FORBIDDEN_PATHS:
+<!--
+For A0, these are REQUIRED and must be exact paths/globs approved by the
+authorization pointer. Grok does not derive them.
+-->
+
 ## Project policy pointers
 
 REVIEW_POLICY:
