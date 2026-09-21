@@ -29,7 +29,7 @@ pointers.
 | Role | Job | Must not |
 |---|---|---|
 | USER | Final authority: product scope, consequential architecture choice, risk acceptance, merge | Be silently substituted by an agent |
-| ASTRA | Principal Architect + Independent Auditor | Implement audit fixes |
+| ASTRA | Principal Architect + default Independent Auditor | Implement audit fixes; audit a change it authored or modified |
 | GROK | Stateless dispatcher / relay for normalized events | Engineer, architect, reviewer, event bus, polling daemon |
 | DEVIN | Primary ticket owner: investigate → implement → test → debug → PR/evidence | Change approved architecture silently |
 | CHEAP_WORKER | Explicitly authorized mechanical work or independent read-only review | Become a second writer on a Devin ticket |
@@ -200,6 +200,18 @@ docs and report:
 - exact audited HEAD SHA or evidence SHA;
 - audit result.
 
+Independent audit requires an auditor that did not author or modify the
+audited change. Self-review by any agent/session that participated in writing
+or modifying the change never satisfies the independent audit gate.
+
+Astra is the default auditor. If Astra authored or modified the change
+(author conflict), only User may designate an independent auditor that did not
+participate in the authorship. The designation is a durable GitHub pointer that
+names the task/PR, task revision and audit scope. Grok or the author may not
+designate the auditor, and no actor may lower the audit floor because of the
+conflict. A designated-auditor result is recorded under the actual auditor
+identity/session and is never presented as an Astra result.
+
 Approved A3 contract preserved:
 Devin may implement → independent review → A3 audit.
 
@@ -221,8 +233,13 @@ security, contract or acceptance failure.
 
 Grok relays results literally and never softens FAIL.
 
+Every audit result is bound to the actual auditor identity/session, the exact
+audited HEAD/evidence SHA, VERIFIED_AUDIT_DEPTH, finding pointers and, for a
+designated auditor, the User designation pointer.
+
 Audit/review/CI evidence is bound to the exact current revision/head. When the
-relevant HEAD changes, stale gate facts do not transfer.
+relevant HEAD changes, stale gate facts do not transfer, including a PASS
+issued by a designated auditor.
 
 ## 10. Durable truth
 
@@ -284,7 +301,7 @@ launch when an owner exists or launch state is `UNKNOWN`.
 ## 13. Merge
 
 Grok never merges.
-Astra PASS is not a merge command.
+Astra PASS or a designated-auditor PASS is not a merge command.
 Only User authorizes merge.
 
 `READY_FOR_MERGE` is a derived mechanical predicate for the current task

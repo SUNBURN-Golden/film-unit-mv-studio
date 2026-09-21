@@ -399,10 +399,12 @@ Audit floor:
 
 Astra independently reads the actual diff/evidence and authoritative docs.
 
-Astra must return:
+The accepted auditor (Astra by default) must return:
 
 AUDIT_REQUEST_ID:
 AUDIT_RESULT: PASS | PASS_WITH_NOTES | FAIL | DECISION_REQUIRED
+AUDITOR_IDENTITY_OR_SESSION:
+AUDITOR_DESIGNATION_POINTER: (required when the auditor is not Astra)
 AUDITED_TASK_REVISION:
 AUDITED_HEAD_OR_EVIDENCE_SHA:
 VERIFIED_AUDIT_DEPTH:
@@ -410,8 +412,23 @@ VERIFIED_TOUCHED_AREAS:
 VERIFIED_CONTRACT_CHANGE_REQUIRED:
 FINDING_POINTERS:
 
-The mechanical layer accepts an audit result only from the configured ASTRA
-actor and only for the current task revision and current head/evidence SHA.
+The mechanical layer accepts an audit result only from the accepted auditor
+and only for the current task revision and current head/evidence SHA.
+
+The accepted auditor is:
+
+- the configured ASTRA actor, unless Astra authored or modified the change
+  (author conflict); or
+- under author conflict, the independent auditor designated by a configured
+  User decision event whose durable GitHub designation pointer names this
+  task/PR, TASK_REVISION and audit scope, and who did not participate in the
+  authorship.
+
+Self-review by any writer/session that participated in the change is rejected.
+Grok or the author may not designate the auditor or lower the audit floor.
+A designated-auditor result is recorded with AUDITOR_IDENTITY_OR_SESSION and
+AUDITOR_DESIGNATION_POINTER; it is never recorded as an Astra result.
+A HEAD change invalidates any prior PASS regardless of who issued it.
 
 Astra FAIL:
 relay findings unchanged to the same writer.
@@ -514,7 +531,9 @@ For PR deliverables, READY_FOR_MERGE is true only when all are true:
 - no unresolved blocker/decision;
 - verification gate is satisfied for CURRENT_HEAD_SHA;
 - required independent review PASS matches CURRENT_HEAD_SHA;
-- Astra PASS or PASS_WITH_NOTES matches current task revision and HEAD;
+- PASS or PASS_WITH_NOTES from the accepted auditor (section 14; Astra, or
+  the User-designated independent auditor under author conflict) matches
+  current task revision and HEAD;
 - VERIFIED_AUDIT_DEPTH satisfies the project/audit floor and actual verified
   touched areas;
 - VERIFIED_CONTRACT_CHANGE_REQUIRED is NO, or the required User decision has
