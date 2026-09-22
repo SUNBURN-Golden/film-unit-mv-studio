@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "user_activation_approval": "NOT_APPROVED",
-  "user_activation_approval_pointer": "PENDING",
+  "user_activation_approval": "APPROVED",
+  "user_activation_approval_pointer": "https://github.com/BeautifulMind-JT/film-unit-mv-studio/pull/9#issuecomment-5774998991",
   "implementation_audit": "PENDING",
   "implementation_audit_pointer": "PENDING",
   "runner_preflight": "PENDING",
