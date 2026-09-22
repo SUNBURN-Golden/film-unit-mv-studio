@@ -41,7 +41,8 @@ def read(path, default=None):
         if default is not None:
             return default
         raise FilmError(f"Missing file: {path}")
-    return yaml.safe_load(path.read_text()) if path.suffix in {".yaml", ".yml"} else json.loads(path.read_text())
+    text = path.read_text(encoding="utf-8")
+    return yaml.safe_load(text) if path.suffix in {".yaml", ".yml"} else json.loads(text)
 
 
 def write(path, value):
@@ -55,7 +56,7 @@ def atomic_text(path, text):
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, name = tempfile.mkstemp(dir=path.parent, prefix=".tmp-")
     try:
-        with os.fdopen(fd, "w") as f:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
             f.write(text)
         os.replace(name, path)
     finally:
@@ -64,7 +65,8 @@ def atomic_text(path, text):
 
 
 def run(args, timeout=600):
-    result = subprocess.run([str(a) for a in args], capture_output=True, timeout=timeout)
+    result = subprocess.run([str(a) for a in args], capture_output=True, timeout=timeout,
+                            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
     if result.returncode:
         raise FilmError(result.stderr.decode(errors="replace")[-4000:])
     return result.stdout
@@ -96,18 +98,30 @@ def safe_path(project, relative):
 
 @contextlib.contextmanager
 def project_mutex(project):
-    # OS advisory lock is released after a crash. Supported on Linux/macOS.
-    import fcntl
+    # Both implementations fail fast and release the OS lock after a crash.
     lock = Path(project) / ".compile.lock"
-    with lock.open("a") as f:
+    with lock.open("a+b") as f:
+        if os.name == "nt":
+            import msvcrt
+            # Windows byte-range locks require a byte at the locked position.
+            if f.seek(0, os.SEEK_END) == 0:
+                f.write(b"\0")
+                f.flush()
+            f.seek(0)
+            acquire = lambda: msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
+            release = lambda: (f.seek(0), msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1))
+        else:
+            import fcntl
+            acquire = lambda: fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            release = lambda: fcntl.flock(f, fcntl.LOCK_UN)
         try:
-            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError as e:
+            acquire()
+        except OSError as e:
             raise FilmError("This project is already rendering in another process") from e
         try:
             yield
         finally:
-            fcntl.flock(f, fcntl.LOCK_UN)
+            release()
 
 
 def init_project(root, name, audio, brief, lyrics="", synthetic=False):
