@@ -60,3 +60,38 @@ def test_ffmpeg_checksum_and_fixed_path_extraction(tmp_path):
     extract_checked(archive, tmp_path / "runtime", expected_sha=checksum)
     assert (tmp_path / "runtime/bin/ffmpeg.exe").read_bytes() == b"test-ffmpeg"
     assert sorted(p.name for p in (tmp_path / "runtime").iterdir()) == ["bin", "download.json"]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows Job Objects require Windows")
+def test_windows_job_stops_server_and_its_encoder_children():
+    import ctypes
+    from ctypes import wintypes
+    from desktop.windows_job import Job
+    # Console Python is deliberate here; the windowed EXE has its own GUI smoke.
+    script = "import sys,subprocess,time;sys.stdin.readline();p=subprocess.Popen([sys.executable,'-c','import time;time.sleep(60)']);print(p.pid,flush=True);time.sleep(60)"
+    parent = subprocess.Popen([sys.executable, "-c", script], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+    job = Job()
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel.OpenProcess.restype = wintypes.HANDLE
+    kernel.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    kernel.WaitForSingleObject.restype = wintypes.DWORD
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    handle = None
+    try:
+        job.assign(parent)
+        parent.stdin.write("START\n")
+        parent.stdin.flush()
+        pid = int(parent.stdout.readline())
+        handle = kernel.OpenProcess(0x100000, False, pid)  # SYNCHRONIZE
+        assert handle
+        job.close()
+        parent.wait(timeout=5)
+        assert kernel.WaitForSingleObject(handle, 5000) == 0
+    finally:
+        job.close()
+        if parent.poll() is None:
+            parent.kill()
+        parent.communicate(timeout=5)
+        if handle:
+            kernel.CloseHandle(handle)

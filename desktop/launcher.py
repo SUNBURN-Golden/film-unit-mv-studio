@@ -103,7 +103,7 @@ def serve(port, gate):
         if time.monotonic() > deadline:
             return 1
         time.sleep(0.1)
-    path.unlink()
+    # Parent owns cleanup: Windows may still have the signal file open here.
     from streamlit.web import cli
     sys.argv = ["streamlit", "run", str(resource_root() / "app/control_panel.py"),
                 "--server.address=127.0.0.1", f"--server.port={port}",
