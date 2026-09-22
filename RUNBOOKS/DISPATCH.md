@@ -22,8 +22,10 @@ OPERATING_MODE: `MANUAL_ONLY`
 AUTOMATED_ACTION_ADAPTER: `MECHANICAL`
 GROK_EVENT_OVERRIDES: `NONE`
 
-DEFAULT_EXECUTION_CLASS: `DEVIN_STANDARD`
+DEFAULT_EXECUTION_CLASS: `BUILDER_STANDARD`
+DEFAULT_BUILDER_ID: `CONFIG_REQUIRED`
 DEFAULT_AUDIT_FLOOR: `A1`
+DEFAULT_ASTRA_GATE: `NONE`
 REVIEW_POLICY: `REQUIRED_NON_A0`
 REVIEWER_LANE_ID: `CONFIG_REQUIRED`
 
@@ -49,7 +51,7 @@ Before automation is enabled, the mechanical layer must have:
 - configured USER actor identity;
 - configured ASTRA actor identity;
 - configured action-adapter identities (Grok only for explicit overrides);
-- configured Devin/provider identity;
+- configured identity/adapter for every enabled builder provider;
 - configured independent reviewer identity/lane;
 - per-TASK_KEY single-writer serialization;
 - canonical-control-record read/write support;
@@ -84,7 +86,8 @@ create or identify the canonical GitHub task and task revision.
 
 ## 4. Normalized event contract
 
-Only normalized events may invoke Grok.
+Only normalized events may invoke external action adapters. Grok itself is not
+the event bus and is not required for deterministic workflow transitions.
 
 Every normalized event contains:
 
@@ -102,10 +105,14 @@ PR_POINTER:
 HEAD_SHA:
 RUN_OR_RESULT_ID:
 
-Fields that do not apply are explicit `N/A`; they are not silently omitted.
+Fields that do not apply are explicit N/A; they are not silently omitted.
 
 Result/gate events that refer to code must carry HEAD_SHA.
 Decision events must carry TASK_REVISION and durable decision pointer.
+
+Grok may receive only explicit authenticated User commands or normalized
+one-shot relay actions. Builder/reviewer selection comes from canonical
+configuration, never from Grok semantic judgment.
 
 ## 5. TASK_KEY and canonical control record
 
@@ -128,15 +135,16 @@ Control record minimum facts:
 - LAUNCH_REQUEST_ID
 - LAUNCH_STATE
 - ATTEMPT_ID
-- OWNER_WORKER
+- OWNER_WORKER / BUILDER_ID
 - OWNER_SESSION_ID
 - PR_POINTER
 - CURRENT_HEAD_SHA
 - verification policy and current-head verification facts
-- review policy, REVIEW_REQUEST_ID, REVIEW_LAUNCH_STATE, reviewer lane/session,
-  review attempt ID and current-head result
-- audit floor, AUDIT_REQUEST_ID, AUDIT_REQUEST_STATE, verified audit depth,
-  audited SHA/evidence SHA and result
+- review policy, review depth, REVIEW_REQUEST_ID, REVIEW_LAUNCH_STATE,
+  reviewer lane/session, review attempt ID, verified review depth/touched areas,
+  contract-change flag and current-head result
+- ASTRA_GATE, AUDIT_REQUEST_ID, AUDIT_REQUEST_STATE, verified audit depth,
+  audited SHA/evidence SHA and result when an Astra gate applies
 - unresolved blocker/decision pointer
 - merge SHA
 - post-merge result/follow-up pointer
@@ -192,54 +200,59 @@ OPERATING_MODE=MANUAL_ONLY until the activation gate passes. All automatic
 dispatchers are disabled. User is the sole launch executor and control-record
 writer in this mode; a comment alone is not a concurrent lock.
 
-Before direct User -> Devin dispatch:
-1. identify canonical task/revision and existing owner/request;
+Before direct User → designated-builder dispatch:
+
+1. identify canonical task/revision, configured BUILDER_ID and existing owner/request;
 2. reuse an active owner; block if any unresolved SUBMITTING/UNKNOWN request exists;
 3. durably reserve CLAIM_ID/LAUNCH_REQUEST_ID and record SUBMITTING before launch;
-4. send only the task pointer/revision and record the resulting session ID.
+4. send only the task pointer/revision to the configured builder adapter and
+   record the resulting provider/session ID.
+
 If the GitHub reservation cannot be recorded, do not launch. Response loss
 requires reconciliation, not a second session. Do not enable automation while
 a manual claim/send is unresolved.
 
 In automated mode manual dispatch requires a serialized MANUAL_CLAIM_ALLOWED
 action and the same launch protocol. Outage does not bypass ownership.
-The caller records and projects Grok quota failure itself. No replacement AI
-dispatcher is appointed; recovery requires an explicit event/User action.
+
+Grok outage is not a workflow outage: the same fixed mechanical command may be
+invoked by another authenticated caller. Provider outage for the assigned
+builder is recorded as a blocker; the control plane must not silently select a
+different builder. Reassignment requires an authorized control-record update
+and fencing/reconciliation of the prior attempt.
 
 ## 9. Task-envelope use
 
-Grok reads `TASKS/TEMPLATE.md` fields from the canonical task record.
+The mechanical layer reads TASKS/TEMPLATE.md fields from the canonical task
+record. Grok may relay a pointer but does not semantically interpret the task.
 
-Grok does not:
+No actor in the dispatch path may:
 
 - write a second task specification;
-- paraphrase objectives;
+- paraphrase objectives as a new authority;
 - infer omitted contracts/invariants;
-- choose execution class by semantic reading;
-- choose audit depth by semantic reading.
+- choose execution class, builder, reviewer, audit depth or Astra gate by
+  semantic reading.
 
-If the canonical task omits EXECUTION_CLASS:
-use `DEVIN_STANDARD`.
-
+If the canonical task omits EXECUTION_CLASS, use BUILDER_STANDARD.
+A BUILDER_STANDARD task without a configured BUILDER_ID is blocked.
 A0/CHEAP requires explicit A0 authorization.
 
 ## 10. Writer autonomy and feedback
 
 No routine Astra preflight, plan approval or progress review is required for
-an already authorized task. Devin investigates and selects implementation
-within approved contracts. CI failure has no arbitrary two-attempt cutoff.
+an already authorized task. The assigned builder investigates and selects
+ordinary implementation details within approved contracts. CI failure has no
+arbitrary two-attempt cutoff.
 
 Normal writer feedback always returns to the same OWNER_SESSION_ID.
+CI/review/Astra-gate findings do not create a new writer.
 
-CI/review/audit findings do not create a new writer.
+The assigned builder owns ordinary implementation/debug/test decisions inside
+approved boundaries.
 
-Devin owns ordinary implementation/debug/test decisions inside approved
-boundaries.
-
-`STALLED` must be explicitly reported by Devin/provider.
-`BUDGET_LIMIT_REACHED` may be emitted only by a configured mechanical cost
-guard.
-
+STALLED must be explicitly reported by the builder/provider.
+BUDGET_LIMIT_REACHED may be emitted only by a configured mechanical cost guard.
 Grok does not infer either condition.
 
 ## 11. HEAD and task-revision guards
@@ -268,7 +281,7 @@ If a consequential User decision changes task scope/contract:
 
 HEAD_CHANGED is accepted only after reading the live PR head under task
 serialization; delayed events cannot restore an old head. PR_OPEN may bind
-the authenticated owner's PR before DEVIN_DONE arrives. All result events
+the authenticated owner's PR before WRITER_DONE arrives. All result events
 must match TASK_REVISION and the current request/run attempt, not only SHA.
 A merged/terminal task cannot resume its writer from late pre-merge events.
 Post-merge verification uses MERGE_SHA and the post-merge phase, not PR HEAD.
@@ -300,151 +313,123 @@ CI/verification failure:
 
 ## 13. Independent review gate
 
-Reviewer sends use the same NOT_STARTED -> SUBMITTING -> CONFIRMED/UNKNOWN
-protocol as writer launches, keyed by REVIEW_REQUEST_ID/REVIEW_ATTEMPT_ID.
-Persist the pending action with the request; a crash is not permission to resend.
+Reviewer sends use the same NOT_STARTED → SUBMITTING →
+CONFIRMED/UNKNOWN protocol as writer launches, keyed by
+REVIEW_REQUEST_ID/REVIEW_ATTEMPT_ID. Persist the pending action with the
+request; a crash is not permission to resend.
 
-Review dispatch is itself idempotent and serialized.
+Review dispatch is idempotent and serialized.
 
 Under TASK_KEY serialization, before emitting a review request for the current
 task revision + HEAD/evidence SHA:
 
-1. if a matching review PASS/FAIL already exists, do not launch another reviewer;
+1. if a matching accepted review result already exists, do not launch another reviewer;
 2. if a matching REVIEW_REQUEST_ID/session already exists, reuse it;
 3. otherwise create stable REVIEW_REQUEST_ID and REVIEW_ATTEMPT_ID;
-4. set REVIEW_LAUNCH_STATE=`NOT_STARTED`;
+4. set REVIEW_LAUNCH_STATE=NOT_STARTED;
 5. persist the control record;
-6. emit exactly one `REVIEW_DISPATCH_ALLOWED`.
+6. emit exactly one REVIEW_DISPATCH_ALLOWED.
 
-The configured adapter returns a review-launch receipt keyed by REVIEW_REQUEST_ID.
+The configured adapter launches REVIEWER_LANE_ID in read-only mode.
+The reviewer must not have authored or modified the reviewed change. A peer
+builder is eligible only when it is acting in a distinct non-author review
+session and has no write role on that task.
 
-Confirmed reviewer launch records the reviewer session and
-REVIEW_LAUNCH_STATE=`CONFIRMED`.
+If reviewer launch may have succeeded but the outcome is ambiguous, set
+REVIEW_LAUNCH_STATE=UNKNOWN and do not auto-launch another reviewer.
 
-If reviewer launch may have succeeded but the outcome is ambiguous:
-REVIEW_LAUNCH_STATE=`UNKNOWN`.
-Do not auto-launch another reviewer. Reconcile the existing request or require
-User resolution.
+All non-A0 substantive work requires independent read-only review unless a
+stricter repository rule applies.
 
-All non-A0 substantive work in this control plane requires independent
-read-only review before Astra audit.
+The reviewer must inspect the actual diff/evidence and return, for the exact
+task revision and HEAD/evidence SHA:
 
-After verification gate success, the mechanical layer emits
-`REVIEW_DISPATCH_ALLOWED` if no current-head review exists.
+REVIEW_RESULT: PASS | PASS_WITH_NOTES | FAIL | DECISION_REQUIRED
+REVIEWER_IDENTITY_OR_SESSION:
+REVIEWED_TASK_REVISION:
+REVIEWED_HEAD_OR_EVIDENCE_SHA:
+VERIFIED_REVIEW_DEPTH:
+VERIFIED_TOUCHED_AREAS:
+VERIFIED_CONTRACT_CHANGE_REQUIRED:
+FINDING_POINTERS:
 
-The configured adapter launches the configured REVIEWER_LANE_ID in read-only mode and ends.
+PASS_WITH_NOTES cannot hide an unresolved correctness, contract, invariant,
+security or acceptance failure.
 
-If the reviewer lane is unavailable:
+Review result is accepted only from the configured reviewer and matching
+request/session. A new HEAD invalidates the prior review.
 
-derived state = `BLOCKED_REVIEW_LANE`
-
-Do not silently skip review.
-User may configure/assign another independent read-only reviewer; the reviewer
-must not become a writer.
-
-Review result is accepted only when:
-
-- source actor is the configured reviewer;
-- TASK_REVISION matches;
-- HEAD_SHA/evidence SHA matches current revision;
-- reviewer session/attempt ID matches the dispatched review.
-
-Review FAIL:
+FAIL:
 relay exact findings to the same writer.
-A new HEAD invalidates the prior review.
 
-Review PASS:
-mechanical layer records the current-head pass and emits
-`AUDIT_REQUIRED`.
+DECISION_REQUIRED or VERIFIED_CONTRACT_CHANGE_REQUIRED=YES:
+record the blocker and emit the required Astra/decision path; do not derive
+READY_FOR_MERGE.
 
-## 14. Astra audit gate
+PASS/PASS_WITH_NOTES with no consequential contract change:
+- if an Astra gate is required for this task/head, emit AUDIT_REQUIRED;
+- otherwise reevaluate READY_FOR_MERGE without invoking Astra.
 
-Audit-request delivery is also serialized by task revision + current
-HEAD/evidence SHA.
+## 14. Astra gate
 
-Before emitting `AUDIT_REQUIRED`, the mechanical layer:
+Astra is not the default routine A1/A2 reviewer.
 
-1. reuses an existing accepted audit result for that exact revision/SHA only;
-2. if a matching AUDIT_REQUEST_ID is already REQUESTED/DELIVERED/UNKNOWN, does not
-   create a second request;
-3. otherwise creates stable AUDIT_REQUEST_ID, sets
-   AUDIT_REQUEST_STATE=`REQUESTED`, atomically persists the pending delivery,
-   then emits one request. Before sending, persist SUBMITTING; a crash or lost
-   response blocks resending until reconciled. Include SUBMITTING in dedupe.
+This section applies only when at least one is true:
 
-If audit-request delivery outcome is ambiguous:
-AUDIT_REQUEST_STATE=`UNKNOWN`.
-Do not blindly repost. Reconcile the existing request or require User action.
+- AUDIT_FLOOR=A3;
+- ASTRA_GATE is MILESTONE, ARCHITECTURE or RELEASE;
+- an architecture exception or consequential contract-change question requires
+  Astra analysis;
+- a repository-specific authoritative rule explicitly requires Astra.
 
-The configured adapter sends an audit packet to `#ai-audit` only on normalized
-`AUDIT_REQUIRED`.
+A3 implies ASTRA_GATE=ARCHITECTURE.
 
-Packet fields:
+Astra-request delivery is serialized by task revision + current HEAD/evidence
+SHA (or by an explicitly identified milestone/release evidence packet).
 
-AUDIT_REQUEST_ID:
-Project:
-Task:
-Task revision:
-Repository:
-PR/evidence pointer:
-Base SHA:
-Current HEAD/evidence SHA:
-Objective/task-spec pointers:
-Authoritative document pointers:
-Verification facts:
-Independent review facts:
-Worker-reported touched areas:
-Worker-reported contract-change flag:
-Audit floor:
+Before emitting AUDIT_REQUIRED, the mechanical layer:
 
-Astra independently reads the actual diff/evidence and authoritative docs.
+1. reuses an existing accepted Astra-gate result for the exact applicable identity only;
+2. reuses any matching outstanding AUDIT_REQUEST_ID rather than duplicating it;
+3. otherwise creates stable AUDIT_REQUEST_ID, persists the pending delivery and
+   emits one normalized request.
 
-The accepted auditor (Astra by default) must return:
+Ambiguous delivery becomes AUDIT_REQUEST_STATE=UNKNOWN and blocks resending
+until reconciled.
+
+The packet contains exact task/milestone identity, revision, repository,
+PR/evidence pointers, base/current SHA where applicable, authoritative
+documents, verification facts, independent-review facts, reported touched
+areas/contract-change flag, audit floor and ASTRA_GATE.
+
+Astra independently reads the actual relevant diff/evidence and authoritative
+contracts. The accepted Astra-gate result contains:
 
 AUDIT_REQUEST_ID:
 AUDIT_RESULT: PASS | PASS_WITH_NOTES | FAIL | DECISION_REQUIRED
 AUDITOR_IDENTITY_OR_SESSION:
 AUDITOR_DESIGNATION_POINTER: (required when the auditor is not Astra)
-AUDITED_TASK_REVISION:
+AUDITED_TASK_REVISION_OR_MILESTONE:
 AUDITED_HEAD_OR_EVIDENCE_SHA:
 VERIFIED_AUDIT_DEPTH:
 VERIFIED_TOUCHED_AREAS:
 VERIFIED_CONTRACT_CHANGE_REQUIRED:
 FINDING_POINTERS:
 
-The mechanical layer accepts an audit result only from the accepted auditor
-and only for the current task revision and current head/evidence SHA.
+If Astra authored or modified the audited change, User must designate an
+independent non-author architecture auditor with a durable scope pointer.
+That auditor does not receive Astra's architecture/design authority.
 
-The accepted auditor is:
+Self-review by a writer/session that participated in the change is rejected.
+Grok or the author may not designate the auditor or lower the gate.
+A relevant HEAD/task revision change invalidates the prior result.
 
-- the configured ASTRA actor, unless Astra authored or modified the change
-  (author conflict); or
-- under author conflict, the independent auditor designated by a configured
-  User decision event whose durable GitHub designation pointer names this
-  task/PR, TASK_REVISION and audit scope, and who did not participate in the
-  authorship.
+FAIL returns exact findings to the same writer when a writer fix is appropriate.
+DECISION_REQUIRED records a blocker and emits the User decision path.
+Architecture decisions remain Astra analysis → User decision → durable pointer.
 
-Self-review by any writer/session that participated in the change is rejected.
-Grok or the author may not designate the auditor or lower the audit floor.
-A designated-auditor result is recorded with AUDITOR_IDENTITY_OR_SESSION and
-AUDITOR_DESIGNATION_POINTER; it is never recorded as an Astra result.
-A HEAD change invalidates any prior PASS regardless of who issued it.
-
-AUDIT_RESULT=FAIL:
-relay findings unchanged to the same writer.
-
-AUDIT_RESULT=DECISION_REQUIRED:
-record blocker and emit normalized decision request.
-
-Audit results must also match the outstanding AUDIT_REQUEST_ID.
-Re-audit starts with the prior audited SHA delta and unresolved findings,
-checks affected dependencies/contracts, then issues a new current-SHA result.
-A writer evidence index is navigation, never an independent proof.
-
-Bind each audit request to the accepted auditor identity and applicable User
-designation pointer. Result identity/session must match the authenticated sender
-and that request's auditor. Revoking or changing the designation invalidates
-outstanding requests and gate results under that designation.
+Re-audit begins with the previous audited SHA/evidence delta and unresolved
+findings, then expands as required by affected dependencies/contracts.
 
 ## 15. Consequential decision gate
 
@@ -479,16 +464,14 @@ explicit A0 authorization and path contract:
 Grok does not generate or broaden these path lists.
 
 If A0 qualification fails:
-promote to A1 → independent review → Astra audit.
+promote to A1 → independent review; invoke Astra only if the resulting task requires an Astra gate.
 
 A0 never bypasses repository-specific evidence/bookkeeping rules.
 
 Path checks alone do not prove A0 semantics. Final A0 qualification also
 requires an authenticated User attestation of typo/format-only changes for
 the exact revision/HEAD, or an approved deterministic transform verifier.
-Otherwise promote to A1. For qualified A0 only, Astra audit and separate
-review are N/A unless repository rules require them; section 18 audit/depth
-predicates apply to A1+. All verification/blocker/merge gates still apply.
+Otherwise promote to A1. For qualified A0 only, separate review and Astra gate are N/A unless repository rules require them; section 18 predicates apply to substantive work. All verification/blocker/merge gates still apply.
 
 ## 17. Derived states
 
@@ -535,14 +518,16 @@ For PR deliverables, READY_FOR_MERGE is true only when all are true:
 - task revision is current;
 - no unresolved blocker/decision;
 - verification gate is satisfied for CURRENT_HEAD_SHA;
-- required independent review PASS matches CURRENT_HEAD_SHA;
-- PASS or PASS_WITH_NOTES from the accepted auditor (section 14; Astra, or
-  the User-designated independent auditor under author conflict) matches
-  current task revision and HEAD;
-- VERIFIED_AUDIT_DEPTH satisfies the project/audit floor and actual verified
-  touched areas;
-- VERIFIED_CONTRACT_CHANGE_REQUIRED is NO, or the required User decision has
-  been durably recorded and reflected in the current task revision;
+- for non-A0 substantive work, required independent review PASS or
+  PASS_WITH_NOTES matches CURRENT_HEAD_SHA and VERIFIED_REVIEW_DEPTH satisfies
+  AUDIT_FLOOR;
+- VERIFIED_CONTRACT_CHANGE_REQUIRED from the accepted current-head review is NO,
+  or the required Astra/User decision has been durably recorded and reflected
+  in the current task revision;
+- if this task/head requires an Astra gate, PASS or PASS_WITH_NOTES from the
+  accepted Astra-gate auditor matches the applicable revision/head/evidence and
+  VERIFIED_AUDIT_DEPTH satisfies the required gate;
+- if no Astra gate is required, absence of an Astra result does not block merge;
 - project-specific merge prerequisites are satisfied.
 
 User still makes the merge decision.
@@ -552,14 +537,17 @@ User still makes the merge decision.
 A writer may return NO_CHANGE only when DELIVERABLE_MODE allows it.
 
 For A1+ NO_CHANGE:
+
 - provide exact evidence/base SHA;
 - perform required independent review of the finding/evidence;
-- Astra audits the no-change conclusion against that evidence SHA;
-- PASS may derive `DONE_NO_CHANGE`;
-- no merge is invented.
+- if the task requires an Astra gate, obtain that gate for the same evidence identity;
+- only then may the mechanical predicates derive DONE_NO_CHANGE.
 
-NON_CODE_EVIDENCE follows the project-specific approval/evidence gates; an
-engineering PR gate does not substitute for production/legal/content approval.
+No merge is invented.
+
+NON_CODE_EVIDENCE follows project-specific approval/evidence gates; an
+engineering review or Astra gate does not substitute for
+production/legal/content approval.
 
 ## 20. Merge and DONE
 
@@ -620,26 +608,41 @@ record/decision/audit pointer is written.
 
 Target logical permissions:
 
-- Grok router: repo/PR/check read + narrowly scoped task comment/status relay;
-  no source write, PR creation, admin, secrets, delete, merge.
-- Devin owner: assigned repo + task branch/PR only; no merge/admin.
+- Grok command relay: only enough permission to invoke approved control-plane
+  commands and relay narrow status; no source write, PR creation, admin,
+  secrets, delete or merge.
+- DEVIN / GROK_BUILD / GLM builder adapters: only the assigned repo + task
+  branch/PR; no merge/admin. Provider credentials may differ, but each active
+  writer remains scoped to one canonical task lineage.
 - Cheap writer: only explicitly assigned branch/task.
 - Reviewer: repo/PR read + finding comment only; no source write.
-- Astra: repo/PR read + audit/decision evidence write only; no source write/merge.
-- Mechanical layer: event validation + control-record/claim/status mutation
-  only; no source write/merge.
+- Astra: repo/PR read + architecture/audit/decision evidence write only; no
+  source write/merge.
+- Mechanical layer: event validation + control-record/claim/status mutation and
+  configured builder/reviewer launch only; no source write/merge.
 - User: final authority.
 
 Technical enforcement is separate from this document and must be verified
 before claiming least privilege is enforced.
 
+A shared build host is one security domain: separate worktrees/processes are
+not credential isolation. Do not place production/root/payment secrets on that
+host merely because builders use different worktrees.
+
 ## 24. Cost discipline
 
 Deduplicate raw events and aggregate CI matrices before any AI invocation.
-Unchanged state does not produce another status, review or audit request.
-Astra receives decision questions or gate-ready evidence, not progress chatter.
-Devin owns repository investigation and the entire test/fix loop.
-No polling, standing sessions or transcript surveillance.
-Measure per-completed-task agent cost, Astra usage, User interventions and
-audit rework; report unavailable usage metrics as unknown.
+Unchanged state does not produce another status, review or Astra request.
+
+Astra receives architecture exceptions, explicit milestone/release packets and
+A3 gate-ready evidence, not routine progress chatter or every A1/A2 PR.
+The assigned builder owns repository investigation and the entire
+test/fix/retest loop. Independent reviewers own routine non-author review.
+
+No polling, standing sessions or transcript surveillance. Grok should execute
+or relay short deterministic commands rather than read project context.
+
+Measure validated completed-task throughput, per-builder cost, Astra usage,
+Grok usage, User interventions, review findings, rework and integration
+conflicts. Report unavailable usage metrics as unknown.
 
