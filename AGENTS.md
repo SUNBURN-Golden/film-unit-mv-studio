@@ -47,12 +47,13 @@ Grok never chooses either by reading code, prose or model performance.
 
 ## 3. Mechanical control layer is mandatory
 
-Raw Slack/GitHub/provider events do not directly authorize Grok actions.
+Raw Slack/GitHub/provider events do not directly authorize external actions.
 
-Before Grok is invoked, the mechanical layer must:
+Before any builder, reviewer or optional Grok relay adapter is invoked, the
+mechanical layer must:
 
 1. validate the event actor/source against configured allowlists;
-2. map the event to one canonical `TASK_KEY = REPO + TASK_ID`;
+2. map the event to one canonical TASK_KEY = REPO + TASK_ID;
 3. process control-state mutation under a single-writer serialization primitive
    for that TASK_KEY;
 4. load/update the canonical control record;
@@ -60,9 +61,9 @@ Before Grok is invoked, the mechanical layer must:
 6. emit a normalized event containing the required identifiers.
 
 A GitHub issue/comment may be the durable projection of the control record, but
-**comment existence is not an atomic claim**. The implementation must use a
-real per-task serialization primitive such as a queue, lock, or GitHub Actions
-concurrency group with one writer for control-state mutation.
+comment existence is not an atomic claim. Use a real per-task serialization
+primitive such as a queue, lock or GitHub Actions concurrency group with one
+writer for control-state mutation.
 
 Automation remains disabled until the mechanical layer is implemented,
 independently audited at its exact SHA and explicitly enabled by User.
@@ -261,7 +262,7 @@ Persistent truth order:
 6. agent memory.
 
 Slack tells everyone what is happening. GitHub records what is true.
-Agent memory and Devin reusable instructions are not independent authorities;
+Agent memory and builder/provider reusable instructions are not independent authorities;
 they must reference the current GitHub rules.
 Do not commit per-task runtime status, dispatch/audit/review logs or transcripts.
 Existing immutable task specs, ADRs and required engineering evidence/bookkeeping
@@ -295,19 +296,24 @@ have no merge/admin authority. Reviewer credentials are read/comment only.
 
 Repo-scoped credentials are preferred over one all-repositories write token.
 
-## 12. Quota and outage behavior
+## 12. Relay and provider outage behavior
 
-Grok quota/outage is detected by the caller/mechanical layer, not by Grok
-reasoning after Grok is unavailable.
+Grok quota/outage is detected by the caller/mechanical layer. Because Grok is
+an optional command relay, Grok unavailability does not by itself change task
+ownership, invalidate evidence or block deterministic builder/reviewer routes.
 
-If a configured Grok action fails, the caller/mechanical layer records the
-blocker in GitHub and projects `[BLOCKED] Reason: GROK_QUOTA` to Slack itself.
-Mechanical routes do not require Grok quota.
+If an explicit command was requested through Grok and the relay is unavailable,
+record a narrow RELAY_UNAVAILABLE status/pointer. The same pre-authorized
+mechanical command may be invoked by User or another authenticated caller.
+Do not create a second writer and do not change task semantics.
 
-No model is automatically appointed as replacement dispatcher.
+Builder/provider outage is separate: record the provider blocker for the
+assigned owner. No model is silently substituted. Reassignment requires a
+durable authorized control action plus reconciliation/fencing of any unresolved
+SUBMITTING/UNKNOWN launch.
 
 Manual dispatch must still use the canonical task/control record and must not
-launch when an owner exists or launch state is `UNKNOWN`.
+launch when an owner exists or launch state is UNKNOWN.
 
 ## 13. Merge
 
