@@ -1,0 +1,36 @@
+name: Control Plane Runtime CI
+
+on:
+  pull_request:
+    paths:
+      - "AGENTS.md"
+      - "RUNBOOKS/DISPATCH.md"
+      - "TASKS/TEMPLATE.md"
+      - ".github/control-plane/**"
+      - ".github/workflows/control-plane-*.yml"
+      - "scripts/control_plane*.py"
+      - "scripts/test_control_plane*.py"
+      - "docs/CONTROL_PLANE_RUNTIME.md"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Compile
+        run: python -m py_compile scripts/control_plane.py scripts/control_plane_host.py
+      - name: Self-test
+        run: python scripts/control_plane.py self-test
+      - name: Host and dispatch regressions
+        run: python3 -m unittest discover -s scripts -p "test_control_plane*.py"
+      - name: Validate repository contract
+        run: python scripts/control_plane.py validate-repo
+
