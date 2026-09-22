@@ -426,8 +426,10 @@ mechanical layer:
    accepted auditor/designation, task or milestone identity and exact
    HEAD/evidence SHA all still match;
 2. if a matching AUDIT_REQUEST_ID/AUDIT_ATTEMPT_ID is already
-   SUBMITTING/CONFIRMED/UNKNOWN, reuses/reconciles it instead of creating a
-   second request;
+   NOT_STARTED/SUBMITTING/CONFIRMED/UNKNOWN, reuses/reconciles it instead of
+   creating a second request;
+   For NOT_STARTED, resume only the existing pending action; never create
+   another request/attempt or enqueue another delivery;
 3. otherwise creates stable AUDIT_REQUEST_ID and AUDIT_ATTEMPT_ID, binds the
    accepted auditor identity and designation pointer, sets
    AUDIT_REQUEST_STATE=NOT_STARTED, and atomically persists the pending action;
