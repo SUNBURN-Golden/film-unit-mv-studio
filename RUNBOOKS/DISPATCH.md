@@ -140,10 +140,12 @@ Control record minimum facts:
 - PR_POINTER
 - CURRENT_HEAD_SHA
 - verification policy and current-head verification facts
-- review policy, review depth, REVIEW_REQUEST_ID, REVIEW_LAUNCH_STATE,
-  reviewer lane/session, review attempt ID, verified review depth/touched areas,
+- review policy, configured audit floor, REVIEW_REQUEST_ID, REVIEW_LAUNCH_STATE,
+  reviewer lane/session, review attempt ID, VERIFIED_REVIEW_DEPTH,
+  VERIFIED_REQUIRED_DEPTH, EFFECTIVE_AUDIT_FLOOR, verified touched areas,
   contract-change flag and current-head result
-- ASTRA_GATE, AUDIT_REQUEST_ID, AUDIT_REQUEST_STATE, verified audit depth,
+- ASTRA_GATE, AUDIT_REQUEST_ID, AUDIT_ATTEMPT_ID, AUDIT_REQUEST_STATE,
+  ACCEPTED_AUDITOR_IDENTITY, AUDITOR_DESIGNATION_POINTER, verified audit depth,
   audited SHA/evidence SHA and result when an Astra gate applies
 - unresolved blocker/decision pointer
 - merge SHA
@@ -349,15 +351,34 @@ REVIEWER_IDENTITY_OR_SESSION:
 REVIEWED_TASK_REVISION:
 REVIEWED_HEAD_OR_EVIDENCE_SHA:
 VERIFIED_REVIEW_DEPTH:
+VERIFIED_REQUIRED_DEPTH: A1 | A2 | A3
 VERIFIED_TOUCHED_AREAS:
 VERIFIED_CONTRACT_CHANGE_REQUIRED:
 FINDING_POINTERS:
+
+VERIFIED_REQUIRED_DEPTH is the reviewer's semantic classification of the
+minimum depth required by the actual diff and authoritative repository rules.
+It is independent of the task's predeclared AUDIT_FLOOR.
+
+After accepting the current-head review, the mechanical layer computes:
+
+EFFECTIVE_AUDIT_FLOOR =
+  max(configured AUDIT_FLOOR, VERIFIED_REQUIRED_DEPTH)
+
+using A0 < A1 < A2 < A3.
+
+If EFFECTIVE_AUDIT_FLOOR=A3, the control record must set
+ASTRA_GATE=ARCHITECTURE for this task revision/current HEAD before any merge
+predicate is reevaluated. A predeclared NONE/MILESTONE gate cannot suppress
+this promotion. If repository rules require a stronger explicit gate, keep the
+stronger gate.
 
 PASS_WITH_NOTES cannot hide an unresolved correctness, contract, invariant,
 security or acceptance failure.
 
 Review result is accepted only from the configured reviewer and matching
-request/session. A new HEAD invalidates the prior review.
+request/session. A new relevant HEAD invalidates the prior review and its
+derived EFFECTIVE_AUDIT_FLOOR.
 
 FAIL:
 relay exact findings to the same writer.
@@ -367,7 +388,7 @@ record the blocker and emit the required Astra/decision path; do not derive
 READY_FOR_MERGE.
 
 PASS/PASS_WITH_NOTES with no consequential contract change:
-- if an Astra gate is required for this task/head, emit AUDIT_REQUIRED;
+- if EFFECTIVE_AUDIT_FLOOR=A3 or another Astra gate is required, emit AUDIT_REQUIRED;
 - otherwise reevaluate READY_FOR_MERGE without invoking Astra.
 
 ## 14. Astra gate
@@ -376,36 +397,62 @@ Astra is not the default routine A1/A2 reviewer.
 
 This section applies only when at least one is true:
 
-- AUDIT_FLOOR=A3;
+- EFFECTIVE_AUDIT_FLOOR=A3;
 - ASTRA_GATE is MILESTONE, ARCHITECTURE or RELEASE;
 - an architecture exception or consequential contract-change question requires
   Astra analysis;
 - a repository-specific authoritative rule explicitly requires Astra.
 
-A3 implies ASTRA_GATE=ARCHITECTURE.
+EFFECTIVE_AUDIT_FLOOR=A3 implies ASTRA_GATE=ARCHITECTURE for the current
+task revision/current HEAD.
 
-Astra-request delivery is serialized by task revision + current HEAD/evidence
-SHA (or by an explicitly identified milestone/release evidence packet).
+Astra-request delivery uses the same fail-closed send discipline as writer and
+reviewer launch and is serialized by task revision + current HEAD/evidence SHA
+(or by an explicitly identified milestone/release evidence packet).
 
-Before emitting AUDIT_REQUIRED, the mechanical layer:
+Each request is bound at creation to:
 
-1. reuses an existing accepted Astra-gate result for the exact applicable identity only;
-2. reuses any matching outstanding AUDIT_REQUEST_ID rather than duplicating it;
-3. otherwise creates stable AUDIT_REQUEST_ID, persists the pending delivery and
-   emits one normalized request.
+AUDIT_REQUEST_ID
+AUDIT_ATTEMPT_ID
+ACCEPTED_AUDITOR_IDENTITY
+AUDITOR_DESIGNATION_POINTER (N/A for configured Astra)
+AUDITED_TASK_REVISION_OR_MILESTONE
+AUDITED_HEAD_OR_EVIDENCE_SHA
 
-Ambiguous delivery becomes AUDIT_REQUEST_STATE=UNKNOWN and blocks resending
-until reconciled.
+Before emitting AUDIT_REQUIRED, under the applicable serialization key the
+mechanical layer:
+
+1. reuses an existing accepted Astra-gate result only when the request identity,
+   accepted auditor/designation, task or milestone identity and exact
+   HEAD/evidence SHA all still match;
+2. if a matching AUDIT_REQUEST_ID/AUDIT_ATTEMPT_ID is already
+   SUBMITTING/CONFIRMED/UNKNOWN, reuses/reconciles it instead of creating a
+   second request;
+3. otherwise creates stable AUDIT_REQUEST_ID and AUDIT_ATTEMPT_ID, binds the
+   accepted auditor identity and designation pointer, sets
+   AUDIT_REQUEST_STATE=NOT_STARTED, and atomically persists the pending action;
+4. immediately before external send, atomically consumes that pending action
+   and persists AUDIT_REQUEST_STATE=SUBMITTING;
+5. only the executor holding that consumed action may send the audit request;
+6. confirmed receipt records AUDIT_REQUEST_STATE=CONFIRMED.
+
+If the process crashes or response is lost after SUBMITTING, the request is
+potentially sent. Reconcile that same request; do not create or resend another
+request merely because no receipt was observed. If outcome cannot be proven,
+set AUDIT_REQUEST_STATE=UNKNOWN and require reconciliation or explicit User
+resolution.
 
 The packet contains exact task/milestone identity, revision, repository,
 PR/evidence pointers, base/current SHA where applicable, authoritative
-documents, verification facts, independent-review facts, reported touched
-areas/contract-change flag, audit floor and ASTRA_GATE.
+documents, verification facts, independent-review facts,
+VERIFIED_REQUIRED_DEPTH, EFFECTIVE_AUDIT_FLOOR, reported touched
+areas/contract-change flag and ASTRA_GATE.
 
 Astra independently reads the actual relevant diff/evidence and authoritative
 contracts. The accepted Astra-gate result contains:
 
 AUDIT_REQUEST_ID:
+AUDIT_ATTEMPT_ID:
 AUDIT_RESULT: PASS | PASS_WITH_NOTES | FAIL | DECISION_REQUIRED
 AUDITOR_IDENTITY_OR_SESSION:
 AUDITOR_DESIGNATION_POINTER: (required when the auditor is not Astra)
@@ -416,12 +463,27 @@ VERIFIED_TOUCHED_AREAS:
 VERIFIED_CONTRACT_CHANGE_REQUIRED:
 FINDING_POINTERS:
 
+An audit result is accepted only when its authenticated auditor
+identity/session matches ACCEPTED_AUDITOR_IDENTITY for that exact outstanding
+request, and the designation pointer (when any) is still the same active User
+designation bound to the request.
+
 If Astra authored or modified the audited change, User must designate an
 independent non-author architecture auditor with a durable scope pointer.
 That auditor does not receive Astra's architecture/design authority.
 
+Grok, the author and the mechanical layer may not choose a replacement
+architecture auditor by semantic judgment or lower the required gate.
+
+If the accepted auditor designation is revoked, replaced or its scope changes:
+
+- outstanding requests bound to the old designation become invalid;
+- prior gate results issued under that designation no longer satisfy current
+  READY_FOR_MERGE;
+- a new request may be created only after the new designation is durably
+  recorded and any prior SUBMITTING/UNKNOWN delivery is safely reconciled.
+
 Self-review by a writer/session that participated in the change is rejected.
-Grok or the author may not designate the auditor or lower the gate.
 A relevant HEAD/task revision change invalidates the prior result.
 
 FAIL returns exact findings to the same writer when a writer fix is appropriate.
@@ -519,15 +581,22 @@ For PR deliverables, READY_FOR_MERGE is true only when all are true:
 - no unresolved blocker/decision;
 - verification gate is satisfied for CURRENT_HEAD_SHA;
 - for non-A0 substantive work, required independent review PASS or
-  PASS_WITH_NOTES matches CURRENT_HEAD_SHA and VERIFIED_REVIEW_DEPTH satisfies
-  AUDIT_FLOOR;
+  PASS_WITH_NOTES matches CURRENT_HEAD_SHA;
+- VERIFIED_REVIEW_DEPTH satisfies EFFECTIVE_AUDIT_FLOOR for all non-A3 review
+  obligations; an A3 requirement additionally requires the Astra architecture
+  gate rather than reviewer depth alone;
 - VERIFIED_CONTRACT_CHANGE_REQUIRED from the accepted current-head review is NO,
   or the required Astra/User decision has been durably recorded and reflected
   in the current task revision;
-- if this task/head requires an Astra gate, PASS or PASS_WITH_NOTES from the
-  accepted Astra-gate auditor matches the applicable revision/head/evidence and
-  VERIFIED_AUDIT_DEPTH satisfies the required gate;
-- if no Astra gate is required, absence of an Astra result does not block merge;
+- when EFFECTIVE_AUDIT_FLOOR=A3, ASTRA_GATE is ARCHITECTURE and the accepted
+  current Astra-gate PASS/PASS_WITH_NOTES matches the applicable
+  revision/head/evidence and VERIFIED_AUDIT_DEPTH satisfies A3;
+- for any other explicit Astra gate, its accepted PASS/PASS_WITH_NOTES matches
+  the applicable revision/head/evidence and required depth;
+- when no Astra gate is required and EFFECTIVE_AUDIT_FLOOR is below A3, absence
+  of an Astra result does not block merge;
+- any auditor designation bound to the accepted Astra result is still active
+  and unchanged;
 - project-specific merge prerequisites are satisfied.
 
 User still makes the merge decision.
