@@ -154,3 +154,7 @@ python3 scripts/control_plane.py validate-repo
 
 테스트는 중복·경쟁·UNKNOWN·stale receipt·환경 누출·activation 거절을 다룬다.
 실제 provider 과금, host 격리, GitHub/Slack 종단 동작을 검증했다는 뜻은 아니다.
+
+## Dispatch 승인 바인딩
+
+수동 및 flow dispatch는 `expected_task_id`, `expected_task_revision`, `expected_builder_id`, `expected_issue_body_sha256`을 승인 시점의 값으로 전달한다. 본문 해시는 원문 UTF-8 SHA-256이다. flow는 GitHub issue envelope와 승인 snapshot의 repo/task/revision/builder 일치를 먼저 검증한다. runtime은 최신 issue를 이 값들과 대조한 뒤에만 control record를 변경한다. 대기 중 본문이 변경되거나 입력이 없으면 fail closed; 최신 내용으로 자동 재승인하지 않는다.

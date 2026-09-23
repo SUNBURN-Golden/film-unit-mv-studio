@@ -23,7 +23,7 @@ export PATH="/usr/bin:/bin"
 
 SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd -P)/$(basename "${BASH_SOURCE[0]}")"
 DIR="$(dirname "$SELF")"
-PY="${ASTRA_BOUNDARY_PYTHON:-python3}"
+PY="/usr/bin/python3"
 
 echo "ASTRA-BOUNDARY: pre-job admission check hook=$SELF run=${GITHUB_RUN_ID:-?} job=${GITHUB_JOB:-?}"
 
@@ -35,9 +35,7 @@ if [ "$rc" -eq 0 ]; then
 fi
 
 echo "ASTRA-BOUNDARY: DENY rc=$rc run=${GITHUB_RUN_ID:-?} job=${GITHUB_JOB:-?} — no job step may execute"
-if [ "${ASTRA_BOUNDARY_KILL:-1}" = "1" ]; then
-    # Let the runner flush the hook output before the worker dies.
-    sleep "${ASTRA_BOUNDARY_FLUSH_SECONDS:-3}" 2>/dev/null
-    "$PY" -I "$DIR/control_plane_boundary.py" deny-job
-fi
+# Production denial is unconditional; environment cannot select report-only mode.
+sleep 3
+"$PY" -I "$DIR/control_plane_boundary.py" deny-job
 exit 1

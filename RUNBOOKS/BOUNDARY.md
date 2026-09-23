@@ -53,6 +53,7 @@ report-mode bypass case in the probe evidence).
      --hook /opt/astra/boundary/control_plane_boundary_hook.sh \
      --policy /opt/astra/boundary/policy.json \
      --hook-sha256 <hook sha> --policy-sha256 <policy sha> \
+     --evaluator-sha256 <audited-evaluator-sha256> \
      --owner-uid 0 --forbid-prefix /runner/work/dir \
      --writable-check [--env-file /path/to/runner/.env]
    ```
@@ -100,3 +101,5 @@ decision records live under `/workspace/astra-host-evidence/boundary-003/`.
 - A denied job terminates the worker; the listener reports the job as failed.
   Repeated hostile pushes each get denied again; deduping them is out of
   scope.
+
+설치 시 hook·policy·evaluator의 예상 해시는 설치 파일에서 새로 계산해 신뢰하지 않고, 감사된 artifact/승인 기록에서 가져온다. 검사기는 세 파일과 상위 경로의 소유권·교체 가능성을 검사한다. runner `.env`의 모든 `ASTRA_BOUNDARY_*` 및 hook override는 금지한다. 검사기는 `/usr/bin/python3`를 고정 사용하며 DENY는 항상 worker 종료를 시도한다. 기존 report-only 환경변수는 지원하지 않는다.

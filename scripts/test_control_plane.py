@@ -1,5 +1,6 @@
 """Launch boundary regressions; no provider or GitHub network access."""
 import json
+import hashlib
 import os
 import re
 import shlex
@@ -102,10 +103,27 @@ class DispatchBoundaryTests(unittest.TestCase):
         with patch.object(cp, "load_config", return_value=cfg), patch.object(cp, "require_runtime_enabled"), \
              patch.object(cp, "validate_task"), patch.object(cp, "GithubApi", return_value=api), \
              patch.object(cp, "host_preflight") as preflight, patch.object(cp, "write_github_output"), \
-             patch.dict(os.environ, {"GITHUB_TOKEN": "token", "GITHUB_ACTOR": "owner", "GITHUB_TRIGGERING_ACTOR": "owner"}):
+             patch.dict(os.environ, {"GITHUB_TOKEN": "token", "GITHUB_ACTOR": "owner", "GITHUB_TRIGGERING_ACTOR": "owner",
+                 "EXPECTED_TASK_ID": "T1", "EXPECTED_TASK_REVISION": "1", "EXPECTED_BUILDER_ID": "DEVIN",
+                 "EXPECTED_ISSUE_BODY_SHA256": hashlib.sha256(api.issue.return_value["body"].encode()).hexdigest()}):
             cp.prepare_dispatch(1, Path("must-not-write"))
         preflight.assert_not_called()
         api.update_comment.assert_not_called()
+
+    def test_dispatch_binding_rejects_queued_edits_and_missing_authorization(self):
+        body = "TASK_ID: T1\nTASK_REVISION: 1\nBUILDER_ID: DEVIN"
+        envelope = dict(TASK_ID="T1", TASK_REVISION="1", BUILDER_ID="DEVIN")
+        expected = dict(EXPECTED_TASK_ID="T1", EXPECTED_TASK_REVISION="1", EXPECTED_BUILDER_ID="DEVIN",
+                        EXPECTED_ISSUE_BODY_SHA256=hashlib.sha256(body.encode()).hexdigest())
+        with patch.dict(os.environ, expected, clear=True):
+            cp.verify_dispatch_binding(body, envelope)
+            for field in envelope:
+                with self.assertRaises(cp.ControlPlaneError):
+                    cp.verify_dispatch_binding(body, dict(envelope, **{field: "changed"}))
+            with self.assertRaises(cp.ControlPlaneError):
+                cp.verify_dispatch_binding(body + "\nnew instructions", envelope)
+        with patch.dict(os.environ, {}, clear=True):
+            with self.assertRaises(cp.ControlPlaneError): cp.verify_dispatch_binding(body, envelope)
 
     def test_changed_runtime_cannot_reuse_old_activation(self):
         activation = {"runtime_enabled": True, "activated_runtime_sha": "a" * 40}

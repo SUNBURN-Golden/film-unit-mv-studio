@@ -408,6 +408,23 @@ def cmd_verify_install(args: argparse.Namespace) -> int:
         problems.append("hook and policy paths must be absolute and normalized")
     problems += _check_protected_file(hook, "hook", args.owner_uid)
     problems += _check_protected_file(policy, "policy", args.owner_uid)
+    evaluator = hook.parent / "control_plane_boundary.py"
+    problems += _check_protected_file(evaluator, "evaluator", args.owner_uid)
+    protected = ((hook, "hook"), (policy, "policy"), (evaluator, "evaluator"))
+    for candidate, label in protected:
+        for parent in candidate.parents:
+            info = parent.lstat()
+            if not stat.S_ISDIR(info.st_mode) or info.st_mode & 0o022:
+                problems.append(f"{label} parent is replaceable: {parent}")
+            if args.owner_uid is not None and info.st_uid != args.owner_uid:
+                problems.append(f"{label} parent has untrusted owner: {parent}")
+            if args.writable_check and os.access(parent, os.W_OK):
+                problems.append(f"{label} parent writable by this security context: {parent}")
+    expected_evaluator = getattr(args, "evaluator_sha256", "")
+    if not re.fullmatch(r"[0-9a-f]{64}", expected_evaluator or ""):
+        problems.append("externally pinned evaluator sha256 required")
+    elif evaluator.is_file() and sha256_file(evaluator) != expected_evaluator:
+        problems.append("evaluator sha256 mismatch")
     if not problems:
         if args.hook_sha256 and sha256_file(hook) != args.hook_sha256:
             problems.append("hook sha256 mismatch")
@@ -422,14 +439,14 @@ def cmd_verify_install(args: argparse.Namespace) -> int:
             problems.append(f"hook unreadable: {exc}")
     if args.forbid_prefix:
         prefix = Path(args.forbid_prefix)
-        for candidate, label in ((hook, "hook"), (policy, "policy")):
+        for candidate, label in protected:
             try:
                 candidate.resolve().relative_to(prefix.resolve())
                 problems.append(f"{label} must not live under job-writable prefix {prefix}")
             except ValueError:
                 pass
     if args.writable_check:
-        for candidate, label in ((hook, "hook"), (policy, "policy")):
+        for candidate, label in protected:
             if os.access(candidate, os.W_OK):
                 problems.append(f"{label} is writable by this security context")
     if args.env_file:
@@ -452,7 +469,7 @@ def cmd_verify_install(args: argparse.Namespace) -> int:
             if key in seen:
                 problems.append(f"{env_file}:{lineno}: duplicate key {key}")
             seen.add(key)
-            if key in args.env_forbid:
+            if key == HOOK_ENV or key.startswith("ASTRA_BOUNDARY_") or key in args.env_forbid:
                 problems.append(f"{env_file}:{lineno}: boundary key {key} must not be set here")
             elif key in args.env_require and value.strip() != args.env_require[key]:
                 problems.append(f"{env_file}:{lineno}: {key} must equal {args.env_require[key]}")
@@ -478,6 +495,8 @@ def cmd_check_env(args: argparse.Namespace) -> int:
         problems.append(f"{POLICY_ENV} must equal {args.policy}")
     if env.get(POLICY_SHA_ENV) != args.policy_sha256:
         problems.append(f"{POLICY_SHA_ENV} must equal the pinned policy digest")
+    if any(key in env for key in ("ASTRA_BOUNDARY_PYTHON", "ASTRA_BOUNDARY_KILL", "ASTRA_BOUNDARY_FLUSH_SECONDS")):
+        problems.append("boundary execution overrides are forbidden")
     if not env.get(EVIDENCE_ENV):
         problems.append(f"{EVIDENCE_ENV} must be set")
     if problems:
@@ -548,6 +567,7 @@ def main() -> int:
     verify = sub.add_parser("verify-install")
     verify.add_argument("--hook", required=True)
     verify.add_argument("--policy", required=True)
+    verify.add_argument("--evaluator-sha256", required=True)
     verify.add_argument("--hook-sha256")
     verify.add_argument("--policy-sha256")
     verify.add_argument("--owner-uid", type=int)

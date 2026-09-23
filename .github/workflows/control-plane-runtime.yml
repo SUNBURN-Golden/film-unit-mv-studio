@@ -14,6 +14,22 @@ on:
         description: "Canonical GitHub task issue number (required for dispatch)"
         required: false
         type: string
+      expected_task_id:
+        description: "Pinned dispatch authorization; mandatory for dispatch"
+        required: false
+        type: string
+      expected_task_revision:
+        description: "Pinned dispatch authorization; mandatory for dispatch"
+        required: false
+        type: string
+      expected_builder_id:
+        description: "Pinned dispatch authorization; mandatory for dispatch"
+        required: false
+        type: string
+      expected_issue_body_sha256:
+        description: "Pinned dispatch authorization; mandatory for dispatch"
+        required: false
+        type: string
       builder_id:
         description: "Builder for preflight"
         required: false
@@ -40,6 +56,10 @@ jobs:
     timeout-minutes: 15
     env:
       ISSUE_NUMBER: ${{ inputs.issue_number }}
+      EXPECTED_TASK_ID: ${{ inputs.expected_task_id }}
+      EXPECTED_TASK_REVISION: ${{ inputs.expected_task_revision }}
+      EXPECTED_BUILDER_ID: ${{ inputs.expected_builder_id }}
+      EXPECTED_ISSUE_BODY_SHA256: ${{ inputs.expected_issue_body_sha256 }}
       PREFLIGHT_BUILDER: ${{ inputs.builder_id }}
     steps:
       - uses: actions/checkout@v4

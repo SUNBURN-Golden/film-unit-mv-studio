@@ -301,7 +301,7 @@ class CollectorTests(unittest.TestCase):
         self.s.update(dependencies=[], approval_pointer='https://github.com/owner/repo/issues/1#issuecomment-10')
         self.s['required_checks'][0].update(path='.github/workflows/ci.yml', workflow_blob='9'*40,
                                             events=['pull_request'])
-        self.issue_body='TASK_ID: T1'
+        self.issue_body='TASK_ID: T1\nTASK_REVISION: 1\nBUILDER_ID: DEVIN\nREPO: owner/repo'
         def body(marker, value): return marker+'\n'+json.dumps(value)
         def binding(comment_id, value):
             return dict(comment_id=comment_id, actor='owner', sha256=hashlib.sha256(value.encode()).hexdigest())
@@ -345,6 +345,31 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(f.assess(current)['state'],'READY_FOR_MERGE')
         self.reviews[0]['state']='DISMISSED'
         self.assertEqual(f.assess(self.ports.load(self.command))['state'],'REVIEW_REQUIRED')
+
+    def test_pinned_envelope_must_match_flow_identity(self):
+        for field, replacement in (("TASK_ID: T1", "TASK_ID: OTHER"),
+                                   ("TASK_REVISION: 1", "TASK_REVISION: 2"),
+                                   ("BUILDER_ID: DEVIN", "BUILDER_ID: GLM")):
+            body = self.issue_body.replace(field, replacement)
+            self.data['repos/owner/repo/issues/1']['body'] = body
+            self.policy['registrations']['owner/repo#1']['issue_body_sha256'] = hashlib.sha256(body.encode()).hexdigest()
+            with self.assertRaises(g.flow.FlowError): self.ports.load(self.command)
+
+    def test_dispatch_carries_pinned_identity_and_rejects_stale_action(self):
+        current = self.ports.load(self.command)
+        action = f.request(current, 'DISPATCH', 'author', 'N/A')
+        with patch.object(self.ports, 'dispatch_authorized', return_value=True), \
+             patch.object(self.api, 'call') as call, patch.object(self.ports, 'load', return_value=current):
+            self.ports.route(action)
+            inputs = call.call_args.args[2]['inputs']
+            self.assertEqual(inputs['expected_task_id'], 'T1')
+            self.assertEqual(inputs['expected_task_revision'], '1')
+            self.assertEqual(inputs['expected_builder_id'], 'DEVIN')
+            self.assertEqual(inputs['expected_issue_body_sha256'], hashlib.sha256(self.issue_body.encode()).hexdigest())
+            call.reset_mock()
+            current['revision'] = '2'
+            with self.assertRaises(g.flow.FlowError): self.ports.route(action)
+            call.assert_not_called()
 
     def test_new_failed_ci_attempt_overrides_old_success(self):
         self.runs.append(dict(self.runs[0],run_attempt=2,status='completed',conclusion='failure'))

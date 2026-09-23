@@ -121,6 +121,18 @@ PASS text. Shared author/reviewer GitHub identities are conservatively rejected.
                      "repository/task mismatch")
         flow.require(snapshot["task_pointer"] == task["html_url"], "canonical pointer mismatch")
         flow.require(snapshot["approval_pointer"] == comment["html_url"], "approval pointer mismatch")
+        # The two durable representations must authorize the same executable task.
+        fields = {}
+        for line in (task.get("body") or "").splitlines():
+            match = re.fullmatch(r"([A-Z][A-Z0-9_]+):\s*(.*?)\s*", line.strip())
+            if match:
+                key, value = match.groups()
+                flow.require(key not in fields, "duplicate issue-envelope field")
+                fields[key] = value
+        for field, key in (("REPO", "repository"), ("TASK_ID", "task_id"),
+                           ("TASK_REVISION", "revision"), ("BUILDER_ID", "builder_id")):
+            flow.require(fields.get(field) == snapshot.get(key), "issue/flow identity mismatch: " + field)
+        snapshot["issue_body_sha256"] = binding["issue_body_sha256"]
         snapshot["task_digest"] = binding["sha256"]
         snapshot["policy_revision"] = flow.digest(self.policy)
         snapshot["blockers"] = list(snapshot.get("blockers", []))
@@ -264,8 +276,15 @@ PASS text. Shared author/reviewer GitHub identities are conservatively rejected.
         command = self.command_for(action["subject"])
         repo, issue = command["repository"], command["issue"]
         if action["kind"] == "DISPATCH":
+            snapshot = self.load(command)
+            flow.require(flow.subject(snapshot) == action["subject"] and self.dispatch_authorized(snapshot),
+                         "dispatch scope changed before delivery")
             self.api.call("POST", f"repos/{repo}/actions/workflows/control-plane-runtime.yml/dispatches",
-                          {"ref": "main", "inputs": {"operation": "dispatch", "issue_number": str(issue)}})
+                          {"ref": "main", "inputs": {"operation": "dispatch", "issue_number": str(issue),
+                           "expected_task_id": snapshot["task_id"],
+                           "expected_task_revision": snapshot["revision"],
+                           "expected_builder_id": snapshot["builder_id"],
+                           "expected_issue_body_sha256": snapshot["issue_body_sha256"]}})
             # 204 confirms delivery only; runtime v1 owns actual launch admission.
         elif action["kind"] == "REVIEW":
             snapshot = self.load(command)

@@ -82,6 +82,7 @@ echo "probe-launch: hook   sha256=$HOOK_SHA"
 python3 -I "$PY_SRC" verify-install \
     --hook "$HOOK_SRC" --policy "$POLICY_SRC" \
     --hook-sha256 "$HOOK_SHA" \
+    --evaluator-sha256 "$(sha256sum "$PY_SRC" | cut -d ' ' -f 1)" \
     --policy-sha256 "$POLICY_SHA" \
     --forbid-prefix "$RUNNER_DIR/_work" \
     ${PROBE_ENV_FILE:+--env-file "$PROBE_ENV_FILE"} \

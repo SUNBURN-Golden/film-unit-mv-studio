@@ -435,6 +435,17 @@ def host_preflight(builder_id: Optional[str]) -> None:
     print(json.dumps({"status": "PASS", "builders": reports}, sort_keys=True))
 
 
+def verify_dispatch_binding(body: str, envelope: dict) -> None:
+    expected = {"TASK_ID": "EXPECTED_TASK_ID", "TASK_REVISION": "EXPECTED_TASK_REVISION",
+                "BUILDER_ID": "EXPECTED_BUILDER_ID"}
+    for field, key in expected.items():
+        if not os.environ.get(key) or os.environ[key] != envelope.get(field):
+            raise ControlPlaneError("dispatch authorization mismatch: " + field)
+    digest = os.environ.get("EXPECTED_ISSUE_BODY_SHA256", "")
+    if not re.fullmatch(r"[0-9a-f]{64}", digest) or hashlib.sha256(body.encode()).hexdigest() != digest:
+        raise ControlPlaneError("dispatch authorization mismatch: issue body")
+
+
 def prepare_dispatch(issue_number: int, packet_path: Path) -> None:
     cfg = load_config()
     require_runtime_enabled()
@@ -458,6 +469,7 @@ def prepare_dispatch(issue_number: int, packet_path: Path) -> None:
 
     envelope = parse_task_envelope(issue.get("body") or "")
     validate_task(envelope, cfg)
+    verify_dispatch_binding(issue.get("body") or "", envelope)
     issue_url = issue.get("html_url") or ""
     if envelope["CANONICAL_TASK_POINTER"] != issue_url:
         raise ControlPlaneError("CANONICAL_TASK_POINTER must equal the canonical issue URL")

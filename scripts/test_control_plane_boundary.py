@@ -267,17 +267,21 @@ class EnforceTests(unittest.TestCase):
 
 class VerifyInstallTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp())
+        self.tmp = Path(tempfile.mkdtemp(dir=Path.home()))
         self.hook = write_json(self.tmp / "hook.sh", {})  # placeholder replaced below
         self.hook.write_text("#!/bin/sh\ncontrol_plane_boundary.py enforce deny-job\n")
         self.hook.chmod(0o755)
         self.policy = write_json(self.tmp / "policy.json", sample_policy())
         self.policy.chmod(0o644)
+        self.evaluator = self.tmp / "control_plane_boundary.py"
+        self.evaluator.write_text("# trusted test evaluator\n")
+        self.evaluator.chmod(0o644)
         self.hook_sha = hashlib.sha256(self.hook.read_bytes()).hexdigest()
         self.policy_sha = hashlib.sha256(self.policy.read_bytes()).hexdigest()
 
     def verify(self, **kw):
         args = argparse.Namespace(
+            evaluator_sha256=kw.get("evaluator_sha256", hashlib.sha256(self.evaluator.read_bytes()).hexdigest()),
             hook=str(kw.get("hook", self.hook)),
             policy=str(kw.get("policy", self.policy)),
             hook_sha256=kw.get("hook_sha256", self.hook_sha),
@@ -294,6 +298,22 @@ class VerifyInstallTests(unittest.TestCase):
     def test_pass(self):
         self.assertEqual(self.verify(), 0)
 
+    def test_evaluator_and_parent_protection(self):
+        self.evaluator.chmod(0o666)
+        self.assertEqual(self.verify(), cb.DENY)
+        self.evaluator.chmod(0o644)
+        self.tmp.chmod(0o777)
+        self.assertEqual(self.verify(), cb.DENY)
+        self.tmp.chmod(0o700)
+        self.assertEqual(self.verify(evaluator_sha256="0" * 64), cb.DENY)
+        self.assertEqual(self.verify(evaluator_sha256=""), cb.DENY)
+
+    def test_all_boundary_overrides_rejected(self):
+        env = self.tmp / ".env"
+        for key in ("ASTRA_BOUNDARY_PYTHON", "ASTRA_BOUNDARY_KILL", "ASTRA_BOUNDARY_FLUSH_SECONDS"):
+            env.write_text(key + "=/usr/bin/true\n")
+            self.assertEqual(self.verify(env_file=str(env)), cb.DENY)
+
     def test_digest_mismatch(self):
         self.assertEqual(self.verify(hook_sha256="0" * 64), cb.DENY)
         self.assertEqual(self.verify(policy_sha256="0" * 64), cb.DENY)
@@ -307,6 +327,9 @@ class VerifyInstallTests(unittest.TestCase):
 
     def test_hook_missing_tokens_rejected(self):
         self.hook.write_text("#!/bin/sh\nexit 0\n")
+        self.evaluator = self.tmp / "control_plane_boundary.py"
+        self.evaluator.write_text("# trusted test evaluator\n")
+        self.evaluator.chmod(0o644)
         self.hook_sha = hashlib.sha256(self.hook.read_bytes()).hexdigest()
         self.assertEqual(self.verify(), cb.DENY)
 
