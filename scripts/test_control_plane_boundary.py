@@ -310,9 +310,15 @@ class VerifyInstallTests(unittest.TestCase):
 
     def test_all_boundary_overrides_rejected(self):
         env = self.tmp / ".env"
-        for key in ("ASTRA_BOUNDARY_PYTHON", "ASTRA_BOUNDARY_KILL", "ASTRA_BOUNDARY_FLUSH_SECONDS"):
+        for key in ("ASTRA_BOUNDARY_PYTHON", "ASTRA_BOUNDARY_KILL", "ASTRA_BOUNDARY_FLUSH_SECONDS", "BASH_ENV", "LD_PRELOAD", "PYTHONPATH"):
             env.write_text(key + "=/usr/bin/true\n")
             self.assertEqual(self.verify(env_file=str(env)), cb.DENY)
+
+    def test_env_file_must_be_protected(self):
+        env = self.tmp / ".env"
+        env.write_text("LANG=C\n")
+        env.chmod(0o666)
+        self.assertEqual(self.verify(env_file=str(env)), cb.DENY)
 
     def test_digest_mismatch(self):
         self.assertEqual(self.verify(hook_sha256="0" * 64), cb.DENY)

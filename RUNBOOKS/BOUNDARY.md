@@ -103,3 +103,5 @@ decision records live under `/workspace/astra-host-evidence/boundary-003/`.
   scope.
 
 설치 시 hook·policy·evaluator의 예상 해시는 설치 파일에서 새로 계산해 신뢰하지 않고, 감사된 artifact/승인 기록에서 가져온다. 검사기는 세 파일과 상위 경로의 소유권·교체 가능성을 검사한다. runner `.env`의 모든 `ASTRA_BOUNDARY_*` 및 hook override는 금지한다. 검사기는 `/usr/bin/python3`를 고정 사용하며 DENY는 항상 worker 종료를 시도한다. 기존 report-only 환경변수는 지원하지 않는다.
+
+runner `.env`가 있으면 반드시 `--env-file`로 검사하며 runner/job이 파일이나 상위 디렉터리를 변경할 수 없어야 한다. 허용 키는 `LANG`, `LC_ALL`, `TZ`뿐이다. listener 시작은 operator 소유 서비스의 정리된 환경에서만 수행하고 shell/loader startup 변수(`BASH_ENV`, `ENV`, `LD_*` 등)를 전달하지 않는다. 검사에 실패하면 listener를 시작하지 않는다. 기존 `.env`의 추가 키가 필요하면 별도 검토 전까지 BLOCKED로 처리한다.

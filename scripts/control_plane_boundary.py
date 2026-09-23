@@ -451,6 +451,14 @@ def cmd_verify_install(args: argparse.Namespace) -> int:
                 problems.append(f"{label} is writable by this security context")
     if args.env_file:
         env_file = Path(args.env_file)
+        problems += _check_protected_file(env_file, "runner env", args.owner_uid)
+        for candidate in (env_file, *env_file.parents):
+            info = candidate.lstat() if candidate.exists() else None
+            if info is not None and (info.st_mode & 0o022 or
+                    (args.owner_uid is not None and info.st_uid != args.owner_uid)):
+                problems.append(f"runner env path is not protected: {candidate}")
+            if args.writable_check and os.access(candidate, os.W_OK):
+                problems.append(f"runner env path writable by runner: {candidate}")
         try:
             lines = env_file.read_text(encoding="utf-8", errors="replace").splitlines()
         except OSError as exc:
@@ -469,6 +477,10 @@ def cmd_verify_install(args: argparse.Namespace) -> int:
             if key in seen:
                 problems.append(f"{env_file}:{lineno}: duplicate key {key}")
             seen.add(key)
+            # Runner loads .env before spawning bash. Unknown keys could run code
+            # before this hook (BASH_ENV/LD_PRELOAD); a blacklist is insufficient.
+            if key not in {"LANG", "LC_ALL", "TZ"}:
+                problems.append(f"{env_file}:{lineno}: unsupported runner env key {key}")
             if key == HOOK_ENV or key.startswith("ASTRA_BOUNDARY_") or key in args.env_forbid:
                 problems.append(f"{env_file}:{lineno}: boundary key {key} must not be set here")
             elif key in args.env_require and value.strip() != args.env_require[key]:
@@ -497,6 +509,9 @@ def cmd_check_env(args: argparse.Namespace) -> int:
         problems.append(f"{POLICY_SHA_ENV} must equal the pinned policy digest")
     if any(key in env for key in ("ASTRA_BOUNDARY_PYTHON", "ASTRA_BOUNDARY_KILL", "ASTRA_BOUNDARY_FLUSH_SECONDS")):
         problems.append("boundary execution overrides are forbidden")
+    if any(key in {"BASH_ENV", "ENV", "SHELLOPTS", "BASHOPTS"} or
+           key.startswith(("LD_", "DYLD_", "BASH_FUNC_", "PYTHON")) for key in env):
+        problems.append("shell/interpreter/loader startup injection environment forbidden")
     if not env.get(EVIDENCE_ENV):
         problems.append(f"{EVIDENCE_ENV} must be set")
     if problems:
