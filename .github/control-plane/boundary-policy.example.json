@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "policy_id": "PENDING-prod-boundary",
+  "description": "비활성 설치 예시. 실제 repo/owner/actor ID와 감사한 workflow의 commit SHA를 고정해야 한다. GITHUB_WORKFLOW_SHA는 파일 blob SHA가 아니다. placeholder 또는 불일치는 허용 근거가 아니다.",
+  "required_claims": [
+    "env:GITHUB_RUN_ID",
+    "env:GITHUB_RUN_ATTEMPT",
+    "env:GITHUB_EVENT_PATH",
+    "event:repository.id"
+  ],
+  "allow": [
+    {
+      "name": "control-plane-runtime-main",
+      "claims": {
+        "env:GITHUB_REPOSITORY": "OWNER/REPO",
+        "env:GITHUB_REPOSITORY_ID": "0000000000",
+        "env:GITHUB_REPOSITORY_OWNER_ID": "000000000",
+        "env:GITHUB_REF": "refs/heads/main",
+        "env:GITHUB_WORKFLOW_REF": "OWNER/REPO/.github/workflows/control-plane-runtime.yml@refs/heads/main",
+        "env:GITHUB_WORKFLOW_SHA": "0000000000000000000000000000000000000000",
+        "env:GITHUB_EVENT_NAME": "workflow_dispatch",
+        "env:GITHUB_JOB": "control",
+        "env:GITHUB_ACTOR_ID": "000000000",
+        "event:repository.id": 0,
+        "event:repository.owner.id": 0,
+        "event:sender.id": 0
+      }
+    }
+  ]
+}

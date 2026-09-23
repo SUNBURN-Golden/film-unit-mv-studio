@@ -1,4 +1,4 @@
-# TASK ENVELOPE v3
+# TASK ENVELOPE v4
 
 Store this envelope on the canonical GitHub task, not as a new runtime file.
 Link the existing specification; do not rewrite or duplicate it.
@@ -20,21 +20,29 @@ constraints/contracts and acceptance/verification criteria. Exact section
 pointers suffice; the same issue may supply every section. No separate
 Astra approval is required for an already authorized, well-scoped task.
 Missing consequential requirements need clarification; repository investigation
-and ordinary implementation choices belong to Devin.
+and ordinary implementation choices belong to the assigned builder.
 
 ## Fixed defaults from RUNBOOKS/DISPATCH.md
 
-EXECUTION_CLASS: DEVIN_STANDARD
+EXECUTION_CLASS: BUILDER_STANDARD
+BUILDER_ID: CONFIG_REQUIRED
 DELIVERABLE_MODE: PR
 AUDIT_FLOOR: A1
+ASTRA_GATE: NONE
 REVIEW_POLICY: REQUIRED_NON_A0
 REVIEWER_LANE_ID: CONFIG_REQUIRED
 
+For BUILDER_STANDARD, BUILDER_ID must resolve to one configured builder adapter
+such as DEVIN, GROK_BUILD or GLM before dispatch. Grok never chooses the builder
+or reviewer by reading the task.
+
 REPO/PROJECT must match the project map. Verification/post-merge policy comes
-from that map and the repository rules. Overrides require a durable authorized
-pointer; Grok never classifies the task or invents missing requirements.
-Before dispatch, resolve the required reviewer identity. An unavailable lane
-cannot silently waive review.
+from that map and repository rules. Overrides require a durable authorized
+pointer. An unavailable builder/reviewer lane cannot silently waive or transfer
+ownership.
+
+A3 always implies ASTRA_GATE=ARCHITECTURE.
+Other ASTRA_GATE values: NONE | MILESTONE | ARCHITECTURE | RELEASE.
 
 ## Conditional pointers
 
@@ -67,14 +75,22 @@ These are provisioned by intake/User before execution; they are not invented
 by Grok. If Slack is used, task and thread link to each other. Mutable
 claim/session/HEAD/gate state belongs in the control record, not the task spec.
 
+Builder/reviewer reassignment is a durable control action. It must not create a
+second writer or bypass an unresolved SUBMITTING/UNKNOWN launch.
+
 ## Owner instruction
 
-Follow the pinned task and repository rules. Investigate, implement, debug,
-test/fix/retest and deliver the PR without routine plan approval.
-Preserved approved A3 contracts permit implementation followed by A3 audit.
-Required consequential contract changes require DECISION_REQUIRED with the
-exact question and evidence before implementing that change.
-CI/review/audit feedback returns to the same active owner.
+Follow the pinned task and repository rules. As the assigned builder,
+investigate, implement, debug, test/fix/retest and deliver the PR without
+routine plan approval.
+
+Do not silently change approved architecture, contracts, authority/security
+boundaries or consequential semantics. When such a change is required, stop
+the affected change and submit DECISION_REQUIRED / architecture-exception
+evidence.
+
+CI/review/Astra-gate feedback returns to the same active owner unless a durable
+authorized reassignment fences the prior attempt.
 
 ## Completion evidence index
 
@@ -82,11 +98,12 @@ CI/review/audit feedback returns to the same active owner.
 - complete changed paths and acceptance criterion -> test/CI evidence pointers;
 - actual commands/results and repository-required evidence;
 - TOUCHED_AREAS and CONTRACT_CHANGE_REQUIRED: NO | YES (advisory only);
-- independent review pointer when available;
+- BUILDER_ID and independent review pointer when available;
+- VERIFIED_REVIEW_DEPTH / touched areas / contract-change result when reviewed;
+- Astra-gate pointer/result only when ASTRA_GATE requires it;
 - unverified behavior, remaining risks, BLOCKED/STALLED when applicable.
 
-Astra independently verifies touched areas and contract changes. This index
-does not replace repository evidence requirements or independent examination.
+The independent reviewer verifies touched areas and contract-change requirements for routine A1/A2 work. Astra independently re-verifies them only on an applicable Astra gate. This index does not replace repository evidence requirements or independent examination.
 No transcript, repeated status or mutable execution state belongs here.
 
 Missing required fields: BLOCKED / INCOMPLETE_TASK_ENVELOPE, field names only.
