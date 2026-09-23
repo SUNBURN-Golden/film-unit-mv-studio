@@ -1,0 +1,100 @@
+name: Control Plane Runtime
+
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: "preflight or dispatch"
+        required: true
+        type: choice
+        options:
+          - preflight
+          - dispatch
+      issue_number:
+        description: "Canonical GitHub task issue number (required for dispatch)"
+        required: false
+        type: string
+      builder_id:
+        description: "Builder for preflight"
+        required: false
+        default: "ALL"
+        type: choice
+        options:
+          - ALL
+          - DEVIN
+          - GROK_BUILD
+          - GLM
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: astra-control-${{ github.repository }}-${{ inputs.issue_number || 'preflight' }}
+  cancel-in-progress: false
+
+jobs:
+  control:
+    if: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+    runs-on: [self-hosted, astra-control-plane]
+    timeout-minutes: 15
+    env:
+      ISSUE_NUMBER: ${{ inputs.issue_number }}
+      PREFLIGHT_BUILDER: ${{ inputs.builder_id }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Validate repository contract
+        run: python3 -I scripts/control_plane.py validate-repo
+
+      - name: Host preflight
+        if: ${{ inputs.operation == 'preflight' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$PREFLIGHT_BUILDER" == "ALL" ]]; then
+            python3 -I scripts/control_plane.py host-preflight
+          else
+            python3 -I scripts/control_plane.py host-preflight --builder-id "$PREFLIGHT_BUILDER"
+          fi
+
+      - name: Validate dispatch input
+        if: ${{ inputs.operation == 'dispatch' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! [[ "$ISSUE_NUMBER" =~ ^[1-9][0-9]*$ ]]; then
+            echo "issue_number must be a positive integer" >&2
+            exit 2
+          fi
+
+      - name: Prepare serialized dispatch
+        id: prepare
+        if: ${{ inputs.operation == 'dispatch' }}
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: >-
+          python3 -I scripts/control_plane.py prepare-dispatch
+          --issue-number "$ISSUE_NUMBER"
+          --packet "$RUNNER_TEMP/astra-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-packet.json"
+
+      - name: Launch through protected host admission
+        if: ${{ inputs.operation == 'dispatch' && steps.prepare.outputs.launch_required == 'true' }}
+        run: >-
+          python3 -I scripts/control_plane.py launch-dispatch
+          --packet "$RUNNER_TEMP/astra-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-packet.json"
+          --result "$RUNNER_TEMP/astra-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-result.json"
+
+      - name: Finalize exact launch state
+        if: ${{ always() && inputs.operation == 'dispatch' && steps.prepare.outputs.launch_required == 'true' }}
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          LAUNCH_REQUEST_ID: ${{ steps.prepare.outputs.launch_request_id }}
+        run: >-
+          python3 -I scripts/control_plane.py finalize-dispatch
+          --issue-number "$ISSUE_NUMBER"
+          --launch-request-id "$LAUNCH_REQUEST_ID"
+          --result "$RUNNER_TEMP/astra-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-result.json"
