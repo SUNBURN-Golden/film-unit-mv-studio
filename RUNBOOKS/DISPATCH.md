@@ -717,3 +717,8 @@ Measure validated completed-task throughput, per-builder cost, Astra usage,
 Grok usage, User interventions, review findings, rework and integration
 conflicts. Report unavailable usage metrics as unknown.
 
+
+
+## KIX SoT pointer
+
+Production control-plane SoT / dispatch / activation: see [`../docs/KIX_CONTROL_PLANE_POINTER.md`](../docs/KIX_CONTROL_PLANE_POINTER.md) → `BeautifulMind-JT/kix-protocol`.

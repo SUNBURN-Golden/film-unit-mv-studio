@@ -357,3 +357,10 @@ Existing lyrics/subtitle timing, LOCK, asset provenance, renderer/budget
 approval, build-history/reproducibility and Preview/Final rules remain
 authoritative. Paid generation or production approval is never inferred from
 this control-plane policy.
+
+
+## KIX control-plane SoT pointer (E2)
+
+Control-plane SoT, dispatch policy, and production activation are managed in **BeautifulMind-JT/kix-protocol**, not in this sibling tree.
+See [`docs/KIX_CONTROL_PLANE_POINTER.md`](docs/KIX_CONTROL_PLANE_POINTER.md).
+Do not enable sibling runtime, copy full policy, or change activation/workflows from this pointer PR.
