@@ -1,26 +1,16 @@
-<!-- E2 sibling pointer — docs only; do not copy full KIX policy here -->
-# KIX control-plane pointer (sibling)
+# Shared engineering control plane
 
-This repository is a **sibling consumer** of the KIX control plane.
+Shared source owner: `BeautifulMind-JT/ai-ops-control-plane`. This product is not the shared control-plane host.
 
-## Source of truth
+Migration decision: https://github.com/BeautifulMind-JT/ai-ops-control-plane/issues/1
 
-| Concern | Authoritative location |
-|---|---|
-| Control-plane SoT (policy, runtime adapters, host helpers) | [`BeautifulMind-JT/kix-protocol`](https://github.com/BeautifulMind-JT/kix-protocol) |
-| Dispatch policy / runbooks | `kix-protocol` → `RUNBOOKS/DISPATCH.md`, `docs/CONTROL_PLANE_RUNTIME.md` |
-| Activation / `runtime_enabled` / `activated_runtime_sha` / `enabled_builders` | `kix-protocol` → `.github/control-plane/` (**production bring-up lives there**) |
-| Production runner / canary evidence | `kix-protocol` issues/PRs (e.g. #40 umbrella, #49 canary) |
+Imported source candidate: https://github.com/BeautifulMind-JT/ai-ops-control-plane/tree/d8b096994f9e8510fafd00a35f9ea5e4b33925c6/engineering
+Target product: `BeautifulMind-JT/film-unit-mv-studio`. Product contracts, tasks, locked files and product CI stay here.
 
-## Sibling application status (E2)
+This is source/reference extraction, NOT production cutover. The destination import must
+be independently reviewed and merged first. Do not enable a runner, copy credentials,
+start a builder or assume KIX activation/audit evidence transfers. Preserve task, owner,
+request and ledger identities. Fence/drain legacy dispatch before retiring it; never run
+two dispatchers. Runtime identity separation and host/Slack cutover are separate gates.
 
-- **This PR:** docs/governance **pointer only**.
-- **Not in scope here:** copying full AGENTS policy, adding/changing runtime files, workflows, runner config, activation JSON, secrets, or builder allowlists.
-- Local `.github/control-plane/*` and workflows that may already exist in this tree remain **inactive / non-authoritative** for production until a future gated adoption explicitly says otherwise. Do **not** treat them as live production SoT.
-- Production dispatch and activation changes must go through **kix-protocol** ordinary PR + User merge authorization (builders never self-merge).
-
-## Rollout reference
-
-- Umbrella: https://github.com/BeautifulMind-JT/kix-protocol/issues/40
-- Astra Midcoord E2 (2026-09-24): docs/pointer-only sequential sibling rollout
-
+User-only merge; no automatic fallback, retries, polling or standing routines.
