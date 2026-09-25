@@ -4,7 +4,7 @@ Shared source owner: `BeautifulMind-JT/ai-ops-control-plane`. This product is no
 
 Migration decision: https://github.com/BeautifulMind-JT/ai-ops-control-plane/issues/1
 
-Imported source candidate: https://github.com/BeautifulMind-JT/ai-ops-control-plane/tree/d8b096994f9e8510fafd00a35f9ea5e4b33925c6/engineering
+Imported source pin: https://github.com/BeautifulMind-JT/ai-ops-control-plane/tree/7ad7f5008bae4004d5158075e8517e24a2d2de6a/engineering
 Target product: `BeautifulMind-JT/film-unit-mv-studio`. Product contracts, tasks, locked files and product CI stay here.
 
 This is source/reference extraction, NOT production cutover. The destination import must
