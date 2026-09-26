@@ -3,7 +3,7 @@
 Shared policy owner: `BeautifulMind-JT/ai-ops-control-plane`.
 Target product: `BeautifulMind-JT/film-unit-mv-studio`.
 
-Candidate policy: https://github.com/BeautifulMind-JT/ai-ops-control-plane/tree/5127bee22e8dcc488027fbab7d0a9ef8cc9c177d/engineering
+Candidate policy: https://github.com/BeautifulMind-JT/ai-ops-control-plane/tree/aaa3e0544926dc2789faabc1fbe33fb611a12377/engineering
 Status: pending central PR acceptance and this product's policy adoption; this
 candidate is not evidence of installed runtime, builder qualification or activation.
 

@@ -3,7 +3,7 @@
   "migration_task": "https://github.com/BeautifulMind-JT/ai-ops-control-plane/issues/1",
   "repository": "BeautifulMind-JT/film-unit-mv-studio",
   "control_repository": "BeautifulMind-JT/ai-ops-control-plane",
-  "control_source_commit": "5127bee22e8dcc488027fbab7d0a9ef8cc9c177d",
+  "control_source_commit": "aaa3e0544926dc2789faabc1fbe33fb611a12377",
   "control_source_subdirectory": "engineering",
   "status": "POLICY_CANDIDATE_PENDING_ACCEPTANCE",
   "runtime_enabled": false
