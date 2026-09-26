@@ -1,16 +1,20 @@
-# Shared engineering control plane
+# Shared engineering policy pointer
 
-Shared source owner: `BeautifulMind-JT/ai-ops-control-plane`. This product is not the shared control-plane host.
+Shared policy owner: `BeautifulMind-JT/ai-ops-control-plane`.
+Target product: `BeautifulMind-JT/film-unit-mv-studio`.
 
-Migration decision: https://github.com/BeautifulMind-JT/ai-ops-control-plane/issues/1
+Candidate policy: https://github.com/BeautifulMind-JT/ai-ops-control-plane/tree/5127bee22e8dcc488027fbab7d0a9ef8cc9c177d/engineering
+Status: pending central PR acceptance and this product's policy adoption; this
+candidate is not evidence of installed runtime, builder qualification or activation.
 
-Imported source pin: https://github.com/BeautifulMind-JT/ai-ops-control-plane/tree/7ad7f5008bae4004d5158075e8517e24a2d2de6a/engineering
-Target product: `BeautifulMind-JT/film-unit-mv-studio`. Product contracts, tasks, locked files and product CI stay here.
+The machine-readable pin is `.github/control-plane-client.json`.
+Project defaults come from pinned `engineering/projects/film-unit-mv-studio.md`.
+Builder/model qualification and Astra Slack routing use the pinned central policy.
+Product contracts, task specifications, protected files and product CI remain here.
+GitHub task/decision/audit records remain authoritative; Slack is a collaboration surface.
 
-This is source/reference extraction, NOT production cutover. The destination import must
-be independently reviewed and merged first. Do not enable a runner, copy credentials,
-start a builder or assume KIX activation/audit evidence transfers. Preserve task, owner,
-request and ledger identities. Fence/drain legacy dispatch before retiring it; never run
-two dispatchers. Runtime identity separation and host/Slack cutover are separate gates.
-
+Migration history: https://github.com/BeautifulMind-JT/ai-ops-control-plane/issues/1
+Historical source, audit and activation evidence retains its original SHA and scope.
+No local dispatcher is installed by this reference change. Existing deployment,
+fence and rollout decisions are unchanged; never run two dispatchers for one task.
 User-only merge; no automatic fallback, retries, polling or standing routines.

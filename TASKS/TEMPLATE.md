@@ -22,7 +22,11 @@ Astra approval is required for an already authorized, well-scoped task.
 Missing consequential requirements need clarification; repository investigation
 and ordinary implementation choices belong to the assigned builder.
 
-## Fixed defaults from RUNBOOKS/DISPATCH.md
+## Fixed defaults from the pinned central project profile
+
+Resolve the central commit from `.github/control-plane-client.json` and read
+`engineering/projects/film-unit-mv-studio.md` at that commit. Candidate adoption status
+is recorded in `docs/CONTROL_PLANE_POINTER.md`; this template does not activate it.
 
 EXECUTION_CLASS: BUILDER_STANDARD
 BUILDER_ID: CONFIG_REQUIRED
@@ -33,7 +37,7 @@ REVIEW_POLICY: REQUIRED_NON_A0
 REVIEWER_LANE_ID: CONFIG_REQUIRED
 
 For BUILDER_STANDARD, BUILDER_ID must resolve to one configured builder adapter
-such as DEVIN, GROK_BUILD or GLM before dispatch. Grok never chooses the builder
+such as DEVIN, GROK_BUILD, GLM or CURSOR before dispatch. Grok never chooses the builder
 or reviewer by reading the task.
 
 REPO/PROJECT must match the project map. Verification/post-merge policy comes
@@ -45,6 +49,12 @@ A3 always implies ASTRA_GATE=ARCHITECTURE.
 Other ASTRA_GATE values: NONE | MILESTONE | ARCHITECTURE | RELEASE.
 
 ## Conditional pointers
+
+EXECUTION_PROFILE_POINTER: OPTIONAL
+
+When supplied, link the exact qualified harness/model report selected by the
+configured builder profile. This is a reference, not a free-form model choice,
+qualification result or permission to change an active session's builder/model.
 
 CONTRACT_POINTERS:
 INVARIANT_POINTERS:
