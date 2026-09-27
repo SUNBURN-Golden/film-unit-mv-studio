@@ -1,16 +1,6 @@
 # Shared engineering control plane
 
-Shared source owner: `BeautifulMind-JT/ai-ops-control-plane`. This product is not the shared control-plane host.
-
-Migration decision: https://github.com/BeautifulMind-JT/ai-ops-control-plane/issues/1
-
-Imported source pin: https://github.com/BeautifulMind-JT/ai-ops-control-plane/tree/7ad7f5008bae4004d5158075e8517e24a2d2de6a/engineering
-Target product: `BeautifulMind-JT/film-unit-mv-studio`. Product contracts, tasks, locked files and product CI stay here.
-
-This is source/reference extraction, NOT production cutover. The destination import must
-be independently reviewed and merged first. Do not enable a runner, copy credentials,
-start a builder or assume KIX activation/audit evidence transfers. Preserve task, owner,
-request and ledger identities. Fence/drain legacy dispatch before retiring it; never run
-two dispatchers. Runtime identity separation and host/Slack cutover are separate gates.
-
-User-only merge; no automatic fallback, retries, polling or standing routines.
+See the [canonical product policy pointer](CONTROL_PLANE_POINTER.md) and
+`.github/control-plane-client.json` for the candidate central source and adoption status.
+This file is a compatibility pointer, not a local dispatcher or runtime approval.
+Product-specific rules in `AGENTS.md` remain mandatory.
