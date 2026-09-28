@@ -28,6 +28,7 @@ The pinned `engineering/.github/control-plane/projects.json` sets FILM_UNIT
 `deployment_enabled=true` and `enabled_builders=["DEVIN"]`. Eligibility changed
 from `false` at the previous pin via central PR #18 (2026-09-27); host rollout
 still requires its own evidence (central `engineering/CUTOVER.md` step 7).
+User decision (2026-09-28, PR #14): keep FILM_UNIT eligible (`deployment_enabled=true`).
 
 Eligibility alone dispatches nothing. Central dispatch also requires the pinned
 `engineering/.github/control-plane/activation.json` to reach `runtime_enabled=true`,
