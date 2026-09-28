@@ -5,6 +5,6 @@
   "control_repository": "BeautifulMind-JT/ai-ops-control-plane",
   "control_source_commit": "3e7c64a515e908b312604e82405b963d100caa07",
   "control_source_subdirectory": "engineering",
-  "status": "POLICY_CANDIDATE_PENDING_ACCEPTANCE",
+  "status": "POLICY_ADOPTED_PIN",
   "runtime_enabled": false
 }
