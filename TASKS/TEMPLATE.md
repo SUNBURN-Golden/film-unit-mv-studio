@@ -25,8 +25,10 @@ and ordinary implementation choices belong to the assigned builder.
 ## Fixed defaults from the pinned central project profile
 
 Resolve the central commit from `.github/control-plane-client.json` and read
-`engineering/projects/film-unit-mv-studio.md` at that commit. Candidate adoption status
-is recorded in `docs/CONTROL_PLANE_POINTER.md`; this template does not activate it.
+`engineering/projects/film-unit-mv-studio.md` (path from the central repository
+root) at that commit. The values below mirror that profile at the recorded pin;
+if they differ, the pinned profile governs and this template must be corrected.
+This template does not activate the runtime.
 
 EXECUTION_CLASS: BUILDER_STANDARD
 BUILDER_ID: CONFIG_REQUIRED
@@ -36,9 +38,11 @@ ASTRA_GATE: NONE
 REVIEW_POLICY: REQUIRED_NON_A0
 REVIEWER_LANE_ID: CONFIG_REQUIRED
 
-For BUILDER_STANDARD, BUILDER_ID must resolve to one configured builder adapter
-such as DEVIN, GROK_BUILD, GLM or CURSOR before dispatch. Grok never chooses the builder
-or reviewer by reading the task.
+For BUILDER_STANDARD, BUILDER_ID must be listed in this repository's
+`enabled_builders` in the pinned central project map before dispatch (value at
+the current pin: `docs/CONTROL_PLANE_POINTER.md`). A registered adapter that is
+not enabled is refused, with no automatic fallback. Grok never chooses the
+builder or reviewer by reading the task.
 
 REPO/PROJECT must match the project map. Verification/post-merge policy comes
 from that map and repository rules. Overrides require a durable authorized
@@ -50,16 +54,16 @@ Other ASTRA_GATE values: NONE | MILESTONE | ARCHITECTURE | RELEASE.
 
 ## Conditional pointers
 
-EXECUTION_PROFILE_POINTER: OPTIONAL
-
-When supplied, link the exact qualified harness/model report selected by the
-configured builder profile. This is a reference, not a free-form model choice,
-qualification result or permission to change an active session's builder/model.
-
+EXECUTION_PROFILE_POINTER:
 CONTRACT_POINTERS:
 INVARIANT_POINTERS:
 LOCKED_AREAS_POINTERS:
 PHASE_OR_LAYER_POINTER:
+
+EXECUTION_PROFILE_POINTER is optional. When supplied, link the exact qualified
+harness/model report selected by the configured builder profile. This is a
+reference, not a free-form model choice, qualification result or permission to
+change an active session's builder/model.
 
 Use exact task-spec sections or existing repository documents; N/A is allowed
 only when no such requirement applies. Existing project-specific requirements
