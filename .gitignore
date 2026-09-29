@@ -10,3 +10,7 @@ output/*
 !output/.gitkeep
 .streamlit/secrets.toml
 *.log
+vendor/
+dist/
+build/
+desktop-evidence/

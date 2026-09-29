@@ -8,7 +8,9 @@
 
 ## 실행
 
-Python 3.11 이상, FFmpeg/ffprobe, FFmpeg의 `libass` 자막 필터가 필요합니다. Linux/macOS에서 실행하며 Windows는 WSL을 사용합니다. 동시 실행 잠금은 `fcntl`을 사용합니다.
+Windows 사용자는 [포터블 EXE 사용·빌드 안내](docs/WINDOWS_APP.md)를 참고하세요. Python이 포함된 실행기로 기존 로컬 편집 화면을 열며, FFmpeg는 최초 실행 때 별도로 내려받습니다. 실제 다운로드 가능 여부는 해당 PR의 Windows Actions artifact에서 확인합니다.
+
+소스 실행에는 Python 3.11 이상, FFmpeg/ffprobe, FFmpeg의 `libass` 자막 필터가 필요합니다. 동시 실행 잠금은 Linux/macOS에서 `fcntl`, Windows에서 `msvcrt`를 사용합니다.
 
 ```bash
 git clone https://github.com/BeautifulMind-JT/film-unit-mv-studio.git

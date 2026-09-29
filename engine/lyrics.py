@@ -430,7 +430,8 @@ def burn_subtitles(clean_path, ass_path, output_path, fmt):
                    "-c:v", "libx264", "-crf", str(fmt.get("crf", 18)), "-preset", "veryfast", "-pix_fmt", "yuv420p",
                    "-c:a", "copy", "-map_metadata", "-1", "-movflags", "+faststart", str(pending)]
         try:
-            result = subprocess.run(command, cwd=work, capture_output=True, timeout=1800)
+            result = subprocess.run(command, cwd=work, capture_output=True, timeout=1800,
+                                    creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
         except (OSError, subprocess.SubprocessError) as exc:
             raise FilmError(f"Subtitle rendering failed: {exc}") from exc
         if result.returncode:

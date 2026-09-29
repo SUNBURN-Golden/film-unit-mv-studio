@@ -15,7 +15,7 @@ from engine.qc import SEMANTIC_ITEMS, save_review
 from engine.settings import get_secret
 
 ROOT = Path(__file__).resolve().parents[1]
-PROJECTS = ROOT / "projects"
+PROJECTS = Path(os.environ.get("FILM_UNIT_PROJECTS", ROOT / "projects")).resolve()
 st.set_page_config(page_title="FILM UNIT", page_icon="◧", layout="wide")
 st.markdown("""<style>
 .stApp{background:#eeeae3;color:#20221f} h1,h2,h3{letter-spacing:-.035em}
@@ -27,6 +27,7 @@ st.title("한 곡에서, 한 편으로.")
 st.write("곡 전체를 먼저 보고, 장면과 가사 자막을 고쳐 새 빌드로 저장합니다.")
 PROJECTS.mkdir(parents=True, exist_ok=True)
 projects = sorted(p.name for p in PROJECTS.iterdir() if p.is_dir() and (p / "project.yaml").exists())
+st.sidebar.caption(f"프로젝트 저장 위치: {PROJECTS}")
 chosen = st.sidebar.selectbox("프로젝트", ["새 프로젝트", *projects], index=(len(projects) if projects else 0))
 
 
@@ -59,6 +60,8 @@ if chosen == "새 프로젝트":
                 source.write_bytes(audio.getvalue())
                 result = guarded(lambda: init_project(PROJECTS, name, source, brief, lyrics, aspect=aspect))
                 if result:
+                    from desktop.runtime import configure_project_font
+                    configure_project_font(result)
                     st.success("프로젝트가 생성됐습니다. 왼쪽에서 선택해주세요.")
     st.stop()
 
@@ -76,7 +79,7 @@ with models_tab:
 
 with tabs[0]:
     st.subheader("음원 분석")
-    st.write((p / "input/brief.md").read_text())
+    st.write((p / "input/brief.md").read_text(encoding="utf-8"))
     if st.button("ANALYZE", type="primary"):
         with st.spinner("음원의 비트와 에너지 변화를 분석하고 있습니다…"):
             guarded(lambda: analyze(p), "분석 완료")
@@ -101,7 +104,7 @@ with tabs[1]:
         path = p / "bible" / name
         if path.exists():
             with st.expander(name):
-                content = st.text_area("내용", path.read_text(), height=260, key=name)
+                content = st.text_area("내용", path.read_text(encoding="utf-8"), height=260, key=name)
                 if st.button("저장", key="save_"+name):
                     def save_bible():
                         with project_mutex(p):
@@ -114,7 +117,7 @@ with tabs[1]:
                                 atomic_text(path, content)
                     guarded(save_bible, "저장했습니다. 변경된 제작 패키지는 다시 LOCK해주세요.")
     if (p / "bible/director_request.md").exists():
-        st.download_button("Work 감독 작업 지시서", (p / "bible/director_request.md").read_text(), "director_request.md")
+        st.download_button("Work 감독 작업 지시서", (p / "bible/director_request.md").read_text(encoding="utf-8"), "director_request.md")
     st.divider()
     from app.models_ui import render_director
     render_director(p)
