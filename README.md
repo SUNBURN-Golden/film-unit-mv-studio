@@ -132,6 +132,22 @@ python -m engine.cli migrate projects/existing_project
 
 Economy/fal/benchmark는 호환성을 위해 기존 파일 위치에 남겨 둔 실험 기능입니다. 이번 버전에서는 새 provider를 추가하지 않았습니다. OpenArt는 기존 Work 작업 파일을 이용한 image-to-video 연결이며 다중 element/reference 영상, 자동 시각 의미 QC, 숫자 QC의 PASS/FAIL 전환은 후속 작업입니다. [기존 OpenArt 운영](docs/OPENART_BRIDGE.md), [Economy 운영](docs/ECONOMY_COMPILER.md).
 
+## 구독 앱으로 직접 만들기
+
+Gemini 앱(Nano Banana), Flow(Veo), Grok Imagine처럼 구독에 포함된 앱에서 사람이 직접 만들 때 쓰는 작업지시서를 만듭니다.
+
+```bash
+python -m engine.cli packets projects/project_001
+python -m engine.cli packets projects/project_001 --shots S001,S002
+```
+
+`render/packets/index.html`을 브라우저로 열면 샷마다 첫 프레임 프롬프트, 함께 올릴 캐릭터·장소 참조 이미지, 영상 프롬프트와 최소 길이, 가져오기 명령이 나옵니다. 같은 내용이 `packets.json`에도 저장됩니다. UI의 콘티 검토 화면에서도 만들 수 있습니다. 이 명령은 아무 서비스도 호출하지 않으며 샷·검수·LOCK·예산을 바꾸지 않습니다. 결과물은 기존 `import-frame`과 `import-asset`으로 가져오고, 검수와 Final 조건도 그대로 적용됩니다.
+
+- 소비자 앱을 스크립트나 브라우저 자동화로 조작하지 않습니다. 사람이 직접 만들고 내려받습니다.
+- 정지 샷(`STATIC`)에는 영상 단계가 없습니다. 비용을 줄이려고 움직이는 샷을 `STATIC`으로 바꾸지 않습니다.
+- 영상 서비스가 프로젝트 화면비를 지원하지 않으면 가장 가까운 비율로 만듭니다. 컴파일 때 여백을 넣어 맞추고 클립 소리는 제거합니다.
+- 캐릭터·장소 참조 이미지는 `bible/characters.yaml`, `bible/locations.yaml`의 `reference_images`에 프로젝트 안 경로로 적습니다.
+
 ## 검증 범위
 
 ```bash

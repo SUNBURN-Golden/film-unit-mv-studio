@@ -51,6 +51,9 @@ def main(argv=None):
         if name == "snap-cut":
             p.add_argument("--to", choices=["beat", "onset"], default="beat")
             p.add_argument("--around-ms", type=int)
+    packets = sub.add_parser("packets", help="Write per-shot prompts and import commands for making media by hand in subscription apps; no provider calls")
+    packets.add_argument("project")
+    packets.add_argument("--shots", help="Comma-separated shot IDs; default all shots")
     verify = sub.add_parser("verify-build")
     verify.add_argument("build_dir")
     replay = sub.add_parser("replay-build")
@@ -102,6 +105,9 @@ def main(argv=None):
         elif a.command == "builds":
             from .builds import list_builds
             result = list_builds(a.project)
+        elif a.command == "packets":
+            from .packets import export_packets
+            result = export_packets(a.project, a.shots.split(",") if a.shots else None)
         elif a.command == "verify-build":
             from .builds import verify_build
             result = verify_build(a.build_dir)

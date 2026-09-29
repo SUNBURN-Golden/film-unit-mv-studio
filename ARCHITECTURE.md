@@ -70,6 +70,8 @@ The prior generation path still binds production, output scope, renderer configu
 
 OpenArt remains a Work outbox/receipt image-to-video bridge, not an independent Python connection using extracted connector credentials. The existing pipeline may wait for generation or semantic review; the separate Preview compiler can meanwhile assemble available assets. Legacy generation exports in `output/` remain supported, but versioned whole-song outputs use `builds/`.
 
+`packets.py` writes per-shot hand-off packets (`render/packets/index.html` and `packets.json`) for making first frames and clips by hand in subscription apps. A packet holds the still-image prompt with the shot's cast/location reference images, the existing image-to-video prompt with a minimum clip length, and the existing import command. It contacts no provider, automates no consumer app and does not change shots, reviews, budgets or LOCK; imported results follow the same review and Final rules.
+
 Technical QC and sample extraction exist. Semantic QC still reads explicit evidence-backed numeric review under the old schema; it is not an automatic neural evaluator. PASS/FAIL semantic review redesign and element/reference/start-end/video-edit capabilities are deferred. No additional provider was added for v0.3.
 
 ## Verification boundary

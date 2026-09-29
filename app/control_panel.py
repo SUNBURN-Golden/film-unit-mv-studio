@@ -153,6 +153,13 @@ with tabs[2]:
                             generate_storyboard(p, shot["id"])
                             st.rerun()
         st.divider()
+        if st.button("구독 앱 작업지시서 만들기"):
+            from engine.packets import export_packets
+            made = guarded(lambda: export_packets(p))
+            if made:
+                st.success(f"{made['shots']}개 샷 작업지시서: {made['packets']}")
+                for warning in made["warnings"]:
+                    st.warning(warning)
         reviewer = st.text_input("검토자", "Director")
         mock_only = st.checkbox("콘티 테스트용 LOCK", value=any(s.get("storyboard_kind") == "placeholder" for s in shots))
         if st.button("LOCK ALL", type="primary"):
