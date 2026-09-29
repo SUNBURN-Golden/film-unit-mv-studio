@@ -12,6 +12,7 @@ from engine.production import generate_storyboard, import_frame, make_package
 from engine.pipeline import compile_project, prepare
 from engine.budget import approve
 from engine.qc import SEMANTIC_ITEMS, save_review
+from engine.settings import get_secret
 
 ROOT = Path(__file__).resolve().parents[1]
 PROJECTS = ROOT / "projects"
@@ -67,7 +68,11 @@ audio_path = p / config["audio"]["path"]
 if config["audio"].get("synthetic_test_audio"):
     st.info("파이프라인 검증용 합성 음원입니다. 콘티 그림은 배치 확인용 도식입니다.")
 st.sidebar.audio(str(audio_path))
-tabs = st.tabs(["01 · PROJECT", "02 · DIRECTOR", "03 · STORYBOARD", "04 · LYRICS", "05 · TIMELINE", "06 · COMPILE / BUILDS", "07 · RENDER · 고급"])
+models_tab, *tabs = st.tabs(["00 · AI 모델", "01 · PROJECT", "02 · DIRECTOR", "03 · STORYBOARD", "04 · LYRICS", "05 · TIMELINE", "06 · COMPILE / BUILDS", "07 · RENDER · 고급"])
+
+with models_tab:
+    from app.models_ui import render_picker
+    render_picker(p)
 
 with tabs[0]:
     st.subheader("음원 분석")
@@ -110,6 +115,9 @@ with tabs[1]:
                     guarded(save_bible, "저장했습니다. 변경된 제작 패키지는 다시 LOCK해주세요.")
     if (p / "bible/director_request.md").exists():
         st.download_button("Work 감독 작업 지시서", (p / "bible/director_request.md").read_text(), "director_request.md")
+    st.divider()
+    from app.models_ui import render_director
+    render_director(p)
 
 with tabs[2]:
     st.subheader("콘티 검토")
@@ -169,42 +177,9 @@ with tabs[2]:
                 st.rerun()
 
 with tabs[6]:
-    with st.expander("Gemini 자동 제작 · Nano Banana 첫 프레임 → Veo 영상 → Preview", expanded=True):
-        from engine.autopilot import autopilot
-        from engine.gemini import approve_frames
-        st.caption("누를 때마다 이미 승인된 작업만 진행하고, 다음에 사람이 결정할 단계에서 멈춥니다. "
-                   "비용이 드는 단계는 아래에서 금액을 확인하고 승인해야 시작됩니다. 한도는 아래 달러 예산입니다.")
-        if not os.environ.get("GEMINI_API_KEY"):
-            st.info("Gemini API 키가 아직 연결되지 않았습니다. 실행 환경에 GEMINI_API_KEY를 설정해주세요.")
-        if st.button("다음 단계 실행", type="primary", key="autopilot_run"):
-            with st.spinner("진행 중입니다. 첫 프레임과 영상 생성은 몇 분 걸릴 수 있습니다."):
-                st.session_state["autopilot_"+chosen] = guarded(lambda: autopilot(p))
-        step = st.session_state.get("autopilot_"+chosen)
-        if step:
-            labels = {"NEEDS_FRAME_APPROVAL": "첫 프레임 비용 승인 필요", "FRAMES_READY_FOR_REVIEW": "첫 프레임 완성 · 콘티 검토 후 LOCK",
-                      "NEEDS_LOCK": "콘티 검토 후 LOCK 필요 (03 · STORYBOARD)", "NEEDS_VIDEO_APPROVAL": "영상 비용 승인 필요",
-                      "GENERATING": "영상 생성 중 · 몇 분 뒤 다시 누르세요", "PREVIEW_READY": "Preview 완성 · 샷 검토 후 Final"}
-            st.markdown(f"**{labels.get(step['stage'], step['stage'])}**")
-            if step.get("worst_case_usd") is not None:
-                cols = st.columns(2)
-                cols[0].metric("첫 생성", f"{step['initial_usd']:g} USD")
-                cols[1].metric("재시도 포함 최대", f"{step['worst_case_usd']:g} USD")
-            if step.get("note"):
-                st.warning(step["note"])
-            if step["stage"] == "NEEDS_FRAME_APPROVAL" and st.button("이 첫 프레임 비용 승인", key="approve_frames"):
-                guarded(lambda: approve_frames(p, step["estimate_id"]), "승인 완료. 다음 단계 실행을 눌러주세요.")
-            if step["stage"] == "NEEDS_VIDEO_APPROVAL" and st.button("이 영상 비용 승인", key="approve_video"):
-                def approve_video():
-                    current = read(p / "render/estimate.json")
-                    if current["estimate_id"] != step["estimate_id"]:
-                        raise FilmError("견적이 바뀌었습니다. 다음 단계 실행을 다시 눌러주세요.")
-                    approve(p, current)
-                guarded(approve_video, "승인 완료. 다음 단계 실행을 눌러주세요.")
-            if step["stage"] == "PREVIEW_READY":
-                st.write(f"Preview: `{step['build']}`")
-                if step["needs_review"]:
-                    st.caption("검토할 샷: " + ", ".join(step["needs_review"]) + " · 아래 QC 검토에서 확인해주세요.")
-            st.caption(step.get("next", ""))
+    with st.expander("자동 제작 · 고른 모델로 참조 이미지 → 첫 프레임 → 영상 → Preview", expanded=True):
+        from app.models_ui import render_autopilot
+        render_autopilot(p, "autopilot_" + chosen)
     st.subheader("샷 생성 · 고급")
     st.caption("기존 렌더러로 개별 장면을 생성하거나 이어서 실행합니다. 전체 영상을 보려면 COMPILE / BUILDS의 Preview를 사용하세요.")
     renderer = st.selectbox("Renderer", ["mock", "economy", "manual", "openart", "fal", "gemini"], format_func=lambda x: {"mock":"Mock · 비용 없는 콘티 테스트", "economy":"Economy · 실험 기능", "manual":"Manual · 생성한 영상 가져오기", "openart":"OpenArt · Work 작업 연결", "fal":"fal · 실험 기능", "gemini":"Gemini · Veo 3.1 Lite"}[x])
@@ -244,8 +219,8 @@ with tabs[6]:
             guarded(lambda: initialize(p), "설정 파일을 만들었습니다. Work에서 후보 모델과 견적을 연결해주세요.")
     if renderer == "fal":
         st.caption("Wan 2.2 Turbo · 최대 5초 샷 · 기본 720p. 1080p 출력은 편집 시 확대됩니다.")
-        if not os.environ.get("FAL_KEY"):
-            st.info("fal API 키가 아직 연결되지 않았습니다. 실행 환경에 FAL_KEY를 설정해주세요.")
+        if not get_secret("FAL_KEY"):
+            st.info("fal API 키가 아직 연결되지 않았습니다. '00 · AI 모델'에서 입력하거나 FAL_KEY를 설정해주세요.")
         if not (p / "render/fal_config.json").exists():
             if st.button("Wan 테스트 설정 추가"):
                 write(p / "render/fal_config.json", read(ROOT / "templates/fal_wan_turbo.json"))

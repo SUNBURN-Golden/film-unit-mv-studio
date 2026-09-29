@@ -55,14 +55,35 @@ def main(argv=None):
     packets = sub.add_parser("packets", help="Write per-shot prompts and import commands for making media by hand in subscription apps; no provider calls")
     packets.add_argument("project")
     packets.add_argument("--shots", help="Comma-separated shot IDs; default all shots")
-    frames = sub.add_parser("frames-estimate", help="Quote Gemini first frames for placeholder shots; no paid call")
-    frames.add_argument("project")
-    frames.add_argument("--shots", help="Comma-separated shot IDs to regenerate; default all placeholders")
-    approve_frames = sub.add_parser("approve-frames", help="Approve the exact current frame estimate")
-    approve_frames.add_argument("project")
-    approve_frames.add_argument("--estimate-id", required=True)
-    sub.add_parser("generate-frames", help="Generate approved first frames with Gemini (paid)").add_argument("project")
-    sub.add_parser("autopilot", help="Advance a Gemini project to its next human decision; paid steps need prior approval").add_argument("project")
+    images = sub.add_parser("images-estimate", help="Quote missing reference images or first frames with the chosen image model; no request is sent")
+    images.add_argument("project")
+    images.add_argument("--kind", choices=["references", "frames"], default="frames")
+    images.add_argument("--shots", help="Comma-separated shot or entry IDs to regenerate; default everything missing")
+    approve_images = sub.add_parser("images-approve", help="Approve the exact current image estimate")
+    approve_images.add_argument("project")
+    approve_images.add_argument("--kind", choices=["references", "frames"], default="frames")
+    approve_images.add_argument("--estimate-id", required=True)
+    generate_images = sub.add_parser("images-generate", help="Generate the approved images with the chosen image model")
+    generate_images.add_argument("project")
+    generate_images.add_argument("--kind", choices=["references", "frames"], default="frames")
+    sub.add_parser("autopilot", help="Advance a project to its next human decision with the chosen models").add_argument("project")
+    listing = sub.add_parser("providers", help="List the models you can choose, with cost and connection state")
+    listing.add_argument("--stage", choices=["text", "image", "video"])
+    use = sub.add_parser("use", help="Choose the model for one stage of a project")
+    use.add_argument("project")
+    use.add_argument("--stage", choices=["text", "image", "video"], required=True)
+    use.add_argument("--provider", required=True)
+    setkey = sub.add_parser("set-key", help="Save an API key for this user (asked without echo; never stored in a project)")
+    setkey.add_argument("name", help="e.g. GEMINI_API_KEY")
+    setkey.add_argument("--clear", action="store_true")
+    direct = sub.add_parser("direct", help="Ask the chosen text model to draft story, cast, locations and shot directions for review")
+    direct.add_argument("project")
+    direct.add_argument("--notes", default="", help="Extra instructions for the director")
+    direct.add_argument("--language", default="English", help="Language of image/video prompt text")
+    direct.add_argument("--resume", action="store_true", help="Continue an interrupted draft with the same inputs")
+    accept = sub.add_parser("direct-accept", help="Write the reviewed proposal into the production files")
+    accept.add_argument("project")
+    accept.add_argument("--reviewer", required=True)
     verify = sub.add_parser("verify-build")
     verify.add_argument("build_dir")
     replay = sub.add_parser("replay-build")
@@ -117,18 +138,46 @@ def main(argv=None):
         elif a.command == "packets":
             from .packets import export_packets
             result = export_packets(a.project, a.shots.split(",") if a.shots else None)
-        elif a.command == "frames-estimate":
-            from .gemini import frames_estimate
-            result = frames_estimate(a.project, a.shots.split(",") if a.shots else None)
-        elif a.command == "approve-frames":
-            from .gemini import approve_frames
-            result = approve_frames(a.project, a.estimate_id)
-        elif a.command == "generate-frames":
-            from .gemini import generate_frames
-            result = generate_frames(a.project)
+        elif a.command == "images-estimate":
+            from . import imagegen, providers
+            result = imagegen.estimate(a.project, a.kind, providers.selected_image(a.project), a.shots.split(",") if a.shots else None)
+        elif a.command == "images-approve":
+            from . import imagegen
+            result = imagegen.approve(a.project, a.kind, a.estimate_id)
+        elif a.command == "images-generate":
+            from . import imagegen, providers
+            result = imagegen.generate(a.project, a.kind, providers.selected_image(a.project))
         elif a.command == "autopilot":
             from .autopilot import autopilot
             result = autopilot(a.project)
+        elif a.command == "providers":
+            from . import providers
+            result = [{"id": x.id, "stage": x.stage, "name": x.label, "cost": providers.COSTS[x.cost],
+                       **{k: v for k, v in providers.status(x.id).items() if k != "keys"}}
+                      for x in (providers.providers_for(a.stage) if a.stage else providers.PROVIDERS.values())]
+        elif a.command == "use":
+            from . import providers
+            result = providers.select(a.project, a.stage, a.provider)
+        elif a.command == "set-key":
+            import getpass
+            from .settings import delete_secret, set_secret
+            if a.clear:
+                delete_secret(a.name)
+                result = {"cleared": a.name}
+            else:
+                set_secret(a.name, getpass.getpass(f"{a.name}: "))
+                result = {"saved": a.name}
+        elif a.command == "direct":
+            from . import director, providers
+            provider = providers.selected_text(a.project)
+            proposal = director.draft(a.project, provider, a.notes, a.language, a.resume,
+                                      progress=lambda message: print(message, file=sys.stderr, flush=True))
+            result = {"shots": len(proposal["shots"]), "characters": [c["id"] for c in proposal["world"]["characters"]],
+                      "locations": [x["id"] for x in proposal["world"]["locations"]], "warnings": proposal["warnings"],
+                      "next": "제안을 확인한 뒤: direct-accept --reviewer <이름> (제안 파일: bible/director_proposal.json)"}
+        elif a.command == "direct-accept":
+            from . import director
+            result = director.accept(a.project, a.reviewer)
         elif a.command == "verify-build":
             from .builds import verify_build
             result = verify_build(a.build_dir)

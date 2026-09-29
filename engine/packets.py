@@ -42,6 +42,54 @@ def frame_prompt(project, shot, aspect):
     ])
 
 
+def entry_text(entry):
+    """What an entry looks like, in words: look/description plus fixed traits, minus placeholders."""
+    parts = [str(entry.get(k, "")).strip() for k in ("look", "description")]
+    traits = entry.get("invariants")
+    if isinstance(traits, dict):
+        parts.append(", ".join(f"{k}={v}" for k, v in traits.items()))
+    return "; ".join(x for x in parts if x and "Director review required" not in x)
+
+
+def _style_words(project):
+    visual = read(Path(project) / "bible/style_bible.yaml", {}).get("visual_style", {})
+    if not isinstance(visual, dict):
+        return ""
+    return ", ".join(str(v) for v in visual.values() if v and "Director review required" not in str(v))
+
+
+def _clip(text, limit):
+    return text if not limit or len(text) <= limit else text[:limit - 1].rsplit(" ", 1)[0]
+
+
+def compact_prompt(project, shot, aspect, limit):
+    """Short prompt for services with a length cap and no reference-image input."""
+    p = Path(project)
+    cast = [c for c in read(p / "bible/characters.yaml", {}).get("characters", []) if c.get("id") in shot.get("characters", [])]
+    places = [x for x in read(p / "bible/locations.yaml", {}).get("locations", []) if x.get("id") in shot.get("locations", [])]
+    style = _style_words(p)
+    lines = [f"{aspect} still frame from a music video.", shot["description"].strip(),
+             f"Composition: {shot.get('composition', '')}." if shot.get("composition") else "",
+             f"Style: {style}." if style else "",
+             "Characters: " + " | ".join(f"{c['id']}: {entry_text(c)}" for c in cast) if cast else "",
+             "Location: " + " | ".join(f"{x['id']}: {entry_text(x)}" for x in places) if places else "",
+             "No text, captions or watermark."]
+    return _clip(" ".join(x for x in lines if x), limit)
+
+
+def reference_prompt(project, entry, kind, limit=None):
+    """Reference sheet prompt for one character or location."""
+    style = _style_words(project)
+    tail = f" Style: {style}." if style else ""
+    if kind == "character":
+        text = (f"Character reference: {entry_text(entry)}. One figure, full body, front view, neutral standing pose, "
+                f"plain light gray background, even lighting, no text, no props.{tail}")
+    else:
+        text = (f"Environment reference: {entry_text(entry)}. Wide establishing view, empty of people, "
+                f"no text.{tail}")
+    return _clip(text, limit)
+
+
 def frame_references(project, shot):
     """Bible reference images for this shot's cast and locations; missing files are reported."""
     p = Path(project)

@@ -17,11 +17,12 @@ from urllib.error import HTTPError
 from urllib.parse import urlparse
 from urllib.request import Request, build_opener
 
-from .core import FilmError, digest, now, object_hash, project_mutex, read, safe_path, write
+from .core import FilmError, digest, now, object_hash, read, safe_path, write
 from .fal_renderer import NoRedirect
-from .packets import MAX_REFERENCES, aspect_ratio, frame_prompt, frame_references
+from .imagegen import ImageProvider, ImageRejected
+from .packets import MAX_REFERENCES, aspect_ratio
 from .renderers import AwaitingRender, RenderBlocked, RenderResult, VideoRenderer
-from . import budget
+from .settings import get_secret
 
 API = "https://generativelanguage.googleapis.com/v1beta/"
 API_HOST = "generativelanguage.googleapis.com"
@@ -69,9 +70,9 @@ class GeminiHTTP:
     """No retries and no authenticated redirects; storage redirects receive no key."""
 
     def key(self):
-        key = os.environ.get("GEMINI_API_KEY")
+        key = get_secret("GEMINI_API_KEY")
         if not key:
-            raise RenderBlocked("GEMINI_API_KEY is not configured in the local process environment")
+            raise RenderBlocked("Gemini API 키가 없습니다. '모델 선택'에서 입력하거나 GEMINI_API_KEY를 설정하세요")
         return key
 
     def request(self, method, url, payload=None, timeout=60):
@@ -144,99 +145,7 @@ def checked_config(project):
     return config
 
 
-def reserved_usd(project):
-    ledger = read(Path(project) / "render/ledger.json", {"jobs": {}})
-    return round(sum(j.get("reserved_amount", 0) for j in ledger["jobs"].values()
-                     if j.get("billing_unit") == "USD"), 6)
-
-
 # --- First frames (Nano Banana 2) -------------------------------------------
-
-def _frame_inputs(p, shot, aspect):
-    references, missing = frame_references(p, shot)
-    if missing:
-        raise FilmError(f"{shot['id']}: reference image not found: {missing[0]}")
-    if len(references) > MAX_REFERENCES:
-        raise FilmError(f"{shot['id']}: more than {MAX_REFERENCES} reference images")
-    # Inline request limit is about 20 MB after base64 expansion.
-    if sum(safe_path(p, r).stat().st_size for r in references) > MAX_INLINE_BYTES:
-        raise FilmError(f"{shot['id']}: reference images exceed one request's size limit; use smaller files")
-    prompt = frame_prompt(p, shot, aspect)
-    identity = object_hash({"model": FRAME_MODEL, "size": FRAME_SIZE, "aspect": aspect, "prompt": prompt,
-                            "references": {r: digest(safe_path(p, r)) for r in references}})
-    return prompt, references, identity
-
-
-def frames_estimate(project, shot_ids=None):
-    """Quote first frames for placeholder shots (or the listed shots). No LOCK needed:
-    frames come before LOCK, so approval binds the exact prompts and references."""
-    p = Path(project)
-    checked_config(p)
-    config = read(p / "project.yaml")
-    aspect = aspect_ratio(config["format"])
-    if aspect not in FRAME_ASPECTS:
-        raise FilmError(f"Nano Banana does not generate {aspect} images")
-    shots = read(p / "manifest/shots.json")
-    if shot_ids:
-        unknown = set(shot_ids) - {s["id"] for s in shots}
-        if unknown:
-            raise FilmError("Unknown shot ID: " + ", ".join(sorted(unknown)))
-        shots = [s for s in shots if s["id"] in shot_ids]
-    else:
-        shots = [s for s in shots if s.get("storyboard_kind") == "placeholder"]
-    if not shots:
-        raise FilmError("No placeholder frames to generate; list shots explicitly to regenerate frames")
-    retry = config["budget"]["max_retry_per_shot"]
-    cap = config["budget"].get("max_usd", 0)
-    if type(retry) is not int or not 0 <= retry <= 10:
-        raise FilmError("max_retry_per_shot must be 0–10")
-    rows = [{"shot": s["id"], "amount": FRAME_USD, "inputs": _frame_inputs(p, s, aspect)[2]} for s in shots]
-    initial = round(FRAME_USD * len(rows), 6)
-    # A new estimate after failed attempts gets new job IDs instead of reusing exhausted ones.
-    ids = {row["shot"] for row in rows}
-    failed = sorted(f.stem for f in (p / "render/frame_jobs").glob("*.json")
-                    if read(f).get("status") == "FAILED" and read(f).get("shot_id") in ids)
-    spec = {"kind": "frames", "renderer": "gemini-frames", "model": FRAME_MODEL, "image_size": FRAME_SIZE,
-            "aspect_ratio": aspect, "billing_unit": "USD", "rows": rows, "initial_amount": initial,
-            "retry_reserve": round(initial * retry, 6), "worst_case_amount": round(initial * (1 + retry), 6),
-            "max_retry_per_shot": retry, "max_amount": cap, "after_failed_jobs": failed,
-            "cost_note": "Conservative bound per frame; Google bills actual tokens."}
-    spent = reserved_usd(p)
-    if spent + spec["worst_case_amount"] > cap:
-        raise FilmError(f"Worst-case {spec['worst_case_amount']} USD plus {spent} USD already reserved "
-                        f"exceeds budget {cap} USD; raise budget.max_usd or lower max_retry_per_shot")
-    spec["estimate_id"] = object_hash(spec)
-    write(p / "render/frames_estimate.json", spec)
-    return spec
-
-
-def approve_frames(project, estimate_id):
-    p = Path(project)
-    estimate = read(p / "render/frames_estimate.json", {})
-    if not estimate or estimate.get("estimate_id") != estimate_id:
-        raise FilmError("Estimate ID does not match the current frame estimate")
-    write(p / "render/frames_approval.json", {"estimate_id": estimate_id, "approved_at": now()})
-    return {"approved": estimate_id}
-
-
-def approved_frames(project):
-    """The approved frame estimate, or None when there is none or its inputs changed."""
-    p = Path(project)
-    estimate = read(p / "render/frames_estimate.json", {})
-    if not estimate or read(p / "render/frames_approval.json", {}).get("estimate_id") != estimate.get("estimate_id"):
-        return None
-    shots = {s["id"]: s for s in read(p / "manifest/shots.json")}
-    for row in estimate["rows"]:
-        shot = shots.get(row["shot"])
-        if shot is None:
-            return None
-        try:
-            if _frame_inputs(p, shot, estimate["aspect_ratio"])[2] != row["inputs"]:
-                return None
-        except FilmError:
-            return None
-    return estimate
-
 
 def output_image(interaction):
     if not isinstance(interaction, dict) or interaction.get("status") != "completed":
@@ -246,88 +155,41 @@ def output_image(interaction):
     return next((b for b in reversed(blocks) if b.get("type") == "image" and b.get("data")), None)
 
 
-def generate_frames(project, transport=None):
-    """Generate approved frames once each and import them as storyboard frames."""
-    from PIL import Image
-    from .production import import_frame
-    p = Path(project)
-    checked_config(p)
-    estimate = approved_frames(p)
-    if estimate is None:
-        raise FilmError("Approve the current frame estimate first; shots or references changed since it was made")
-    transport = transport or GeminiHTTP()
-    retry = estimate["max_retry_per_shot"]
-    shots = {s["id"]: s for s in read(p / "manifest/shots.json")}
-    result = {"generated": [], "failed": [], "already_done": []}
-    for row in estimate["rows"]:
-        shot = shots[row["shot"]]
-        prompt, references, identity = _frame_inputs(p, shot, estimate["aspect_ratio"])
-        for attempt in range(retry + 1):
-            job_id = f"frame_{estimate['estimate_id'][:12]}_{shot['id']}_a{attempt}"
-            path = safe_path(p, f"render/frame_jobs/{job_id}.json")
-            receipt = read(path, {})
-            if receipt.get("status") == "FAILED":
-                continue
-            if receipt.get("status") == "IMPORTED":
-                result["already_done"].append(shot["id"])
-                break
-            if receipt.get("status") == "SUBMITTING":
-                raise RenderBlocked(f"Frame job {job_id} has an unknown outcome; check AI Studio usage before "
-                                    "continuing. It is never resubmitted automatically")
-            if receipt.get("status") != "COMPLETED":
-                with project_mutex(p):
-                    budget.reserve(p, job_id, FRAME_USD, estimate, "USD")
-                    parts = [{"type": "text", "text": prompt}]
-                    for reference in references:
-                        mime, data = image_part(safe_path(p, reference))
-                        parts.append({"type": "image", "mime_type": mime, "data": data})
-                    receipt = {"job_id": job_id, "shot_id": shot["id"], "attempt": attempt, "model": FRAME_MODEL,
-                               "input_hash": identity, "status": "SUBMITTING", "usd_reserved": FRAME_USD,
-                               "submitted_at": now()}
-                    write(path, receipt)  # Written BEFORE POST, including timeout ambiguity.
-                    body = {"model": FRAME_MODEL, "input": parts,
-                            "response_format": {"type": "image", "aspect_ratio": estimate["aspect_ratio"],
-                                                "image_size": FRAME_SIZE}}
-                    try:
-                        interaction = transport.request("POST", API + "interactions", body, timeout=180)
-                    except HTTPError as exc:
-                        if 400 <= exc.code < 500:
-                            path.unlink()  # Definitive rejection: no generation was created.
-                            raise RenderBlocked(f"Gemini rejected the frame request ({exc.code}) {api_error(exc)}; "
-                                                "fix it or wait for the rate limit, then run again") from None
-                        raise RenderBlocked(f"Frame job {job_id} needs reconciliation; do not resubmit") from None
-                    except Exception:
-                        raise RenderBlocked(f"Frame job {job_id} needs reconciliation; do not resubmit") from None
-                    block = output_image(interaction)
-                    if block is None:
-                        receipt.update(status="FAILED", interaction_id=(interaction or {}).get("id"),
-                                       error=f"no image returned (status {(interaction or {}).get('status')})")
-                        write(path, receipt)
-                        continue
-                    try:
-                        data = base64.b64decode(block["data"], validate=True)
-                        with Image.open(io.BytesIO(data)) as im:
-                            im.verify()
-                    except Exception:
-                        receipt.update(status="FAILED", interaction_id=interaction.get("id"), error="unreadable image")
-                        write(path, receipt)
-                        continue
-                    image = safe_path(p, f"render/frame_jobs/{job_id}.img")
-                    image.write_bytes(data)
-                    receipt.update(status="COMPLETED", interaction_id=interaction.get("id"),
-                                   image_path=str(image.relative_to(p)), sha256=digest(image), completed_at=now())
-                    write(path, receipt)
-            image = safe_path(p, receipt["image_path"])
-            if digest(image) != receipt["sha256"]:
-                raise RenderBlocked(f"Saved frame for {job_id} changed; recover it before spending again")
-            import_frame(p, shot["id"], image)
-            receipt.update(status="IMPORTED", imported_at=now())
-            write(path, receipt)
-            result["generated"].append(shot["id"])
-            break
-        else:
-            result["failed"].append(shot["id"])
-    return result
+class GeminiImage(ImageProvider):
+    id = "gemini_image"
+    model = FRAME_MODEL
+    unit_usd = FRAME_USD
+    supports_references = True
+    max_references = MAX_REFERENCES
+    prompt_limit = None
+    native_aspects = FRAME_ASPECTS
+
+    def __init__(self, provider=None, transport=None):
+        self.provider = provider
+        self.transport = transport or GeminiHTTP()
+
+    def preflight(self, project):
+        if not (Path(project) / "render/gemini_config.json").exists():
+            write(Path(project) / "render/gemini_config.json", DEFAULT_CONFIG)
+        checked_config(project)
+
+    def generate(self, prompt, references, aspect):
+        parts = [{"type": "text", "text": prompt}]
+        for reference in references:
+            mime, data = image_part(reference)
+            parts.append({"type": "image", "mime_type": mime, "data": data})
+        body = {"model": FRAME_MODEL, "input": parts,
+                "response_format": {"type": "image", "aspect_ratio": aspect, "image_size": FRAME_SIZE}}
+        try:
+            interaction = self.transport.request("POST", API + "interactions", body, timeout=180)
+        except HTTPError as exc:
+            if 400 <= exc.code < 500:
+                raise ImageRejected(f"Gemini rejected the request ({exc.code}) {api_error(exc)}") from None
+            raise
+        block = output_image(interaction)
+        if block is None:
+            raise ImageRejected(f"Gemini returned no image (status {(interaction or {}).get('status')})")
+        return base64.b64decode(block["data"], validate=True)
 
 
 # --- Video (Veo 3.1 Lite image-to-video) --------------------------------------
@@ -354,8 +216,8 @@ class GeminiVideoRenderer(VideoRenderer):
         self.transport = transport or GeminiHTTP()
 
     def preflight(self):
-        if not os.environ.get("GEMINI_API_KEY"):
-            raise RenderBlocked("Gemini is not connected: configure GEMINI_API_KEY locally before generating")
+        if not get_secret("GEMINI_API_KEY"):
+            raise RenderBlocked("Gemini is not connected: enter the API key in the model picker or set GEMINI_API_KEY")
 
     def config_hash(self):
         # Renewing unchanged price evidence must not produce another paid run.

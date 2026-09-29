@@ -6,13 +6,9 @@ from urllib.error import HTTPError
 from PIL import Image
 import pytest
 from engine import gemini
-from engine.audio import analyze, synth_test_audio
-from engine.autopilot import autopilot
-from engine.budget import approve
-from engine.core import FilmError, ffmpeg, init_project, lock_production, read, write
-from engine.gemini import (DEFAULT_CONFIG, GeminiHTTP, GeminiVideoRenderer, api_url, approve_frames,
-                           approved_frames, frames_estimate, generate_frames, reserved_usd, storage_url)
-from engine.production import make_package
+from engine.core import FilmError, ffmpeg, read, write
+from engine.gemini import (DEFAULT_CONFIG, GeminiHTTP, GeminiImage, GeminiVideoRenderer, api_url, storage_url)
+from engine.imagegen import ImageRejected
 from engine.renderers import AwaitingRender, RenderBlocked
 
 VIDEO_URI = "https://generativelanguage.googleapis.com/v1beta/files/fixture:download?alt=media"
@@ -214,71 +210,32 @@ def test_key_goes_only_to_the_api_host(monkeypatch):
     assert seen[1] == ("https://video-downloads.googleusercontent.com/abc", {})
 
 
-@pytest.fixture
-def project(tmp_path, monkeypatch):
-    monkeypatch.setenv("GEMINI_API_KEY", "fixture-only-never-transmitted")
-    fake = FakeGemini()
-    monkeypatch.setattr(gemini, "GeminiHTTP", lambda: fake)
-    audio = synth_test_audio(tmp_path / "test.wav", seconds=12)
-    p = init_project(tmp_path, "auto", audio, "Autopilot fixture", synthetic=True, aspect="16:9")
-    analyze(p)
-    make_package(p)
-    config = read(p / "project.yaml")
-    config["budget"].update(max_usd=5, max_retry_per_shot=1)
-    write(p / "project.yaml", config)
-    return p, fake
-
-
-def test_frames_need_matching_approval_and_retry_failures(project):
-    p, fake = project
-    write(p / "render/gemini_config.json", DEFAULT_CONFIG)
-    with pytest.raises(FilmError, match="Approve"):
-        generate_frames(p)
-    estimate = frames_estimate(p)
-    approve_frames(p, estimate["estimate_id"])
-    shots = read(p / "manifest/shots.json")
-    shots[0]["description"] = "Changed after approval"
-    write(p / "manifest/shots.json", shots)
-    assert approved_frames(p) is None
-    estimate = frames_estimate(p)
-    approve_frames(p, estimate["estimate_id"])
-    fake.frame_image = False
-    result = generate_frames(p)
-    assert result["failed"] == [s["id"] for s in shots] and len(fake.posts) == 2 * len(shots)
-    retry = frames_estimate(p)
-    assert retry["estimate_id"] != estimate["estimate_id"] and retry["after_failed_jobs"]
-    config = read(p / "project.yaml")
-    config["budget"]["max_usd"] = 0.1
-    write(p / "project.yaml", config)
-    with pytest.raises(FilmError, match="exceeds budget"):
-        frames_estimate(p)
-
-
-def test_autopilot_stops_at_each_human_decision_and_reaches_preview(project):
-    p, fake = project
-    step = autopilot(p)
-    assert step["stage"] == "NEEDS_FRAME_APPROVAL" and not fake.posts
-    shots = read(p / "manifest/shots.json")
-    approve_frames(p, step["estimate_id"])
-    step = autopilot(p)
-    assert step["stage"] == "FRAMES_READY_FOR_REVIEW"
-    assert len(fake.posts) == len(shots) and all(u.endswith("/interactions") for u in fake.posts)
+def test_gemini_image_request_and_response(unit):
+    p, _, _, fake = unit
+    Image.new("RGB", (64, 36), "white").save(p / "ref.png")
+    image = GeminiImage(None, fake)
+    image.preflight(p)
+    data = image.generate("A quiet street", [p / "ref.png"], "16:9")
+    assert Image.open(io.BytesIO(data)).size == (64, 36)
     body = fake.bodies[0]
-    assert body["model"] == gemini.FRAME_MODEL and body["input"][0]["type"] == "text"
+    assert fake.posts[0].endswith("/interactions") and body["model"] == gemini.FRAME_MODEL
+    assert body["input"][0] == {"type": "text", "text": "A quiet street"} and body["input"][1]["type"] == "image"
     assert body["response_format"] == {"type": "image", "aspect_ratio": "16:9", "image_size": "1K"}
-    assert all(s["storyboard_kind"] == "imported" for s in read(p / "manifest/shots.json"))
-    assert autopilot(p)["stage"] == "NEEDS_LOCK"
-    lock_production(p, "Director")
-    step = autopilot(p)
-    assert step["stage"] == "NEEDS_VIDEO_APPROVAL" and len(fake.posts) == len(shots)
-    approve(p, read(p / "render/estimate.json"))
-    step = autopilot(p)
-    assert step["stage"] == "GENERATING" and len(step["pending"]) == len(shots)
-    assert sum(u.endswith(":predictLongRunning") for u in fake.posts) == len(shots)
-    fake.done = True
-    step = autopilot(p)
-    assert step["stage"] == "PREVIEW_READY" and Path(step["build"]).is_dir()
-    assert sorted(step["needs_review"]) == sorted(s["id"] for s in shots)
-    assert sum(u.endswith(":predictLongRunning") for u in fake.posts) == len(shots)
-    assert fake.downloads == len(shots)
-    assert reserved_usd(p) <= read(p / "project.yaml")["budget"]["max_usd"]
+
+
+def test_gemini_image_rejection_and_empty_answer(unit):
+    p, _, _, fake = unit
+    image = GeminiImage(None, fake)
+    fake.error = 429
+    with pytest.raises(ImageRejected, match="429"):
+        image.generate("x", [], "16:9")
+    fake.error, fake.frame_image = None, False
+    with pytest.raises(ImageRejected, match="no image"):
+        image.generate("x", [], "16:9")
+
+
+def test_gemini_image_price_evidence_is_checked(unit):
+    p, _, _, _ = unit
+    write(p / "render/gemini_config.json", {**DEFAULT_CONFIG, "price_valid_until": "2020-01-01T00:00:00+00:00"})
+    with pytest.raises(FilmError, match="expired"):
+        GeminiImage().preflight(p)

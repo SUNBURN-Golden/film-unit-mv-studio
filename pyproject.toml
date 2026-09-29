@@ -11,6 +11,7 @@ dependencies = ["numpy>=1.24,<3", "scipy>=1.10,<2", "soundfile>=0.12,<1", "libro
 
 [project.optional-dependencies]
 test = ["pytest>=8,<10"]
+claude = ["anthropic>=1,<2"]  # optional: Claude as the AI director
 
 [project.scripts]
 filmunit = "engine.cli:main"
