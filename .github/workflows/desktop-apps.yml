@@ -72,8 +72,9 @@ jobs:
         run: python scripts/package_desktop.py
       - name: Unpack the release file and run the frozen app (self test and launcher window)
         run: |
-          archive=$(ls dist/release/FILM_UNIT-*.zip dist/release/FILM_UNIT-*.tar.gz 2>/dev/null | head -n 1)
-          test -n "$archive"
+          files=(dist/release/FILM_UNIT-*)     # one release archive per OS; the .deb has a lowercase name
+          archive="${files[0]}"
+          test -f "$archive"
           if [ "$RUNNER_OS" = "Linux" ]; then
             xvfb-run -a python scripts/frozen_check.py "$archive" desktop-evidence
           else
