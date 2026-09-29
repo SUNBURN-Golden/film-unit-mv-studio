@@ -64,7 +64,7 @@ def make_package(project, target_shot_ms=5000, preset=None):
     # Musical-change candidates are snapped to existing shot boundaries, explicitly a draft.
     section_starts = sorted(set([0] + [min(boundaries[:-1], key=lambda b: abs(b - c)) for c in audio["section_boundaries_ms"][1:-1]]))
     seq = [{"id": f"SEQ{i+1:02d}", "in_ms": a, "out_ms": b, "title": f"Section {i+1} — story review required", "boundary_source": "measured feature change, snapped to draft cut"} for i, (a, b) in enumerate(zip(section_starts, section_starts[1:] + [duration]))]
-    brief = (p / "input/brief.md").read_text()
+    brief = (p / "input/brief.md").read_text(encoding="utf-8")
     # Output dimensions belong to the project, even when the art direction is preset.
     fmt = config["format"]
     package["style"]["format"] = {"aspect_ratio": fmt.get("aspect_ratio", f"{fmt['width']}:{fmt['height']}"), "resolution": f"{fmt['width']}x{fmt['height']}", "fps": fmt["fps"]}

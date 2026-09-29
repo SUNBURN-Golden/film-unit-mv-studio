@@ -214,7 +214,7 @@ def main(argv=None):
             from .openart_bridge import claim_submission
             result = claim_submission(a.project, a.job)
         elif a.command == "init":
-            result = str(init_project(a.root, a.name, a.audio, Path(a.brief).read_text(), Path(a.lyrics).read_text() if a.lyrics else "", aspect=a.aspect))
+            result = str(init_project(a.root, a.name, a.audio, Path(a.brief).read_text(encoding="utf-8"), Path(a.lyrics).read_text(encoding="utf-8") if a.lyrics else "", aspect=a.aspect))
         elif a.command == "benchmark":
             from .benchmark import make_benchmark
             result = {"project": str(make_benchmark(a.root, a.name, a.reference)), "status": "AWAITING_REVIEW_AND_PROVIDER_CONNECTION", "paid_generations": 0}
