@@ -1,0 +1,104 @@
+name: Desktop apps
+
+# Builds the Windows, macOS and Linux apps, unpacks each release file like a user would,
+# and runs the frozen program itself. Nothing is published: files stay as run artifacts.
+on:
+  pull_request:
+    paths:
+      - 'desktop/**'
+      - 'engine/**'
+      - 'app/**'
+      - 'presets/**'
+      - 'templates/**'
+      - '.streamlit/**'
+      - 'scripts/**'
+      - 'docs/DESKTOP_APPS.md'
+      - 'tests/test_desktop.py'
+      - 'pyproject.toml'
+      - '.github/workflows/desktop-apps.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-apps-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: ${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 50
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {os: windows-latest, label: Windows-x64}
+          - {os: macos-latest, label: macOS-arm64}
+          - {os: ubuntu-22.04, label: Linux-x64}
+    env:
+      PYTHONUTF8: '1'
+      SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Linux system packages (Tk for the launcher window, a virtual display, Korean UI font)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y xvfb tk fonts-noto-cjk
+      - name: Install Python build dependencies
+        run: python -m pip install -e '.[test,desktop]'
+      - name: Fetch the pinned font and draw the icons
+        run: |
+          python scripts/prepare_desktop_assets.py
+          python scripts/make_icon.py
+      - name: Use a data folder whose name has Korean text and a space
+        run: echo "FILM_UNIT_HOME=$RUNNER_TEMP/FILM UNIT 한글 테스트" >> "$GITHUB_ENV"
+      - name: Download and verify FFmpeg with the app's own installer
+        run: python -c "from desktop.runtime import configure_runtime; from desktop.ffmpeg_setup import ensure_ffmpeg; print(ensure_ffmpeg(configure_runtime(), print))"
+      - name: Packaging regressions
+        run: python -m pytest tests/test_desktop.py -q
+      - name: Build the application
+        run: python -m PyInstaller --noconfirm desktop/film_unit.spec
+      - name: Create the release files, notices and checksums
+        run: python scripts/package_desktop.py
+      - name: Unpack the release file and run the frozen app (self test and launcher window)
+        run: |
+          archive=$(ls dist/release/FILM_UNIT-*.zip dist/release/FILM_UNIT-*.tar.gz 2>/dev/null | head -n 1)
+          test -n "$archive"
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            xvfb-run -a python scripts/frozen_check.py "$archive" desktop-evidence
+          else
+            python scripts/frozen_check.py "$archive" desktop-evidence
+          fi
+      - name: Install the .deb and run it with the distribution's own ffmpeg
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get install -y ./dist/release/film-unit_*.deb
+          FILM_UNIT_HOME="$RUNNER_TEMP/deb-home" film-unit --self-test "$RUNNER_TEMP/deb-evidence"
+          test -f "$RUNNER_TEMP/deb-evidence/smoke.json"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FILM_UNIT-${{ matrix.label }}
+          path: |
+            dist/release/
+            desktop-evidence/
+          retention-days: 14
+          compression-level: 0
+      - name: Keep diagnostics when a step fails
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: diagnostics-${{ matrix.label }}
+          path: |
+            ${{ env.FILM_UNIT_HOME }}/logs/
+            build/film_unit/warn-*.txt
+          if-no-files-found: ignore

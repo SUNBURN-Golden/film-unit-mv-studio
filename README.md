@@ -8,7 +8,7 @@
 
 ## 실행
 
-Windows 사용자는 [포터블 EXE 사용·빌드 안내](docs/WINDOWS_APP.md)를 참고하세요. Python이 포함된 실행기로 기존 로컬 편집 화면을 열며, FFmpeg는 최초 실행 때 별도로 내려받습니다. 실제 다운로드 가능 여부는 해당 PR의 Windows Actions artifact에서 확인합니다.
+Python을 설치하지 않고 쓰려면 **Windows(zip)·macOS(zip, Apple 실리콘)·Linux(.deb, tar.gz)** 데스크톱 앱을 사용하세요. 작은 실행기 창이 열리고 기존 편집 화면이 기본 브라우저에 표시됩니다. 설치, 서명되지 않은 앱의 첫 실행 경고, 저장 위치, 빌드 방법은 [데스크톱 앱 안내](docs/DESKTOP_APPS.md)를 보세요. FFmpeg는 앱에 넣지 않고 최초 실행 때 검증해서 내려받습니다(Linux .deb는 배포판 ffmpeg 사용). 각 운영체제의 빌드·실행 검사는 해당 PR의 `Desktop apps` Actions 결과로만 확인합니다.
 
 소스 실행에는 Python 3.11 이상, FFmpeg/ffprobe, FFmpeg의 `libass` 자막 필터가 필요합니다. 동시 실행 잠금은 Linux/macOS에서 `fcntl`, Windows에서 `msvcrt`를 사용합니다.
 

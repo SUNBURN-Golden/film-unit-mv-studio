@@ -113,10 +113,27 @@ def serve(port, gate):
     return 0
 
 
+TITLE_FONT = {"win32": "Segoe UI", "darwin": "Helvetica Neue"}.get(sys.platform, "DejaVu Sans")
+KOREAN_FONT = {"win32": "Malgun Gothic", "darwin": "Apple SD Gothic Neo"}.get(sys.platform, "Noto Sans CJK KR")
+
+
+def folder_command(path):
+    """The file manager command for this OS; None when Python can open it directly."""
+    if sys.platform == "darwin":
+        return ["open", str(path)]
+    if sys.platform.startswith("linux"):
+        return ["xdg-open", str(path)]
+    return None
+
+
 def open_folder(path):
-    if os.name == "nt":
+    command = folder_command(path)
+    if command is None:
         os.startfile(str(path))
-    else:
+        return
+    try:
+        subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except OSError:
         webbrowser.open(Path(path).as_uri())
 
 
@@ -125,7 +142,7 @@ def gui(root, smoke_report=None):
     from tkinter import messagebox, ttk
     import queue
     import threading
-    from desktop.ffmpeg_setup import ensure_ffmpeg, is_ready
+    from desktop.ffmpeg_setup import ensure_ffmpeg, is_ready, provider_name
 
     window = tk.Tk()
     window.title("FILM UNIT · MV Compiler")
@@ -134,8 +151,8 @@ def gui(root, smoke_report=None):
     window.configure(background="#eeeae3")
     frame = ttk.Frame(window, padding=25)
     frame.pack(fill="both", expand=True)
-    ttk.Label(frame, text="FILM UNIT", font=("Segoe UI", 24, "bold")).pack(anchor="w")
-    ttk.Label(frame, text="음원 · 콘티 · 가사 → Music Video", font=("Malgun Gothic", 11)).pack(anchor="w", pady=(4, 14))
+    ttk.Label(frame, text="FILM UNIT", font=(TITLE_FONT, 24, "bold")).pack(anchor="w")
+    ttk.Label(frame, text="음원 · 콘티 · 가사 → Music Video", font=(KOREAN_FONT, 11)).pack(anchor="w", pady=(4, 14))
     status = tk.StringVar(value="로컬 편집 화면을 준비하고 있습니다…")
     ttk.Label(frame, textvariable=status, wraplength=485).pack(anchor="w", pady=6)
     server = Server(root)
@@ -172,7 +189,7 @@ def gui(root, smoke_report=None):
     elif smoke_report:
         window.destroy()
         raise RuntimeError("GUI smoke requires installed FFmpeg")
-    elif messagebox.askyesno("첫 실행 준비", "영상 편집 엔진 FFmpeg를 Gyan.dev에서 내려받을까요?\n최초 한 번 인터넷이 필요합니다. API·구독 결제는 없습니다."):
+    elif messagebox.askyesno("첫 실행 준비", f"영상 편집 엔진 FFmpeg를 {provider_name()}에서 내려받을까요?\n최초 한 번 인터넷이 필요합니다. API·구독 결제는 없습니다."):
         installing = True
         def install():
             try:
@@ -228,6 +245,33 @@ def gui(root, smoke_report=None):
     return 0
 
 
+def headless(root):
+    """No window: start the local server and open the browser. Used when Tk or a display is missing."""
+    from desktop.ffmpeg_setup import ensure_ffmpeg, is_ready, provider_name
+    if not is_ready():
+        print(f"FFmpeg가 없습니다. {provider_name()}에서 내려받아 설치합니다…", flush=True)
+        ensure_ffmpeg(root, progress=lambda message: print(message, flush=True))
+        configure_runtime()
+    server = Server(root)
+    server.start()
+    deadline = time.monotonic() + 150
+    try:
+        while not server.ready():
+            if server.process.poll() is not None or time.monotonic() > deadline:
+                print(f"편집 화면을 시작하지 못했습니다. 로그: {server.log_path}", flush=True)
+                return 1
+            time.sleep(0.3)
+        print(f"FILM UNIT 실행 중: {server.url}  (종료: Ctrl+C)", flush=True)
+        webbrowser.open(server.url)
+        while server.process.poll() is None:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.stop()
+    return 0
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description="FILM UNIT desktop launcher")
     parser.add_argument("--serve", action="store_true", help=argparse.SUPPRESS)
@@ -236,6 +280,7 @@ def main(argv=None):
     parser.add_argument("--server-log", help=argparse.SUPPRESS)
     parser.add_argument("--self-test", metavar="DIRECTORY")
     parser.add_argument("--smoke-gui", metavar="REPORT")
+    parser.add_argument("--no-gui", action="store_true", help="Start the server and open the browser without a launcher window")
     args = parser.parse_args(argv)
     root = configure_runtime()
     # Windowed frozen executables have no console streams. Streamlit and native
@@ -250,7 +295,22 @@ def main(argv=None):
         from desktop.smoke import run
         run(Path(args.self_test))
         return 0
-    return gui(root, args.smoke_gui)
+    if args.no_gui:
+        return headless(root)
+    try:
+        import tkinter
+    except ImportError:
+        tkinter = None
+    if tkinter is None:
+        if args.smoke_gui:
+            raise RuntimeError("This build has no Tk, so the launcher window cannot be tested")
+        return headless(root)
+    try:
+        return gui(root, args.smoke_gui)
+    except tkinter.TclError:      # no display, e.g. a server or a remote shell
+        if args.smoke_gui:
+            raise
+        return headless(root)
 
 
 if __name__ == "__main__":

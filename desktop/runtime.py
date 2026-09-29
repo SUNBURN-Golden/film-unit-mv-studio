@@ -15,6 +15,8 @@ def data_root():
         return Path(override).expanduser().resolve()
     if sys.platform == "win32":
         base = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData/Local"))
+    elif sys.platform == "darwin":
+        base = Path.home() / "Library/Application Support"
     else:
         base = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share"))
     return base / "FILM_UNIT"
@@ -25,6 +27,8 @@ def configure_runtime():
     for name in ("projects", "logs", "cache/numba", "cache/matplotlib"):
         (root / name).mkdir(parents=True, exist_ok=True)
     os.environ.setdefault("FILM_UNIT_PROJECTS", str(root / "projects"))
+    # Saved API keys and model settings live beside the projects, in the user's own folder.
+    os.environ.setdefault("FILM_UNIT_HOME", str(root))
     os.environ["NUMBA_CACHE_DIR"] = str(root / "cache/numba")
     os.environ["MPLCONFIGDIR"] = str(root / "cache/matplotlib")
     os.environ["MPLBACKEND"] = "Agg"
