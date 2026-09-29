@@ -62,17 +62,29 @@ def run(folder):
         else:
             raise AssertionError("Packaging must not bypass Final approval")
 
+    # The panels are loaded by name at run time; a module missing from the bundle would only fail on its tab.
+    import importlib
+    modules = ["app.models_ui", "app.handoff_ui"]
+    for name in modules:
+        importlib.import_module(name)
+
     # AppTest executes the actual Streamlit script, unlike the health endpoint.
     from streamlit.testing.v1 import AppTest
     os.environ["FILM_UNIT_PROJECTS"] = str(folder / "empty-ui-projects")
     app = AppTest.from_file(str(resource_root() / "app/control_panel.py")).run(timeout=90)
     assert not app.exception, [str(e) for e in app.exception]
     assert any("프로젝트 만들기" in button.label for button in app.button)
+    # With a project selected every tab runs, including the model picker and the browser hand-off panels.
+    os.environ["FILM_UNIT_PROJECTS"] = str(folder)
+    with_project = AppTest.from_file(str(resource_root() / "app/control_panel.py")).run(timeout=90)
+    assert not with_project.exception, [str(e) for e in with_project.exception]
+    assert any("웹사이트 연결" in header.value for header in with_project.subheader), "hand-off tab did not render"
+    assert any("AI 모델 선택" in header.value for header in with_project.subheader), "model picker did not render"
     report = {"status": "PASS", "frozen": bool(getattr(__import__("sys"), "frozen", False)),
               "duration_ms": analysis["duration_ms"], "build_inventory": inventory,
               "subtitle_glyphs": "verified", "subtitle_pixels": int((difference > 35).sum()),
               "original_audio_sha256": digest(source), "provider_calls": 0,
-              "app_script_executed": True, "final_gate_preserved": True,
+              "app_script_executed": True, "project_tabs_rendered": True, "app_modules": modules, "final_gate_preserved": True,
               "preview": result["output"]}
     (folder / "smoke.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     return report

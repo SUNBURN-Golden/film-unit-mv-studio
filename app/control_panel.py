@@ -71,11 +71,15 @@ audio_path = p / config["audio"]["path"]
 if config["audio"].get("synthetic_test_audio"):
     st.info("파이프라인 검증용 합성 음원입니다. 콘티 그림은 배치 확인용 도식입니다.")
 st.sidebar.audio(str(audio_path))
-models_tab, *tabs = st.tabs(["00 · AI 모델", "01 · PROJECT", "02 · DIRECTOR", "03 · STORYBOARD", "04 · LYRICS", "05 · TIMELINE", "06 · COMPILE / BUILDS", "07 · RENDER · 고급"])
+models_tab, web_tab, *tabs = st.tabs(["00 · AI 모델", "00 · 웹사이트 연결", "01 · PROJECT", "02 · DIRECTOR", "03 · STORYBOARD", "04 · LYRICS", "05 · TIMELINE", "06 · COMPILE / BUILDS", "07 · RENDER · 고급"])
 
 with models_tab:
     from app.models_ui import render_picker
     render_picker(p)
+
+with web_tab:
+    from app.handoff_ui import render_connection
+    render_connection(p)
 
 with tabs[0]:
     st.subheader("음원 분석")

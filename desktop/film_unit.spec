@@ -13,10 +13,9 @@ icons = root / "vendor/icon"
 icon = {"win32": icons / "icon.ico", "darwin": icons / "icon.icns"}.get(sys.platform)
 icon = str(icon) if icon and icon.is_file() else None
 
-datas = [(str(root / "app/control_panel.py"), "app"),
-         (str(root / "app/models_ui.py"), "app"),
-         (str(root / "app/__init__.py"), "app"),
-         (str(root / "presets"), "presets"),
+# Every module of the control panel: Streamlit imports them by name at run time, so they ship as data.
+datas = [(str(path), "app") for path in sorted((root / "app").glob("*.py"))]
+datas += [(str(root / "presets"), "presets"),
          (str(root / "templates"), "templates"),
          (str(root / "vendor/fonts"), "vendor/fonts"),
          (str(root / ".streamlit/config.toml"), ".streamlit"),

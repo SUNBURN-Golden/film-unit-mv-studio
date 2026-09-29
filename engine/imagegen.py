@@ -208,6 +208,19 @@ def _import(p, kind, item, image):
         write(p / "bible" / name, document)
 
 
+def import_reference(project, folder, key, image):
+    """Attach a hand-made reference image to a character (folder 'characters') or location ('locations')."""
+    p = Path(project)
+    if folder not in {"characters", "locations"}:
+        raise FilmError("folder must be characters or locations")
+    name = "characters.yaml" if folder == "characters" else "locations.yaml"
+    if key not in {entry.get("id") for entry in _entries(p, name, folder)}:
+        raise FilmError(f"알 수 없는 ID입니다: {key}")
+    if (p / folder / f"{key}.png").exists():
+        raise FilmError(f"{key}: 이미 참조 이미지가 있습니다. 바꾸려면 파일을 직접 정리한 뒤 다시 넣으세요.")
+    _import(p, "references", {"folder": folder, "key": key}, Path(image))
+
+
 def generate(project, kind, provider):
     """Make every approved image once each; import the results."""
     p = Path(project)

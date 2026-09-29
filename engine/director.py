@@ -189,6 +189,33 @@ def context(project, notes, language):
                        "song_position": f"{round(100 * s['in_ms'] / max(audio.get('duration_ms', 1), 1))}%"} for s in shots]}
 
 
+def world_messages(p, ctx, language):
+    """(system, user) for the first phase: story, style, characters, locations."""
+    system = WORLD_SYSTEM.format(language=language, constraints=constraints_for(p), schema=json.dumps(WORLD_SCHEMA, ensure_ascii=False))
+    return system, json.dumps(ctx, ensure_ascii=False)
+
+
+def batch_messages(p, ctx, world, batch, language):
+    """(system, user) for one batch of shots, given the accepted world."""
+    payload = {"world": world, "song": ctx["song"], "aspect_ratio": ctx["aspect_ratio"], "lyrics_full": ctx["lyrics"],
+               "shots": [{**next(x for x in ctx["shots"] if x["id"] == s["id"]),
+                          "timed_lyrics": cues_between(p, s["in_ms"], s["out_ms"])} for s in batch]}
+    system = SHOTS_SYSTEM.format(language=language, constraints=constraints_for(p), schema=json.dumps(SHOT_SCHEMA, ensure_ascii=False))
+    return system, json.dumps(payload, ensure_ascii=False)
+
+
+def new_proposal(ctx, provider_id, model, language, notes):
+    ident = object_hash({"context": ctx, "provider": provider_id, "model": model})
+    return {"context_id": ident, "created_at": now(), "provider": provider_id, "model": model,
+            "language": language, "notes": notes.strip(), "world": None, "shots": {}, "warnings": []}
+
+
+def closing_warnings(shots):
+    if any(s["duration_ms"] > 8000 for s in shots):
+        return ["8초를 넘는 샷이 있습니다. Veo는 최대 8초라 05 · TIMELINE에서 나눠야 합니다."]
+    return []
+
+
 def draft(project, provider, notes="", language="English", resume=False, progress=None):
     """Ask the text provider for a proposal and save it for review. Returns the proposal."""
     p = Path(project)
@@ -196,17 +223,15 @@ def draft(project, provider, notes="", language="English", resume=False, progres
     if not shots:
         raise FilmError("먼저 제작 패키지를 만들어 샷 목록을 준비하세요")
     ctx = context(p, notes, language)
-    ident = object_hash({"context": ctx, "provider": provider.provider.id, "model": provider.model})
+    fresh = new_proposal(ctx, provider.provider.id, provider.model, language, notes)
     proposal = read(p / PROPOSAL, {})
-    if not (resume and proposal.get("context_id") == ident):
-        proposal = {"context_id": ident, "created_at": now(), "provider": provider.provider.id, "model": provider.model,
-                    "language": language, "notes": notes.strip(), "world": None, "shots": {}, "warnings": []}
-    constraints = constraints_for(p)
+    if not (resume and proposal.get("context_id") == fresh["context_id"]):
+        proposal = fresh
     if proposal["world"] is None:
         if progress:
             progress("이야기와 인물, 장소를 만드는 중")
-        system = WORLD_SYSTEM.format(language=language, constraints=constraints, schema=json.dumps(WORLD_SCHEMA, ensure_ascii=False))
-        proposal["world"] = validate_world(extract_json(provider.complete(system, json.dumps(ctx, ensure_ascii=False))))
+        system, user = world_messages(p, ctx, language)
+        proposal["world"] = validate_world(extract_json(provider.complete(system, user)))
         write(p / PROPOSAL, proposal)
     world = proposal["world"]
     remaining = [s for s in shots if s["id"] not in proposal["shots"]]
@@ -214,17 +239,10 @@ def draft(project, provider, notes="", language="English", resume=False, progres
         batch = remaining[start:start + BATCH]
         if progress:
             progress(f"샷 {batch[0]['id']}–{batch[-1]['id']} 연출 중")
-        payload = {"world": world, "song": ctx["song"], "aspect_ratio": ctx["aspect_ratio"], "lyrics_full": ctx["lyrics"],
-                   "shots": [{**next(x for x in ctx["shots"] if x["id"] == s["id"]),
-                              "timed_lyrics": cues_between(p, s["in_ms"], s["out_ms"])} for s in batch]}
-        system = SHOTS_SYSTEM.format(language=language, constraints=constraints, schema=json.dumps(SHOT_SCHEMA, ensure_ascii=False))
-        proposal["shots"].update(validate_shots(extract_json(provider.complete(system, json.dumps(payload, ensure_ascii=False))),
-                                                [s["id"] for s in batch], world))
+        system, user = batch_messages(p, ctx, world, batch, language)
+        proposal["shots"].update(validate_shots(extract_json(provider.complete(system, user)), [s["id"] for s in batch], world))
         write(p / PROPOSAL, proposal)  # A later failure keeps the batches already paid for.
-    warnings = []
-    if any(s["duration_ms"] > 8000 for s in shots):
-        warnings.append("8초를 넘는 샷이 있습니다. Veo는 최대 8초라 05 · TIMELINE에서 나눠야 합니다.")
-    proposal["warnings"] = warnings
+    proposal["warnings"] = closing_warnings(shots)
     write(p / PROPOSAL, proposal)
     return proposal
 

@@ -10,6 +10,8 @@
 
 Python을 설치하지 않고 쓰려면 **Windows(zip)·macOS(zip, Apple 실리콘)·Linux(.deb, tar.gz)** 데스크톱 앱을 사용하세요. 작은 실행기 창이 열리고 기존 편집 화면이 기본 브라우저에 표시됩니다. 설치, 서명되지 않은 앱의 첫 실행 경고, 저장 위치, 빌드 방법은 [데스크톱 앱 안내](docs/DESKTOP_APPS.md)를 보세요. FFmpeg는 앱에 넣지 않고 최초 실행 때 검증해서 내려받습니다(Linux .deb는 배포판 ffmpeg 사용). 각 운영체제의 빌드·실행 검사는 해당 PR의 `Desktop apps` Actions 결과로만 확인합니다.
 
+구독 중인 ChatGPT·Claude·Gemini·Grok·Flow 등을 API 키 없이 쓰려면 [웹사이트 연결 안내](docs/BROWSER_HANDOFF.md)를 보세요. 사이트는 내 브라우저에서 직접 열고, 콘티(글)는 복사·붙여넣기로, 이미지·영상은 끌어놓기로 가져옵니다. 앱이 그 사이트에 로그인하거나 자동 조작하지는 않습니다.
+
 소스 실행에는 Python 3.11 이상, FFmpeg/ffprobe, FFmpeg의 `libass` 자막 필터가 필요합니다. 동시 실행 잠금은 Linux/macOS에서 `fcntl`, Windows에서 `msvcrt`를 사용합니다.
 
 ```bash

@@ -143,15 +143,22 @@ def render_director(p):
         with st.spinner("AI 감독이 작업 중입니다. 모델에 따라 몇 분 걸릴 수 있습니다."):
             return guarded(lambda: director.draft(p, providers.selected_text(p), notes, language, resume,
                                                   progress=lambda message: holder.info(message)))
-    if cols[0].button("초안 만들기", type="primary", key="director_run"):
-        if run(False):
+    if choice.kind == "manual":
+        from app.handoff_ui import render_text
+        render_text(p, notes, language)
+        if pending and st.button("초안 버리기", key="director_discard"):
+            director.discard(p)
             st.rerun()
-    if pending and not director.complete(p) and cols[1].button("이어서 만들기", key="director_resume"):
-        if run(True):
+    else:
+        if cols[0].button("초안 만들기", type="primary", key="director_run"):
+            if run(False):
+                st.rerun()
+        if pending and not director.complete(p) and cols[1].button("이어서 만들기", key="director_resume"):
+            if run(True):
+                st.rerun()
+        if pending and cols[2].button("초안 버리기", key="director_discard"):
+            director.discard(p)
             st.rerun()
-    if pending and cols[2].button("초안 버리기", key="director_discard"):
-        director.discard(p)
-        st.rerun()
     pending = director.pending(p)
     if not pending:
         return
@@ -169,7 +176,8 @@ def render_director(p):
                    "장면": row["description"], "움직임": row["motion"]["instruction"]}
                   for sid, row in pending["shots"].items() if sid in shots], hide_index=True)
     if not director.complete(p):
-        st.warning(f"{len(pending['shots'])}/{len(shots)}개 샷까지 만들었습니다. '이어서 만들기'로 나머지를 만드세요.")
+        st.warning(f"{len(pending['shots'])}/{len(shots)}개 샷까지 만들었습니다. "
+                   + ("위에서 다음 차례의 답을 붙여넣으세요." if choice.kind == "manual" else "'이어서 만들기'로 나머지를 만드세요."))
         return
     reviewer = st.text_input("검토자", "Director", key="director_reviewer")
     if st.button("검토했고, 제작 문서에 반영하기", type="primary", key="director_accept"):
@@ -226,6 +234,7 @@ def render_autopilot(p, session_key):
         guarded(approve_now, "승인 완료. 다음 단계 실행을 눌러주세요.")
     if stage in {"NEEDS_MANUAL_FRAMES", "NEEDS_MANUAL_VIDEO"}:
         st.write(f"작업지시서: `{step['packets']}`")
+        st.info("웹사이트에서 만든 파일은 위쪽 '00 · 웹사이트 연결' 탭에서 끌어다 놓아 넣을 수 있습니다.")
     if stage == "PREVIEW_READY":
         st.write(f"Preview: `{step['build']}`")
         if step.get("needs_review"):

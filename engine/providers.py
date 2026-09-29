@@ -91,6 +91,10 @@ _ALL = [
     Provider("custom_openai", "text", "직접 입력 (OpenAI 호환)", "paid", "OpenAI 호환 주소를 알고 있는 다른 서비스를 씁니다.", "openai_compat",
              (Field("base_url", "주소 (https://…/v1)"), Field("CUSTOM_LLM_API_KEY", "API 키", secret=True, optional=True), _model()),
              (), "", "{base_url}"),
+    Provider("manual_text", "text", "직접 붙여넣기 (구독 웹사이트에서)", "manual",
+             "ChatGPT·Claude·Gemini·Grok 웹사이트를 내 브라우저에서 직접 열어 지시문을 붙여넣고, 답을 가져옵니다. 키도 자동 로그인도 필요 없습니다.", "manual",
+             (), ("구독 요금 안에서 쓸 수 있습니다. 앱은 그 사이트에 로그인하거나 대신 조작하지 않고, 복사·붙여넣기는 사용자가 합니다.",
+                  "샷이 많으면 12개씩 나눠 여러 번 붙여넣습니다.")),
 
     Provider("cloudflare_flux", "image", "FLUX.1 schnell (Cloudflare Workers AI)", "free_tier", "무료로 계속 쓸 수 있는 이미지 모델입니다.", "cloudflare_flux",
              (_key("CLOUDFLARE_API_TOKEN", "Workers AI 토큰"), Field("account_id", "Cloudflare 계정 ID")),
@@ -308,6 +312,8 @@ def build_text(provider_id, transport=None, client=None, require_model=True):
     p = get(provider_id)
     if p.stage != "text":
         raise FilmError("Not a text provider")
+    if p.kind == "manual":
+        raise FilmError("직접 붙여넣기 방식입니다. 'AI 감독' 화면의 안내에 따라 지시문을 복사하고 답을 붙여넣으세요.")
     lacking = missing(p, ignore=() if require_model else ("model",))
     if lacking:
         raise FilmError("먼저 입력하세요: " + ", ".join(lacking))
