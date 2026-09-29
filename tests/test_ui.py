@@ -73,6 +73,7 @@ def test_keys_are_entered_saved_privately_and_never_shown(screen):
 def test_connection_test_fills_the_model_list(screen, monkeypatch):
     at, project = screen
     settings.set_secret("GEMINI_API_KEY", "tok")
+    at.run()                                       # the list now shows this provider as connected
     monkeypatch.setattr(providers, "check", lambda pid, *a, **k: {"ok": True, "message": "연결되었습니다. 사용할 수 있는 모델 2개", "models": ["g-a", "g-b"]})
     next(r for r in at.radio if r.key == "pick_text").set_value("gemini_text").run()
     next(b for b in at.button if b.label == "연결 테스트").click().run()

@@ -47,8 +47,9 @@ def _provider_form(provider):
                 secrets[field.key] = st.text_input(f"{field.label} ({field.key})", type="password", placeholder=hint, help=field.help or None)
             elif field.choices or (field.key == "model" and models):
                 options = list(field.choices or models)
-                if current.get(field.key) and current[field.key] not in options:
-                    options.insert(0, current[field.key])
+                kept = settings.get_settings(provider.id).get(field.key)
+                if kept and kept not in options:
+                    options.insert(0, kept)          # a model the User saved stays choosable
                 index = options.index(current[field.key]) if current.get(field.key) in options else 0
                 plain[field.key] = st.selectbox(field.label, options, index=index)
             else:
