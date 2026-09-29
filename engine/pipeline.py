@@ -71,7 +71,7 @@ def _compile(p, seconds, mode, quality, output_name, progress):
             progress(index, len(shots), shot["id"])
         sstate = state["shots"].setdefault(shot["id"], {"attempt": 0, "correction": ""})
         max_retry = estimate["max_retry_per_shot"]
-        if shot["render_mode"] != "STATIC" and shot.get("renderer") != "mock" and mode in {"economy", "fal", "openart"}:
+        if shot["render_mode"] != "STATIC" and shot.get("renderer") != "mock" and mode in {"economy", "fal", "openart", "gemini"}:
             planned = [renderer.for_attempt(shot, i) if mode == "economy" else renderer for i in range(max_retry + 1)]
             identity = object_hash({"production": estimate["production"], "shot": shot["id"],
                 "inputs": [takes.key_for(r, shot, i, "") for i, r in enumerate(planned)]})

@@ -130,7 +130,43 @@ python -m engine.cli migrate projects/existing_project
 
 기존 `compile` 명령과 UI의 **샷 생성 · 고급**은 Mock/Manual/OpenArt/fal/Economy 렌더·QC·이어하기 경로입니다. `compile-preview`와 다르게 선택한 렌더러에 따라 유료 요청을 준비하거나 제출할 수 있어 기존 견적·배치 승인·예산·중복 제출 방지를 유지합니다. **새 컴파일 명령 자체는 영상 생성을 요청하지 않습니다.** API 연결 없이도 완성한 외부 샷을 `import-asset`으로 사용할 수 있습니다.
 
-Economy/fal/benchmark는 호환성을 위해 기존 파일 위치에 남겨 둔 실험 기능입니다. 이번 버전에서는 새 provider를 추가하지 않았습니다. OpenArt는 기존 Work 작업 파일을 이용한 image-to-video 연결이며 다중 element/reference 영상, 자동 시각 의미 QC, 숫자 QC의 PASS/FAIL 전환은 후속 작업입니다. [기존 OpenArt 운영](docs/OPENART_BRIDGE.md), [Economy 운영](docs/ECONOMY_COMPILER.md).
+Economy/fal/benchmark는 호환성을 위해 기존 파일 위치에 남겨 둔 실험 기능입니다. v0.3 이후 Gemini(아래 자동 제작)가 추가되었습니다. OpenArt는 기존 Work 작업 파일을 이용한 image-to-video 연결이며 다중 element/reference 영상, 자동 시각 의미 QC, 숫자 QC의 PASS/FAIL 전환은 후속 작업입니다. [기존 OpenArt 운영](docs/OPENART_BRIDGE.md), [Economy 운영](docs/ECONOMY_COMPILER.md).
+
+## Gemini 자동 제작
+
+Nano Banana 2가 첫 프레임을, Veo 3.1 Lite가 샷 영상을 만들고 Preview까지 이어서 편집합니다. **비용이 드는 단계는 금액을 확인하고 승인해야 시작되며**, 콘티 LOCK과 Final 샷 검토는 사람이 합니다.
+
+```bash
+python -m engine.cli init project_001 --audio /path/master.mp3 --brief /path/brief.md --lyrics /path/lyrics.txt --aspect 16:9
+python -m engine.cli autopilot projects/project_001
+```
+
+`autopilot`은 실행할 때마다 이미 승인된 작업만 진행하고 다음 결정 단계에서 멈춥니다. 기다리며 반복 조회하지 않으니, 영상이 생성되는 동안에는 몇 분 뒤 다시 실행하세요. UI의 **07 · RENDER → Gemini 자동 제작 → 다음 단계 실행**도 같은 동작입니다.
+
+| 멈추는 단계 | 할 일 |
+|---|---|
+| `NEEDS_FRAME_APPROVAL` | 첫 프레임 견적 확인 후 `approve-frames --estimate-id ...` |
+| `FRAMES_READY_FOR_REVIEW` / `NEEDS_LOCK` | `storyboard/storyboard.html` 검토, 마음에 안 드는 프레임 교체 후 `lock --reviewer ...` |
+| `NEEDS_VIDEO_APPROVAL` | 영상 견적 확인 후 `approve --estimate-id ...` |
+| `GENERATING` | 몇 분 뒤 다시 실행. 같은 작업을 확인할 뿐 다시 결제하지 않음 |
+| `PREVIEW_READY` | Preview 확인, 샷별 QC 검토 후 `compile-final` |
+
+**처음 한 번 설정** (Google AI Ultra 개발자 크레딧 월 $40 기준):
+
+1. [Google Cloud 결제 계정](https://console.cloud.google.com/billing)을 만들고, [Google Developer Program 프로필](https://developers.google.com/profile)에서 월 크레딧을 받아 그 결제 계정에 연결합니다.
+2. [Google AI Studio](https://aistudio.google.com/apikey)에서 그 프로젝트의 API 키를 만들고, AI Studio의 **프로젝트 지출 한도(spend cap)를 크레딧 금액 이하로** 설정합니다.
+3. 신규 결제 계정은 선불(Prepay)이 기본이며, Google 문서상 선불 충전을 먼저 해야 크레딧이 적용됩니다. 크레딧이 충전금보다 먼저 사용됩니다.
+4. 이 컴퓨터의 환경변수에만 키를 둡니다: `export GEMINI_API_KEY=...` (저장소에 저장하지 않습니다).
+5. 프로젝트 예산을 크레딧 이하로 둡니다: `project.yaml`의 `budget.max_usd: 40`, `max_retry_per_shot: 1` (UI의 달러 예산과 같습니다).
+
+**비용** (2026-09-29 Google 가격표 기준, 5초 샷 48개 곡): 첫 프레임은 장당 최대 $0.09로 예약(1K 이미지 $0.067 + 참조·프롬프트)해 약 $4.3, 영상은 720p 6초 클립 $0.30으로 약 $14.4입니다. 재시도 1회 여유를 포함한 최대치는 약 $37이며, 이 저장소는 한도를 넘기 전에 제출을 멈춥니다. 실제 청구는 Google이 계산하며, 예약액은 보수적인 상한입니다.
+
+- Veo는 16:9와 9:16만 지원하고 클립은 4·6·8초입니다. 8초가 넘는 샷은 LOCK 전에 나눕니다.
+- 이미지로 영상을 만들 때 Veo는 성인 인물만 허용합니다(`allow_adult`). 어린이가 나오는 샷은 거부될 수 있습니다.
+- 생성된 영상은 Google 서버에 2일만 보관되므로, 생성이 끝나면 2일 안에 다시 실행해 내려받습니다.
+- 응답을 받지 못한 요청은 다시 보내지 않고 멈춥니다. AI Studio 사용량을 확인한 뒤 처리합니다. 요청이 거부되거나(4xx) 사용량 제한에 걸린 경우는 작업이 만들어지지 않았으므로 다시 실행하면 됩니다.
+- 가격 근거(`render/gemini_config.json`의 `price_valid_until`)가 지나면 [가격표](https://ai.google.dev/gemini-api/docs/pricing)를 확인하고 갱신합니다. 가격이 바뀌었다면 `engine/gemini.py`의 가격도 바꿔야 합니다.
+- Grok(SuperGrok) 구독은 API를 포함하지 않아 자동 제작에 쓰지 않습니다. 아래 작업지시서로 직접 만들 때 씁니다.
 
 ## 구독 앱으로 직접 만들기
 

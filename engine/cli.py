@@ -18,6 +18,7 @@ def main(argv=None):
     init.add_argument("--brief", required=True, help="UTF-8 creative brief file")
     init.add_argument("--lyrics")
     init.add_argument("--root", default="projects")
+    init.add_argument("--aspect", choices=["4:3", "16:9", "9:16"], default="4:3", help="Output canvas; Gemini Veo needs 16:9 or 9:16")
     demo = sub.add_parser("demo", help="Create a clearly labelled synthetic test project")
     demo.add_argument("--root", default="projects")
     demo.add_argument("--name", default="pipeline_demo")
@@ -54,6 +55,14 @@ def main(argv=None):
     packets = sub.add_parser("packets", help="Write per-shot prompts and import commands for making media by hand in subscription apps; no provider calls")
     packets.add_argument("project")
     packets.add_argument("--shots", help="Comma-separated shot IDs; default all shots")
+    frames = sub.add_parser("frames-estimate", help="Quote Gemini first frames for placeholder shots; no paid call")
+    frames.add_argument("project")
+    frames.add_argument("--shots", help="Comma-separated shot IDs to regenerate; default all placeholders")
+    approve_frames = sub.add_parser("approve-frames", help="Approve the exact current frame estimate")
+    approve_frames.add_argument("project")
+    approve_frames.add_argument("--estimate-id", required=True)
+    sub.add_parser("generate-frames", help="Generate approved first frames with Gemini (paid)").add_argument("project")
+    sub.add_parser("autopilot", help="Advance a Gemini project to its next human decision; paid steps need prior approval").add_argument("project")
     verify = sub.add_parser("verify-build")
     verify.add_argument("build_dir")
     replay = sub.add_parser("replay-build")
@@ -64,7 +73,7 @@ def main(argv=None):
         p.add_argument("project")
         if name in {"estimate", "compile"}:
             p.add_argument("--seconds", type=float)
-            p.add_argument("--renderer", choices=["mock", "manual", "openart", "fal", "economy"], default="mock")
+            p.add_argument("--renderer", choices=["mock", "manual", "openart", "fal", "economy", "gemini"], default="mock")
             p.add_argument("--quality", choices=["draft", "final"], default="final")
         if name == "compile":
             p.add_argument("--output")
@@ -108,6 +117,18 @@ def main(argv=None):
         elif a.command == "packets":
             from .packets import export_packets
             result = export_packets(a.project, a.shots.split(",") if a.shots else None)
+        elif a.command == "frames-estimate":
+            from .gemini import frames_estimate
+            result = frames_estimate(a.project, a.shots.split(",") if a.shots else None)
+        elif a.command == "approve-frames":
+            from .gemini import approve_frames
+            result = approve_frames(a.project, a.estimate_id)
+        elif a.command == "generate-frames":
+            from .gemini import generate_frames
+            result = generate_frames(a.project)
+        elif a.command == "autopilot":
+            from .autopilot import autopilot
+            result = autopilot(a.project)
         elif a.command == "verify-build":
             from .builds import verify_build
             result = verify_build(a.build_dir)
@@ -144,7 +165,7 @@ def main(argv=None):
             from .openart_bridge import claim_submission
             result = claim_submission(a.project, a.job)
         elif a.command == "init":
-            result = str(init_project(a.root, a.name, a.audio, Path(a.brief).read_text(), Path(a.lyrics).read_text() if a.lyrics else ""))
+            result = str(init_project(a.root, a.name, a.audio, Path(a.brief).read_text(), Path(a.lyrics).read_text() if a.lyrics else "", aspect=a.aspect))
         elif a.command == "benchmark":
             from .benchmark import make_benchmark
             result = {"project": str(make_benchmark(a.root, a.name, a.reference)), "status": "AWAITING_REVIEW_AND_PROVIDER_CONNECTION", "paid_generations": 0}

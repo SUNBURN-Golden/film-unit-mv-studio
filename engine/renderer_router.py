@@ -4,7 +4,7 @@ from .core import FilmError
 def route(shot, available, quality="final"):
     """Policy preference, not a benchmark claim. Availability always wins."""
     explicit = shot.get("renderer", "auto")
-    if explicit not in {"auto", "mock", "manual", "openart", "fal"}:
+    if explicit not in {"auto", "mock", "manual", "openart", "fal", "gemini"}:
         if explicit not in available:
             raise FilmError(f"Renderer {explicit} has no verified capability/price configuration")
         return explicit

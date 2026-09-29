@@ -47,6 +47,7 @@ if chosen == "새 프로젝트":
         audio = st.file_uploader("Suno MP3 / WAV", type=["mp3", "wav"])
         brief = st.text_area("어떤 영상으로 만들까요?", placeholder="그림체, 인물, 이야기, 반복되는 이미지 등을 자유롭게 적어주세요.")
         lyrics = st.text_area("가사 원문", help="가사 자막의 원본입니다. 타이밍은 곡을 들으며 별도로 검토합니다.")
+        aspect = st.selectbox("화면비", ["16:9", "4:3", "9:16"], help="Gemini Veo 자동 제작은 16:9 또는 9:16만 지원합니다.")
         submit = st.form_submit_button("프로젝트 만들기", type="primary")
     if submit:
         if not audio or not brief.strip():
@@ -55,7 +56,7 @@ if chosen == "새 프로젝트":
             with tempfile.TemporaryDirectory() as tmp:
                 source = Path(tmp) / ("master" + Path(audio.name).suffix.lower())
                 source.write_bytes(audio.getvalue())
-                result = guarded(lambda: init_project(PROJECTS, name, source, brief, lyrics))
+                result = guarded(lambda: init_project(PROJECTS, name, source, brief, lyrics, aspect=aspect))
                 if result:
                     st.success("프로젝트가 생성됐습니다. 왼쪽에서 선택해주세요.")
     st.stop()
@@ -168,14 +169,50 @@ with tabs[2]:
                 st.rerun()
 
 with tabs[6]:
+    with st.expander("Gemini 자동 제작 · Nano Banana 첫 프레임 → Veo 영상 → Preview", expanded=True):
+        from engine.autopilot import autopilot
+        from engine.gemini import approve_frames
+        st.caption("누를 때마다 이미 승인된 작업만 진행하고, 다음에 사람이 결정할 단계에서 멈춥니다. "
+                   "비용이 드는 단계는 아래에서 금액을 확인하고 승인해야 시작됩니다. 한도는 아래 달러 예산입니다.")
+        if not os.environ.get("GEMINI_API_KEY"):
+            st.info("Gemini API 키가 아직 연결되지 않았습니다. 실행 환경에 GEMINI_API_KEY를 설정해주세요.")
+        if st.button("다음 단계 실행", type="primary", key="autopilot_run"):
+            with st.spinner("진행 중입니다. 첫 프레임과 영상 생성은 몇 분 걸릴 수 있습니다."):
+                st.session_state["autopilot_"+chosen] = guarded(lambda: autopilot(p))
+        step = st.session_state.get("autopilot_"+chosen)
+        if step:
+            labels = {"NEEDS_FRAME_APPROVAL": "첫 프레임 비용 승인 필요", "FRAMES_READY_FOR_REVIEW": "첫 프레임 완성 · 콘티 검토 후 LOCK",
+                      "NEEDS_LOCK": "콘티 검토 후 LOCK 필요 (03 · STORYBOARD)", "NEEDS_VIDEO_APPROVAL": "영상 비용 승인 필요",
+                      "GENERATING": "영상 생성 중 · 몇 분 뒤 다시 누르세요", "PREVIEW_READY": "Preview 완성 · 샷 검토 후 Final"}
+            st.markdown(f"**{labels.get(step['stage'], step['stage'])}**")
+            if step.get("worst_case_usd") is not None:
+                cols = st.columns(2)
+                cols[0].metric("첫 생성", f"{step['initial_usd']:g} USD")
+                cols[1].metric("재시도 포함 최대", f"{step['worst_case_usd']:g} USD")
+            if step.get("note"):
+                st.warning(step["note"])
+            if step["stage"] == "NEEDS_FRAME_APPROVAL" and st.button("이 첫 프레임 비용 승인", key="approve_frames"):
+                guarded(lambda: approve_frames(p, step["estimate_id"]), "승인 완료. 다음 단계 실행을 눌러주세요.")
+            if step["stage"] == "NEEDS_VIDEO_APPROVAL" and st.button("이 영상 비용 승인", key="approve_video"):
+                def approve_video():
+                    current = read(p / "render/estimate.json")
+                    if current["estimate_id"] != step["estimate_id"]:
+                        raise FilmError("견적이 바뀌었습니다. 다음 단계 실행을 다시 눌러주세요.")
+                    approve(p, current)
+                guarded(approve_video, "승인 완료. 다음 단계 실행을 눌러주세요.")
+            if step["stage"] == "PREVIEW_READY":
+                st.write(f"Preview: `{step['build']}`")
+                if step["needs_review"]:
+                    st.caption("검토할 샷: " + ", ".join(step["needs_review"]) + " · 아래 QC 검토에서 확인해주세요.")
+            st.caption(step.get("next", ""))
     st.subheader("샷 생성 · 고급")
     st.caption("기존 렌더러로 개별 장면을 생성하거나 이어서 실행합니다. 전체 영상을 보려면 COMPILE / BUILDS의 Preview를 사용하세요.")
-    renderer = st.selectbox("Renderer", ["mock", "economy", "manual", "openart", "fal"], format_func=lambda x: {"mock":"Mock · 비용 없는 콘티 테스트", "economy":"Economy · 실험 기능", "manual":"Manual · 생성한 영상 가져오기", "openart":"OpenArt · Work 작업 연결", "fal":"fal · 실험 기능"}[x])
+    renderer = st.selectbox("Renderer", ["mock", "economy", "manual", "openart", "fal", "gemini"], format_func=lambda x: {"mock":"Mock · 비용 없는 콘티 테스트", "economy":"Economy · 실험 기능", "manual":"Manual · 생성한 영상 가져오기", "openart":"OpenArt · Work 작업 연결", "fal":"fal · 실험 기능", "gemini":"Gemini · Veo 3.1 Lite"}[x])
     quality = st.radio("Quality", ["draft", "final"], index=1, horizontal=True)
     length = st.radio("길이", ["30초 테스트", "60초 Pilot", "곡 전체"], horizontal=True)
     seconds = {"30초 테스트": 30, "60초 Pilot": 60, "곡 전체": None}[length]
     budget_cap = st.number_input("이 프로젝트의 OpenArt 크레딧 한도", min_value=0, value=int(config["budget"]["max_credits"]))
-    usd_cap = st.number_input("이 프로젝트의 fal 예산 (USD)", min_value=0.0, value=float(config["budget"].get("max_usd", 0)), step=0.1, format="%.2f")
+    usd_cap = st.number_input("이 프로젝트의 달러 예산 (fal · Gemini, USD)", min_value=0.0, value=float(config["budget"].get("max_usd", 0)), step=0.1, format="%.2f")
     retry_cap = st.number_input("샷당 최대 재시도", min_value=0, max_value=10, value=int(config["budget"]["max_retry_per_shot"]))
     if st.button("예산 설정 저장"):
         config["budget"].update(max_credits=budget_cap, max_usd=usd_cap, max_retry_per_shot=retry_cap)
@@ -213,6 +250,12 @@ with tabs[6]:
             if st.button("Wan 테스트 설정 추가"):
                 write(p / "render/fal_config.json", read(ROOT / "templates/fal_wan_turbo.json"))
                 st.success("설정 완료. 달러 예산을 저장하고 콘티 LOCK 후 비용을 확인해주세요.")
+    if renderer == "gemini":
+        st.caption("Veo 3.1 Lite · 16:9/9:16 프로젝트 · 최대 8초 샷 · 720p. 생성된 영상은 Google 서버에 2일만 보관되어 바로 내려받습니다.")
+        if not (p / "render/gemini_config.json").exists() and st.button("Gemini 설정 추가"):
+            from engine.gemini import DEFAULT_CONFIG
+            write(p / "render/gemini_config.json", DEFAULT_CONFIG)
+            st.success("설정 완료. 달러 예산을 저장하고 콘티 LOCK 후 비용을 확인해주세요.")
     if renderer == "openart":
         st.caption("Work에서 모델 규격·첫 프레임 URL·견적을 연결하면 승인된 요청 파일을 만듭니다. Work가 OpenArt에 제출한 후 결과를 가져와 이어서 실행합니다.")
     if st.button("GENERATE MUSIC VIDEO / RESUME", type="primary"):
