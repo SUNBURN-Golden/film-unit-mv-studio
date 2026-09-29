@@ -390,7 +390,8 @@ def test_pyinstaller_spec_only_names_files_that_exist():
     root = Path(__file__).resolve().parents[1]
     spec = (root / "desktop/film_unit.spec").read_text(encoding="utf-8")
     named = re.findall(r'root / "([^"]+)"', spec)
-    assert "docs/DESKTOP_APPS.md" in named and "app/models_ui.py" in named
+    assert "docs/DESKTOP_APPS.md" in named
+    assert '(root / "app").glob("*.py")' in spec and len(list((root / "app").glob("*.py"))) >= 4   # every panel module ships
     for relative in named:
         if not relative.startswith("vendor/"):              # fetched at build time by prepare_desktop_assets.py
             assert (root / relative).exists(), relative
