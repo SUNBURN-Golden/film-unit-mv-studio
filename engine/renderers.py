@@ -213,7 +213,9 @@ def build_prompt(project, shot):
 def get_renderer(name, project, fmt, quality):
     from .fal_renderer import FalRenderer
     from .economy import EconomyRenderer
-    cls = {"mock": MockRenderer, "manual": ManualRenderer, "openart": OpenArtRenderer, "fal": FalRenderer, "economy": EconomyRenderer}.get(name)
+    from .gemini import GeminiVideoRenderer
+    cls = {"mock": MockRenderer, "manual": ManualRenderer, "openart": OpenArtRenderer, "fal": FalRenderer,
+           "economy": EconomyRenderer, "gemini": GeminiVideoRenderer}.get(name)
     if not cls:
         raise FilmError("Unknown renderer")
     renderer = cls(project, fmt)

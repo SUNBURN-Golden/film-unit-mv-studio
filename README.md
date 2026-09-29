@@ -130,7 +130,92 @@ python -m engine.cli migrate projects/existing_project
 
 기존 `compile` 명령과 UI의 **샷 생성 · 고급**은 Mock/Manual/OpenArt/fal/Economy 렌더·QC·이어하기 경로입니다. `compile-preview`와 다르게 선택한 렌더러에 따라 유료 요청을 준비하거나 제출할 수 있어 기존 견적·배치 승인·예산·중복 제출 방지를 유지합니다. **새 컴파일 명령 자체는 영상 생성을 요청하지 않습니다.** API 연결 없이도 완성한 외부 샷을 `import-asset`으로 사용할 수 있습니다.
 
-Economy/fal/benchmark는 호환성을 위해 기존 파일 위치에 남겨 둔 실험 기능입니다. 이번 버전에서는 새 provider를 추가하지 않았습니다. OpenArt는 기존 Work 작업 파일을 이용한 image-to-video 연결이며 다중 element/reference 영상, 자동 시각 의미 QC, 숫자 QC의 PASS/FAIL 전환은 후속 작업입니다. [기존 OpenArt 운영](docs/OPENART_BRIDGE.md), [Economy 운영](docs/ECONOMY_COMPILER.md).
+Economy/fal/benchmark는 호환성을 위해 기존 파일 위치에 남겨 둔 실험 기능입니다. v0.3 이후 Gemini(아래 자동 제작)가 추가되었습니다. OpenArt는 기존 Work 작업 파일을 이용한 image-to-video 연결이며 다중 element/reference 영상, 자동 시각 의미 QC, 숫자 QC의 PASS/FAIL 전환은 후속 작업입니다. [기존 OpenArt 운영](docs/OPENART_BRIDGE.md), [Economy 운영](docs/ECONOMY_COMPILER.md).
+
+## AI 모델 선택과 자동 제작
+
+화면 맨 앞 **00 · AI 모델** 탭에서 세 단계의 모델을 클릭으로 고릅니다. 고른 모델은 프로젝트에 저장되고, 모델마다 비용 표시(🆓 무료 한도 · 💰 유료 · 🖥️ 내 컴퓨터 · ✋ 직접 만들기 · 🧪 테스트)와 연결 상태가 나옵니다.
+
+| 단계 | 하는 일 | 고를 수 있는 모델 |
+|---|---|---|
+| 콘티 감독 (글) | 이야기·화풍·인물·장소·샷 연출 초안 | 🆓 Gemini · Groq · OpenRouter 무료 모델 · Cloudflare, 💰 Claude · OpenAI · xAI, 🖥️ Ollama · LM Studio, 직접 입력(OpenAI 호환) |
+| 참조 이미지 · 첫 프레임 | 인물·장소 기준 이미지와 샷별 첫 프레임 | 🆓 FLUX.1 schnell(Cloudflare), 💰 Nano Banana 2(Gemini), ✋ 직접 만들기 |
+| 영상 | 첫 프레임에서 샷 영상 | 💰 Veo 3.1 Lite(Gemini) · Wan 2.2 Turbo(fal), ✋ 직접 만들기, 🧪 테스트 |
+
+**무료로 되는 것과 안 되는 것.** 글(콘티 감독)과 이미지는 계속 쓸 수 있는 무료 한도가 있습니다. **영상은 호출해서 계속 쓸 수 있는 무료 서비스가 없습니다.** 영상은 Google AI Ultra의 개발자 크레딧으로 결제하거나, 구독 앱에서 직접 만들어 가져옵니다(아래 작업지시서). 무료 한도의 수치는 제공처가 바꿀 수 있으며, 한도를 넘으면 그날은 실패로 끝나고 요금은 나오지 않습니다. 여러 계정으로 무료 크레딧을 돌려 쓰는 방식은 지원하지 않습니다.
+
+**키 입력.** 모델을 고르면 그 모델의 카드가 열립니다. 키를 붙여넣고 **저장**, **연결 테스트**를 누르면 됩니다. 글 모델은 연결 테스트가 사용할 수 있는 모델 목록을 불러와 목록에서 고를 수 있게 합니다. 키는 이 컴퓨터의 사용자 설정 폴더(`~/.film_unit`, `FILM_UNIT_HOME`으로 변경)에만 저장되고 프로젝트 폴더나 빌드에는 들어가지 않습니다. 환경변수로 설정한 키가 있으면 그것이 우선합니다. Claude를 쓰려면 `pip install anthropic`이 필요합니다.
+
+**무료 이미지의 한계 (FLUX.1 schnell).** 하루 10,000 뉴런(약 170장, 1024px)까지 무료입니다. 정사각형으로만 만들어 16:9는 위아래를 잘라 쓰므로 해상도가 낮고(약 1024×576), 참조 이미지를 받지 않아 인물 일관성이 약합니다. 인물 묘사가 프롬프트에 글로 들어가므로 AI 감독이 인물 외형을 구체적으로 쓰게 합니다. 인물이 중요한 작품은 참조 이미지를 받는 Nano Banana 2를 권합니다.
+
+### AI 감독 (02 · DIRECTOR)
+
+콘티 감독 모델을 고르고 **초안 만들기**를 누르면 이야기, 화풍, 인물, 장소를 먼저 만들고 샷 연출을 12개씩 나눠 이어서 만듭니다(출력이 짧은 무료 모델도 쓸 수 있고, 중간에 끊겨도 **이어서 만들기**로 이미 만든 부분을 다시 쓰지 않습니다). 초안은 화면에서 검토하고 **검토했고, 제작 문서에 반영하기**를 눌러야 `story.md`, `style_bible.yaml`, `characters.yaml`, `locations.yaml`, 샷 설명이 바뀝니다. 컷 타이밍, 가사와 가사 시간은 바꾸지 않으며 반영 뒤에는 다시 LOCK해야 합니다. 모델과 검토자는 `bible/director_log.json`에 남습니다.
+
+### 자동 제작 (07 · RENDER)
+
+```bash
+python -m engine.cli init project_001 --audio /path/master.mp3 --brief /path/brief.md --lyrics /path/lyrics.txt --aspect 16:9
+python -m engine.cli autopilot projects/project_001
+```
+
+**다음 단계 실행**(또는 `autopilot`)은 고른 모델로 이미 승인된 작업만 진행하고 다음 결정 지점에서 멈춥니다. 기다리며 반복 조회하지 않으니 영상이 만들어지는 동안에는 몇 분 뒤 다시 실행하세요.
+
+| 멈추는 단계 | 할 일 |
+|---|---|
+| `NEEDS_MODEL_CHOICE` | 00 · AI 모델에서 이미지·영상 모델 고르기 |
+| `NEEDS_IMAGE_APPROVAL` | 금액 확인 후 **이 이미지 비용 승인**. 무료 모델은 이 단계 없이 바로 진행 |
+| `FRAMES_READY_FOR_REVIEW` / `NEEDS_LOCK` | 03에서 프레임 검토, 마음에 안 드는 것은 교체, `LOCK ALL` |
+| `NEEDS_VIDEO_APPROVAL` | 금액 확인 후 **이 영상 비용 승인** |
+| `GENERATING` | 몇 분 뒤 다시 실행. 같은 작업을 확인할 뿐 다시 결제하지 않음 |
+| `NEEDS_MANUAL_FRAMES` / `NEEDS_MANUAL_VIDEO` | ✋ 직접 만들기를 고른 단계: 작업지시서로 만들어 가져오기 |
+| `PREVIEW_READY` | Preview 확인, 샷별 QC 검토 후 `compile-final` |
+
+명령줄로도 같은 일을 할 수 있습니다.
+
+```bash
+python -m engine.cli providers --stage image                       # 고를 수 있는 모델과 연결 상태
+python -m engine.cli set-key GROQ_API_KEY                          # 키는 화면에 보이지 않게 입력
+python -m engine.cli use projects/project_001 --stage text --provider groq
+python -m engine.cli direct projects/project_001 --notes "슬프지만 담담하게"
+python -m engine.cli direct-accept projects/project_001 --reviewer Director
+python -m engine.cli images-estimate projects/project_001 --kind frames    # references 도 가능
+python -m engine.cli images-approve projects/project_001 --kind frames --estimate-id ...
+python -m engine.cli images-generate projects/project_001 --kind frames
+```
+
+### Gemini(유료) 처음 한 번 설정 — Google AI Ultra 개발자 크레딧 월 $40 기준
+
+1. [Google Cloud 결제 계정](https://console.cloud.google.com/billing)을 만들고, [Google Developer Program 프로필](https://developers.google.com/profile)에서 월 크레딧을 받아 그 결제 계정에 연결합니다.
+2. [Google AI Studio](https://aistudio.google.com/apikey)에서 그 프로젝트의 API 키를 만들고, AI Studio의 **프로젝트 지출 한도(spend cap)를 크레딧 금액 이하로** 설정합니다.
+3. 신규 결제 계정은 선불(Prepay)이 기본이며, Google 문서상 선불 충전을 먼저 해야 크레딧이 적용됩니다. 크레딧이 충전금보다 먼저 사용됩니다.
+4. 00 · AI 모델에서 Gemini 카드에 키를 저장합니다.
+5. 프로젝트 예산을 크레딧 이하로 둡니다: 07의 달러 예산 40, 재시도 1. 유료 이미지·영상은 이 예산을 넘기 전에 제출을 멈춥니다. 무료 모델은 예산이 0이어도 실행됩니다.
+
+**비용** (2026-09-29 Google 가격표 기준, 5초 샷 48개 곡): 첫 프레임은 장당 최대 $0.09로 예약(1K 이미지 $0.067 + 참조·프롬프트)해 약 $4.3, 영상은 720p 6초 클립 $0.30으로 약 $14.4입니다. 재시도 1회 여유를 포함한 최대치는 약 $37입니다. 실제 청구는 Google이 계산하며, 예약액은 보수적인 상한입니다.
+
+- Veo는 16:9와 9:16만 지원하고 클립은 4·6·8초입니다. 8초가 넘는 샷은 LOCK 전에 나눕니다.
+- 이미지로 영상을 만들 때 Veo는 성인 인물만 허용합니다(`allow_adult`).
+- 생성된 영상은 Google 서버에 2일만 보관되므로, 생성이 끝나면 2일 안에 다시 실행해 내려받습니다.
+- 응답을 받지 못한 유료 요청은 다시 보내지 않고 멈춥니다. 제공처의 사용량 화면을 확인한 뒤 처리합니다. 요청이 거부되거나(4xx) 한도에 걸린 경우는 작업이 만들어지지 않았으므로 다시 실행하면 됩니다.
+- 가격 근거(`render/gemini_config.json`의 `price_valid_until`)가 지나면 [가격표](https://ai.google.dev/gemini-api/docs/pricing)를 확인하고 갱신합니다.
+- Grok(SuperGrok)·ChatGPT·Claude 구독에는 API가 포함되지 않습니다. 구독 앱은 아래 작업지시서로 직접 만들 때 씁니다.
+
+## 구독 앱으로 직접 만들기
+
+Gemini 앱(Nano Banana), Flow(Veo), Grok Imagine처럼 구독에 포함된 앱에서 사람이 직접 만들 때 쓰는 작업지시서를 만듭니다.
+
+```bash
+python -m engine.cli packets projects/project_001
+python -m engine.cli packets projects/project_001 --shots S001,S002
+```
+
+`render/packets/index.html`을 브라우저로 열면 샷마다 첫 프레임 프롬프트, 함께 올릴 캐릭터·장소 참조 이미지, 영상 프롬프트와 최소 길이, 가져오기 명령이 나옵니다. 같은 내용이 `packets.json`에도 저장됩니다. UI의 콘티 검토 화면에서도 만들 수 있습니다. 이 명령은 아무 서비스도 호출하지 않으며 샷·검수·LOCK·예산을 바꾸지 않습니다. 결과물은 기존 `import-frame`과 `import-asset`으로 가져오고, 검수와 Final 조건도 그대로 적용됩니다.
+
+- 소비자 앱을 스크립트나 브라우저 자동화로 조작하지 않습니다. 사람이 직접 만들고 내려받습니다.
+- 정지 샷(`STATIC`)에는 영상 단계가 없습니다. 비용을 줄이려고 움직이는 샷을 `STATIC`으로 바꾸지 않습니다.
+- 영상 서비스가 프로젝트 화면비를 지원하지 않으면 가장 가까운 비율로 만듭니다. 컴파일 때 여백을 넣어 맞추고 클립 소리는 제거합니다.
+- 캐릭터·장소 참조 이미지는 `bible/characters.yaml`, `bible/locations.yaml`의 `reference_images`에 프로젝트 안 경로로 적습니다.
 
 ## 검증 범위
 

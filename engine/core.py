@@ -110,9 +110,16 @@ def project_mutex(project):
             fcntl.flock(f, fcntl.LOCK_UN)
 
 
-def init_project(root, name, audio, brief, lyrics="", synthetic=False):
+# Output canvas per aspect ratio. Veo generates 16:9 or 9:16 only.
+FORMATS = {"4:3": (1440, 1080), "16:9": (1920, 1080), "9:16": (1080, 1920)}
+
+
+def init_project(root, name, audio, brief, lyrics="", synthetic=False, aspect="4:3"):
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,79}", name):
         raise FilmError("Use a project ID with letters, digits, underscores or hyphens")
+    if aspect not in FORMATS:
+        raise FilmError("Aspect ratio must be one of: " + ", ".join(FORMATS))
+    width, height = FORMATS[aspect]
     p = Path(root).resolve() / name
     if p.exists():
         raise FilmError("Project exists; select it or use a new name")
@@ -134,7 +141,7 @@ def init_project(root, name, audio, brief, lyrics="", synthetic=False):
     write(p / "project.yaml", {
         **schema_metadata(), "name": name, "created_at": now(),
         "audio": {"path": str(dest.relative_to(p)), "sha256": digest(dest), "synthetic_test_audio": synthetic},
-        "format": {"width": 1440, "height": 1080, "fps": 24, "aspect_ratio": "4:3", "crf": 18},
+        "format": {"width": width, "height": height, "fps": 24, "aspect_ratio": aspect, "crf": 18},
         "budget": {"max_credits": 10000, "max_usd": 0, "max_retry_per_shot": 2, "draft_resolution": "720p", "final_resolution": "1080p"},
         "qc": {"threshold": 85},
         "renderer": {"default": "mock", "mode": "AUTO"},

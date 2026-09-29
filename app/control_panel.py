@@ -12,6 +12,7 @@ from engine.production import generate_storyboard, import_frame, make_package
 from engine.pipeline import compile_project, prepare
 from engine.budget import approve
 from engine.qc import SEMANTIC_ITEMS, save_review
+from engine.settings import get_secret
 
 ROOT = Path(__file__).resolve().parents[1]
 PROJECTS = ROOT / "projects"
@@ -47,6 +48,7 @@ if chosen == "새 프로젝트":
         audio = st.file_uploader("Suno MP3 / WAV", type=["mp3", "wav"])
         brief = st.text_area("어떤 영상으로 만들까요?", placeholder="그림체, 인물, 이야기, 반복되는 이미지 등을 자유롭게 적어주세요.")
         lyrics = st.text_area("가사 원문", help="가사 자막의 원본입니다. 타이밍은 곡을 들으며 별도로 검토합니다.")
+        aspect = st.selectbox("화면비", ["16:9", "4:3", "9:16"], help="Gemini Veo 자동 제작은 16:9 또는 9:16만 지원합니다.")
         submit = st.form_submit_button("프로젝트 만들기", type="primary")
     if submit:
         if not audio or not brief.strip():
@@ -55,7 +57,7 @@ if chosen == "새 프로젝트":
             with tempfile.TemporaryDirectory() as tmp:
                 source = Path(tmp) / ("master" + Path(audio.name).suffix.lower())
                 source.write_bytes(audio.getvalue())
-                result = guarded(lambda: init_project(PROJECTS, name, source, brief, lyrics))
+                result = guarded(lambda: init_project(PROJECTS, name, source, brief, lyrics, aspect=aspect))
                 if result:
                     st.success("프로젝트가 생성됐습니다. 왼쪽에서 선택해주세요.")
     st.stop()
@@ -66,7 +68,11 @@ audio_path = p / config["audio"]["path"]
 if config["audio"].get("synthetic_test_audio"):
     st.info("파이프라인 검증용 합성 음원입니다. 콘티 그림은 배치 확인용 도식입니다.")
 st.sidebar.audio(str(audio_path))
-tabs = st.tabs(["01 · PROJECT", "02 · DIRECTOR", "03 · STORYBOARD", "04 · LYRICS", "05 · TIMELINE", "06 · COMPILE / BUILDS", "07 · RENDER · 고급"])
+models_tab, *tabs = st.tabs(["00 · AI 모델", "01 · PROJECT", "02 · DIRECTOR", "03 · STORYBOARD", "04 · LYRICS", "05 · TIMELINE", "06 · COMPILE / BUILDS", "07 · RENDER · 고급"])
+
+with models_tab:
+    from app.models_ui import render_picker
+    render_picker(p)
 
 with tabs[0]:
     st.subheader("음원 분석")
@@ -109,6 +115,9 @@ with tabs[1]:
                     guarded(save_bible, "저장했습니다. 변경된 제작 패키지는 다시 LOCK해주세요.")
     if (p / "bible/director_request.md").exists():
         st.download_button("Work 감독 작업 지시서", (p / "bible/director_request.md").read_text(), "director_request.md")
+    st.divider()
+    from app.models_ui import render_director
+    render_director(p)
 
 with tabs[2]:
     st.subheader("콘티 검토")
@@ -153,6 +162,13 @@ with tabs[2]:
                             generate_storyboard(p, shot["id"])
                             st.rerun()
         st.divider()
+        if st.button("구독 앱 작업지시서 만들기"):
+            from engine.packets import export_packets
+            made = guarded(lambda: export_packets(p))
+            if made:
+                st.success(f"{made['shots']}개 샷 작업지시서: {made['packets']}")
+                for warning in made["warnings"]:
+                    st.warning(warning)
         reviewer = st.text_input("검토자", "Director")
         mock_only = st.checkbox("콘티 테스트용 LOCK", value=any(s.get("storyboard_kind") == "placeholder" for s in shots))
         if st.button("LOCK ALL", type="primary"):
@@ -161,14 +177,17 @@ with tabs[2]:
                 st.rerun()
 
 with tabs[6]:
+    with st.expander("자동 제작 · 고른 모델로 참조 이미지 → 첫 프레임 → 영상 → Preview", expanded=True):
+        from app.models_ui import render_autopilot
+        render_autopilot(p, "autopilot_" + chosen)
     st.subheader("샷 생성 · 고급")
     st.caption("기존 렌더러로 개별 장면을 생성하거나 이어서 실행합니다. 전체 영상을 보려면 COMPILE / BUILDS의 Preview를 사용하세요.")
-    renderer = st.selectbox("Renderer", ["mock", "economy", "manual", "openart", "fal"], format_func=lambda x: {"mock":"Mock · 비용 없는 콘티 테스트", "economy":"Economy · 실험 기능", "manual":"Manual · 생성한 영상 가져오기", "openart":"OpenArt · Work 작업 연결", "fal":"fal · 실험 기능"}[x])
+    renderer = st.selectbox("Renderer", ["mock", "economy", "manual", "openart", "fal", "gemini"], format_func=lambda x: {"mock":"Mock · 비용 없는 콘티 테스트", "economy":"Economy · 실험 기능", "manual":"Manual · 생성한 영상 가져오기", "openart":"OpenArt · Work 작업 연결", "fal":"fal · 실험 기능", "gemini":"Gemini · Veo 3.1 Lite"}[x])
     quality = st.radio("Quality", ["draft", "final"], index=1, horizontal=True)
     length = st.radio("길이", ["30초 테스트", "60초 Pilot", "곡 전체"], horizontal=True)
     seconds = {"30초 테스트": 30, "60초 Pilot": 60, "곡 전체": None}[length]
     budget_cap = st.number_input("이 프로젝트의 OpenArt 크레딧 한도", min_value=0, value=int(config["budget"]["max_credits"]))
-    usd_cap = st.number_input("이 프로젝트의 fal 예산 (USD)", min_value=0.0, value=float(config["budget"].get("max_usd", 0)), step=0.1, format="%.2f")
+    usd_cap = st.number_input("이 프로젝트의 달러 예산 (fal · Gemini, USD)", min_value=0.0, value=float(config["budget"].get("max_usd", 0)), step=0.1, format="%.2f")
     retry_cap = st.number_input("샷당 최대 재시도", min_value=0, max_value=10, value=int(config["budget"]["max_retry_per_shot"]))
     if st.button("예산 설정 저장"):
         config["budget"].update(max_credits=budget_cap, max_usd=usd_cap, max_retry_per_shot=retry_cap)
@@ -200,12 +219,18 @@ with tabs[6]:
             guarded(lambda: initialize(p), "설정 파일을 만들었습니다. Work에서 후보 모델과 견적을 연결해주세요.")
     if renderer == "fal":
         st.caption("Wan 2.2 Turbo · 최대 5초 샷 · 기본 720p. 1080p 출력은 편집 시 확대됩니다.")
-        if not os.environ.get("FAL_KEY"):
-            st.info("fal API 키가 아직 연결되지 않았습니다. 실행 환경에 FAL_KEY를 설정해주세요.")
+        if not get_secret("FAL_KEY"):
+            st.info("fal API 키가 아직 연결되지 않았습니다. '00 · AI 모델'에서 입력하거나 FAL_KEY를 설정해주세요.")
         if not (p / "render/fal_config.json").exists():
             if st.button("Wan 테스트 설정 추가"):
                 write(p / "render/fal_config.json", read(ROOT / "templates/fal_wan_turbo.json"))
                 st.success("설정 완료. 달러 예산을 저장하고 콘티 LOCK 후 비용을 확인해주세요.")
+    if renderer == "gemini":
+        st.caption("Veo 3.1 Lite · 16:9/9:16 프로젝트 · 최대 8초 샷 · 720p. 생성된 영상은 Google 서버에 2일만 보관되어 바로 내려받습니다.")
+        if not (p / "render/gemini_config.json").exists() and st.button("Gemini 설정 추가"):
+            from engine.gemini import DEFAULT_CONFIG
+            write(p / "render/gemini_config.json", DEFAULT_CONFIG)
+            st.success("설정 완료. 달러 예산을 저장하고 콘티 LOCK 후 비용을 확인해주세요.")
     if renderer == "openart":
         st.caption("Work에서 모델 규격·첫 프레임 URL·견적을 연결하면 승인된 요청 파일을 만듭니다. Work가 OpenArt에 제출한 후 결과를 가져와 이어서 실행합니다.")
     if st.button("GENERATE MUSIC VIDEO / RESUME", type="primary"):

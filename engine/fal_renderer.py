@@ -8,6 +8,7 @@ import shutil
 from urllib.parse import urlparse
 from urllib.request import Request, HTTPRedirectHandler, build_opener
 from .core import FilmError, digest, object_hash, read, safe_path, write
+from .settings import get_secret
 from .renderers import AwaitingRender, RenderBlocked, RenderResult, VideoRenderer, build_prompt
 
 ENDPOINT = "fal-ai/wan/v2.2-a14b/image-to-video/turbo"
@@ -31,9 +32,9 @@ def queue_url(url):
 class FalHTTP:
     def request(self, method, url, payload=None):
         queue_url(url)
-        key = os.environ.get("FAL_KEY")
+        key = get_secret("FAL_KEY")
         if not key:
-            raise RenderBlocked("FAL_KEY is not configured in the local process environment")
+            raise RenderBlocked("fal API 키가 없습니다. '모델 선택'에서 입력하거나 FAL_KEY를 설정하세요")
         headers = {"Authorization": "Key " + key, "Content-Type": "application/json", "X-Fal-No-Retry": "1"}
         req = Request(url, data=json.dumps(payload).encode() if payload is not None else None,
                       headers=headers, method=method)
@@ -73,8 +74,8 @@ class FalRenderer(VideoRenderer):
         self.transport = transport or FalHTTP()
 
     def preflight(self):
-        if not os.environ.get("FAL_KEY"):
-            raise RenderBlocked("fal is not connected: configure FAL_KEY locally before generating")
+        if not get_secret("FAL_KEY"):
+            raise RenderBlocked("fal is not connected: enter the API key in the model picker or set FAL_KEY")
 
     def config_hash(self):
         # Renewing unchanged price evidence must not produce another paid run.
