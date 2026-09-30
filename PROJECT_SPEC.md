@@ -1,5 +1,24 @@
 # Project specification / v0.3
 
+## FRAME_ANIMATION_V1 development contract (2026-09-30)
+
+The [User adoption decision](docs/decisions/FRAME_ANIMATION_V1_ADOPTION_20260930.md)
+adopts ANIM-001~018 and the linked animation designs for an explicitly selected
+new mode. The v0.3 requirements below govern LEGACY_MV and Build 1. For the new
+mode only, compile may invoke authorized fixed-plan remote compose/encode,
+DRIVE_BOUNDED builds may replay from fixed hash-verified archive objects, and
+independent immutable calculations may run in parallel under a single state/seal
+coordinator. Browser Google OAuth, Drive storage and qualified workers/encoders
+are development scope; creative-generation approval, entitlement and cost bounds
+remain separate. LOCAL_FULL keeps independent copies and offline replay.
+
+The [execution/storage contract](docs/FRAME_ANIMATION_V1_EXECUTION_STORAGE_KO.md)
+specifies online replay, explicit offline restore and truthful unavailable-archive
+errors. ANIM-001 finalizes the ADR and version consumers before code changes.
+Opening or migrating a project does not opt it into the mode or carry approvals
+forward. These are development requirements, not evidence of installed features,
+service qualification, host activation or a finished film.
+
 ## Goal and release boundary
 
 Given a measured master track, authoritative lyric text and a full-song shot plan, compile the current cut at any stage, replace individual shots and retain every previous build. The director establishes the approved film; generation tools render particular shots and do not direct the whole MV.
