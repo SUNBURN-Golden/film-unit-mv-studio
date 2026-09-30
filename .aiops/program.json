@@ -1,0 +1,197 @@
+{
+  "schema_version": 1,
+  "program": "film",
+  "repository": "BeautifulMind-JT/film-unit-mv-studio",
+  "project": "FILM_UNIT",
+  "approval_pointer": "https://github.com/BeautifulMind-JT/film-unit-mv-studio/pull/19 (FRAME_ANIMATION_V1 design revision 2 at 80dac7ec146d4270d6a051386e51ca55e0d12ea7; scope and start are approved by the User's merge of #19 and of this registration PR) ; Fable audit (--gate ARCHITECTURE --depth A3) on that exact head: ASTRA_AUDIT_V1 comment on #19, link recorded before this PR leaves draft",
+  "authoritative_doc_pointers": "AGENTS.md ; README.md ; ARCHITECTURE.md ; PROJECT_SPEC.md ; docs/FRAME_ANIMATION_V1_DESIGN_KO.md ; docs/FRAME_ANIMATION_V1_EXECUTION_STORAGE_KO.md ; docs/FRAME_ANIMATION_V1_DEVELOPMENT_KO.md ; docs/CONTROL_PLANE_POINTER.md ; TASKS/TEMPLATE.md (read at the plan commit)",
+  "nodes": [
+    {
+      "id": "anim-001",
+      "title": "ANIM-001: FRAME_ANIMATION_V1 계약 ADR/명세 (frame·자산·승인·storage·execution·encoder)",
+      "spec": "목표: 코드 구현 전에 새 모드의 읽기·쓰기 정본, 버전, 타입, 승인 binding을 하나의 ADR/명세로 고정한다(docs/FRAME_ANIMATION_V1_DEVELOPMENT_KO.md 'ANIM-001: 계약 ADR/명세' 절 전체, docs/FRAME_ANIMATION_V1_DESIGN_KO.md 3~13절, docs/FRAME_ANIMATION_V1_EXECUTION_STORAGE_KO.md 1~9절).\n범위: 모드·버전(LEGACY_MV/FRAME_ANIMATION_V1, Project 4·Shot 3·Build 2), 시간축(timeline/edit.json 정본, 0-based 정수 프레임·끝 제외 구간), 편집·전환(pairwise overlap, 세 컷 중첩 거부), 샷·자산(STATIC/ANIMATED, A/B/C 경로, FRAME_SEQUENCE/COMPOSITE_SEQUENCE), 제어·노출(MotionPlan, ones/twos), 원본·RGBA(hash·provenance·alpha·pivot), 검수·LOCK(PLAN/WAVE/FINAL, content/상태 digest 분리), 빌드·replay(Build 2, LOCAL_FULL/DRIVE_BOUNDED, Build 1 호환), 저장·작업 공간(browser OAuth, immutable revision, bounded cache), 실행·인코더(ExecutionPlan·FrameStream·job identity/UNKNOWN·복수 driver·독립 verifier·entitlement·예산).\n산출물: 새 ADR 문서(저장소에 ADR 위치가 없으면 docs/adr/0001-frame-animation-v1-contract.md)와 필요한 schema 명세. 코드 구현은 하지 않는다.\n완료 증거: docs/FRAME_ANIMATION_V1_DEVELOPMENT_KO.md ANIM-001 '완료 증거' 1~5를 모두 충족한다(96+96−12=180과 출력 90번 대응 설명, 240초·24fps 5,760 검산 예시, 차단 수용 조건과 legacy 보존 조건, 변경 범위·migration·버전 소비자 명시).\n공통 조건: 해당 항목의 수용 기준은 docs/FRAME_ANIMATION_V1_DESIGN_KO.md 16~17절과 docs/FRAME_ANIMATION_V1_EXECUTION_STORAGE_KO.md 10~11절의 해당 범위다. 기존 전체 pytest, Build 1 replay, 현재 Preview/Final 의미를 회귀로 유지한다. 원곡 파일·원문 가사·검토된 cue를 바꾸지 않는다. 기존 프로젝트를 자동으로 새 모드로 바꾸거나 기존 검수·LOCK을 새 계약에 승계하지 않는다. 유료 요청, credential 발급, 추가 과금, 실제 작품 제작·최종 출력 승인, control-plane runtime 활성화는 하지 않는다. 필요하면 DECISION_REQUIRED로 멈춘다. 실제 서비스·GPU·권한이 없으면 fake로 protocol을 검사하고, 실제 qualification은 미완료로 표시한다(fake 성공을 실제 완료로 집계하지 않는다). PR에 실제 실행한 명령·결과와 현재 HEAD의 CI(Python 3.11 / FFmpeg, Python 3.12 / FFmpeg)를 기록한다. 기능 없는 모듈 틀만 만들고 완료로 집계하지 않는다.",
+      "audit_floor": "A3"
+    },
+    {
+      "id": "anim-002",
+      "title": "ANIM-002: 명시적 migration·backup·legacy reader",
+      "depends_on": [
+        "anim-001"
+      ],
+      "spec": "목표: 기존 LEGACY_MV 프로젝트를 명시적 animation-init/migrate로만 새 모드로 전환하고, 원본 metadata backup과 legacy reader를 제공한다(docs/FRAME_ANIMATION_V1_DESIGN_KO.md 18절, 5.1절; docs/FRAME_ANIMATION_V1_DEVELOPMENT_KO.md 구현 묶음 ANIM-002).\n규칙: legacy ms 경계는 현재 frame_at 규칙으로 한 번 매핑하고 차이·최소 한 프레임 조건을 보고한다. 최초 전환은 hard cut·overlap 0으로 현재 편집을 보존한다. twos·crossfade·동작 의도·경로는 자동 추정하지 않는다. 기존 승인을 새 승인으로 둔갑시키지 않는다.\n완료 기준: 원음·가사·과거 빌드 보존, 새 승인 자동 승계 없음, 과거 빌드와 원본을 계속 열고 검증할 수 있음을 테스트로 보인다.\n공통 조건: 해당 항목의 수용 기준은 docs/FRAME_ANIMATION_V1_DESIGN_KO.md 16~17절과 docs/FRAME_ANIMATION_V1_EXECUTION_STORAGE_KO.md 10~11절의 해당 범위다. 기존 전체 pytest, Build 1 replay, 현재 Preview/Final 의미를 회귀로 유지한다. 원곡 파일·원문 가사·검토된 cue를 바꾸지 않는다. 기존 프로젝트를 자동으로 새 모드로 바꾸거나 기존 검수·LOCK을 새 계약에 승계하지 않는다. 유료 요청, credential 발급, 추가 과금, 실제 작품 제작·최종 출력 승인, control-plane runtime 활성화는 하지 않는다. 필요하면 DECISION_REQUIRED로 멈춘다. 실제 서비스·GPU·권한이 없으면 fake로 protocol을 검사하고, 실제 qualification은 미완료로 표시한다(fake 성공을 실제 완료로 집계하지 않는다). PR에 실제 실행한 명령·결과와 현재 HEAD의 CI(Python 3.11 / FFmpeg, Python 3.12 / FFmpeg)를 기록한다. 기능 없는 모듈 틀만 만들고 완료로 집계하지 않는다.",
+      "audit_floor": "A2"
+    },
+    {
+      "id": "anim-003",
+      "title": "ANIM-003: 프레임 자산 import·version·hash·resolver와 draft Preview",
+      "depends_on": [
+        "anim-001",
+        "anim-002"
+      ],
+      "spec": "목표: index/폴더에서 외부 이미지 시퀀스·레이어를 가져와 version·hash·resolver로 관리하고 draft Preview를 만든다(docs/FRAME_ANIMATION_V1_DESIGN_KO.md 5.4절, 12절; docs/FRAME_ANIMATION_V1_DEVELOPMENT_KO.md 구현 묶음 ANIM-003, '첫 기능 묶음의 검증').\n완료 기준: RGBA alpha·crop origin·pivot 보존, 누락·손상·변조·허용되지 않은 경로 차단, 변경된 한 멤버 hash 탐지, draft Preview 생성. 실제 원본 그림 fixture로 검증한다.\n공통 조건: 해당 항목의 수용 기준은 docs/FRAME_ANIMATION_V1_DESIGN_KO.md 16~17절과 docs/FRAME_ANIMATION_V1_EXECUTION_STORAGE_KO.md 10~11절의 해당 범위다. 기존 전체 pytest, Build 1 replay, 현재 Preview/Final 의미를 회귀로 유지한다. 원곡 파일·원문 가사·검토된 cue를 바꾸지 않는다. 기존 프로젝트를 자동으로 새 모드로 바꾸거나 기존 검수·LOCK을 새 계약에 승계하지 않는다. 유료 요청, credential 발급, 추가 과금, 실제 작품 제작·최종 출력 승인, control-plane runtime 활성화는 하지 않는다. 필요하면 DECISION_REQUIRED로 멈춘다. 실제 서비스·GPU·권한이 없으면 fake로 protocol을 검사하고, 실제 qualification은 미완료로 표시한다(fake 성공을 실제 완료로 집계하지 않는다). PR에 실제 실행한 명령·결과와 현재 HEAD의 CI(Python 3.11 / FFmpeg, Python 3.12 / FFmpeg)를 기록한다. 기능 없는 모듈 틀만 만들고 완료로 집계하지 않는다.",
+      "audit_floor": "A2"
+    },
+    {
+      "id": "anim-004",
+      "title": "ANIM-004: frame clock·노출(ones/twos)·시퀀스 정규화",
+      "depends_on": [
+        "anim-003"
+      ],
+      "spec": "목표: 24fps frame clock 위에 레이어별 ones/twos 노출과 시퀀스 정규화를 구현한다(docs/FRAME_ANIMATION_V1_DESIGN_KO.md 6.1~6.3절, 7절; docs/FRAME_ANIMATION_V1_DEVELOPMENT_KO.md ANIM-004).\n완료 기준: 슬롯 전체 coverage, 24fps, 끝점 중복 없음, 96프레임 twos와 카메라 ones, 홀수 끝점, 공유 anchor 중복·빈 슬롯 차단 테스트.\n공통 조건: 해당 항목의 수용 기준은 docs/FRAME_ANIMATION_V1_DESIGN_KO.md 16~17절과 docs/FRAME_ANIMATION_V1_EXECUTION_STORAGE_KO.md 10~11절의 해당 범위다. 기존 전체 pytest, Build 1 replay, 현재 Preview/Final 의미를 회귀로 유지한다. 원곡 파일·원문 가사·검토된 cue를 바꾸지 않는다. 기존 프로젝트를 자동으로 새 모드로 바꾸거나 기존 검수·LOCK을 새 계약에 승계하지 않는다. 유료 요청, credential 발급, 추가 과금, 실제 작품 제작·최종 출력 승인, control-plane runtime 활성화는 하지 않는다. 필요하면 DECISION_REQUIRED로 멈춘다. 실제 서비스·GPU·권한이 없으면 fake로 protocol을 검사하고, 실제 qualification은 미완료로 표시한다(fake 성공을 실제 완료로 집계하지 않는다). PR에 실제 실행한 명령·결과와 현재 HEAD의 CI(Python 3.11 / FFmpeg, Python 3.12 / FFmpeg)를 기록한다. 기능 없는 모듈 틀만 만들고 완료로 집계하지 않는다.",
+      "audit_floor": "A2"
+    },
+    {
+      "id": "anim-005",
+      "title": "ANIM-005: pairwise 전환·frame_map·길이 검산",
+      "depends_on": [
+        "anim-004"
+      ],
+      "spec": "목표: pairwise transition과 frame_map으로 출력 프레임마다 원본·weight를 추적한다(docs/FRAME_ANIMATION_V1_DESIGN_KO.md 6.4절, 11.1절; docs/FRAME_ANIMATION_V1_DEVELOPMENT_KO.md ANIM-005).\n완료 기준: 96+96−12=180 예제, 하드 컷, 마지막 경계, 총량 불일치·세 컷 겹침 거부, 다중 원본·weight 추적, 5,760 coverage 검산 테스트.\n공통 조건: 해당 항목의 수용 기준은 docs/FRAME_ANIMATION_V1_DESIGN_KO.md 16~17절과 docs/FRAME_ANIMATION_V1_EXECUTION_STORAGE_KO.md 10~11절의 해당 범위다. 기존 전체 pytest, Build 1 replay, 현재 Preview/Final 의미를 회귀로 유지한다. 원곡 파일·원문 가사·검토된 cue를 바꾸지 않는다. 기존 프로젝트를 자동으로 새 모드로 바꾸거나 기존 검수·LOCK을 새 계약에 승계하지 않는다. 유료 요청, credential 발급, 추가 과금, 실제 작품 제작·최종 출력 승인, control-plane runtime 활성화는 하지 않는다. 필요하면 DECISION_REQUIRED로 멈춘다. 실제 서비스·GPU·권한이 없으면 fake로 protocol을 검사하고, 실제 qualification은 미완료로 표시한다(fake 성공을 실제 완료로 집계하지 않는다). PR에 실제 실행한 명령·결과와 현재 HEAD의 CI(Python 3.11 / FFmpeg, Python 3.12 / FFmpeg)를 기록한다. 기능 없는 모듈 틀만 만들고 완료로 집계하지 않는다.",
+      "audit_floor": "A2"
+    },
+    {
+      "id": "anim-006",
+      "title": "ANIM-006: 컷/전환 검수·Final 후보·inventory·Build 2 replay",
+      "depends_on": [
+        "anim-005"
+      ],
+      "spec": "목표: 컷·전환 review, Final 후보 출력, sequence·inventory 기록, 보관 입력만으로 재현하는 Build 2 replay를 구현한다(docs/FRAME_ANIMATION_V1_DESIGN_KO.md 10절, 12절; docs/FRAME_ANIMATION_V1_DEVELOPMENT_KO.md ANIM-006).\n완료 기준: 새 시퀀스를 Final 후보로 만들고 미검수·누락·stale 승인은 차단, 라이브 프로젝트를 숨긴 상태에서 Build 2 replay, inventory 변조 탐지, 최종 PNG와 MP4의 동일 시각 버전·자막 시간축, clean/subbed 분리.\n공통 조건: 해당 항목의 수용 기준은 docs/FRAME_ANIMATION_V1_DESIGN_KO.md 16~17절과 docs/FRAME_ANIMATION_V1_EXECUTION_STORAGE_KO.md 10~11절의 해당 범위다. 기존 전체 pytest, Build 1 replay, 현재 Preview/Final 의미를 회귀로 유지한다. 원곡 파일·원문 가사·검토된 cue를 바꾸지 않는다. 기존 프로젝트를 자동으로 새 모드로 바꾸거나 기존 검수·LOCK을 새 계약에 승계하지 않는다. 유료 요청, credential 발급, 추가 과금, 실제 작품 제작·최종 출력 승인, control-plane runtime 활성화는 하지 않는다. 필요하면 DECISION_REQUIRED로 멈춘다. 실제 서비스·GPU·권한이 없으면 fake로 protocol을 검사하고, 실제 qualification은 미완료로 표시한다(fake 성공을 실제 완료로 집계하지 않는다). PR에 실제 실행한 명령·결과와 현재 HEAD의 CI(Python 3.11 / FFmpeg, Python 3.12 / FFmpeg)를 기록한다. 기능 없는 모듈 틀만 만들고 완료로 집계하지 않는다.",
+      "audit_floor": "A2"
+    },
+    {
+      "id": "anim-007",
+      "title": "ANIM-007: PLAN/WAVE/FINAL LOCK·W00·경로 결정 (첫 기능 묶음 완료)",
+      "depends_on": [
+        "anim-006"
+      ],
+      "spec": "목표: 범위 LOCK(PLAN/WAVE/FINAL)과 본편 내장 파일럿 W00, 체크포인트 정지, 경로 결정 흐름을 구현한다(docs/FRAME_ANIMATION_V1_DESIGN_KO.md 9절; docs/FRAME_ANIMATION_V1_DEVELOPMENT_KO.md ANIM-007). ANIM-003~007은 외부 제작 프레임으로 전체 작품을 컴파일하는 첫 기능 묶음이다.\n완료 기준: 나머지 상세 자산 없이 선택한 본편 컷만 먼저 제작하는 흐름, checkpoint 정지, 초기 채택 후 후속 실행 정지, 조기 실패 결정, 변경 시 영향 컷만 stale, scope 밖 production 차단. 소프트웨어 fixture로 검증하며 실제 W00 작품 제작·승인은 이 작업에 포함하지 않는다(사람의 작업으로 별도 기록).\n공통 조건: 해당 항목의 수용 기준은 docs/FRAME_ANIMATION_V1_DESIGN_KO.md 16~17절과 docs/FRAME_ANIMATION_V1_EXECUTION_STORAGE_KO.md 10~11절의 해당 범위다. 기존 전체 pytest, Build 1 replay, 현재 Preview/Final 의미를 회귀로 유지한다. 원곡 파일·원문 가사·검토된 cue를 바꾸지 않는다. 기존 프로젝트를 자동으로 새 모드로 바꾸거나 기존 검수·LOCK을 새 계약에 승계하지 않는다. 유료 요청, credential 발급, 추가 과금, 실제 작품 제작·최종 출력 승인, control-plane runtime 활성화는 하지 않는다. 필요하면 DECISION_REQUIRED로 멈춘다. 실제 서비스·GPU·권한이 없으면 fake로 protocol을 검사하고, 실제 qualification은 미완료로 표시한다(fake 성공을 실제 완료로 집계하지 않는다). PR에 실제 실행한 명령·결과와 현재 HEAD의 CI(Python 3.11 / FFmpeg, Python 3.12 / FFmpeg)를 기록한다. 기능 없는 모듈 틀만 만들고 완료로 집계하지 않는다.",
+      "audit_floor": "A2",
+      "astra_gate": "MILESTONE"
+    },
+    {
+      "id": "anim-008",
+      "title": "ANIM-008: native C 계층·pivot·변형·대체 그림·mask",
+      "depends_on": [
+        "anim-007"
+      ],
+      "spec": "목표: RGBA 레이어 계층, parent transform, pivot, z-order, 대체 그림, mask로 피사체 동작을 카메라 이동과 분리해 재생한다(docs/FRAME_ANIMATION_V1_DESIGN_KO.md 8.4절; docs/FRAME_ANIMATION_V1_DEVELOPMENT_KO.md ANIM-008).\n완료 기준: parent transform·z-order·mask·replacement 테스트, 피사체 동작과 카메라 이동 분리, 투명 경계 재생. 정지 슬레이트만으로 검증하지 않고 실제 위치·교체 그림·가림이 변하는 로컬 fixture를 쓴다.\n공통 조건: 해당 항목의 수용 기준은 docs/FRAME_ANIMATION_V1_DESIGN_KO.md 16~17절과 docs/FRAME_ANIMATION_V1_EXECUTION_STORAGE_KO.md 10~11절의 해당 범위다. 기존 전체 pytest, Build 1 replay, 현재 Preview/Final 의미를 회귀로 유지한다. 원곡 파일·원문 가사·검토된 cue를 바꾸지 않는다. 기존 프로젝트를 자동으로 새 모드로 바꾸거나 기존 검수·LOCK을 새 계약에 승계하지 않는다. 유료 요청, credential 발급, 추가 과금, 실제 작품 제작·최종 출력 승인, control-plane runtime 활성화는 하지 않는다. 필요하면 DECISION_REQUIRED로 멈춘다. 실제 서비스·GPU·권한이 없으면 fake로 protocol을 검사하고, 실제 qualification은 미완료로 표시한다(fake 성공을 실제 완료로 집계하지 않는다). PR에 실제 실행한 명령·결과와 현재 HEAD의 CI(Python 3.11 / FFmpeg, Python 3.12 / FFmpeg)를 기록한다. 기능 없는 모듈 틀만 만들고 완료로 집계하지 않는다.",
+      "audit_floor": "A2"
+    },
+    {
+      "id": "anim-009",
+      "title": "ANIM-009: A 경로 제어 이미지·세부 packet·browser hand-off",
+      "depends_on": [
+        "anim-007"
+      ],
+      "spec": "목표: 이미지 기반 프레임 제작(A)의 제어 이미지, 세부 작업 packet, browser hand-off와 draft import를 구현한다(docs/FRAME_ANIMATION_V1_DESIGN_KO.md 8.2절, 13절; docs/FRAME_ANIMATION_V1_DEVELOPMENT_KO.md ANIM-009).\n완료 기준: 마스터/layout/control과 프레임 시점이 일치하는 draft import, 역할·시점·참조 확인. consumer UI 자동 조작은 하지 않는다.\n공통 조건: 해당 항목의 수용 기준은 docs/FRAME_ANIMATION_V1_DESIGN_KO.md 16~17절과 docs/FRAME_ANIMATION_V1_EXECUTION_STORAGE_KO.md 10~11절의 해당 범위다. 기존 전체 pytest, Build 1 replay, 현재 Preview/Final 의미를 회귀로 유지한다. 원곡 파일·원문 가사·검토된 cue를 바꾸지 않는다. 기존 프로젝트를 자동으로 새 모드로 바꾸거나 기존 검수·LOCK을 새 계약에 승계하지 않는다. 유료 요청, credential 발급, 추가 과금, 실제 작품 제작·최종 출력 승인, control-plane runtime 활성화는 하지 않는다. 필요하면 DECISION_REQUIRED로 멈춘다. 실제 서비스·GPU·권한이 없으면 fake로 protocol을 검사하고, 실제 qualification은 미완료로 표시한다(fake 성공을 실제 완료로 집계하지 않는다). PR에 실제 실행한 명령·결과와 현재 HEAD의 CI(Python 3.11 / FFmpeg, Python 3.12 / FFmpeg)를 기록한다. 기능 없는 모듈 틀만 만들고 완료로 집계하지 않는다.",
+      "audit_floor": "A2"
+    },
+    {
+      "id": "anim-010",
+      "title": "ANIM-010: 생성 adapter (capability·구간·quote·ledger·UNKNOWN·PTS), fake provider",
+      "depends_on": [
+        "anim-008",
+        "anim-009"
+      ],
+      "spec": "목표: B 경로 조건부 구간 생성 adapter의 capability 검사, 구간 규칙, quote·예약·ledger, UNKNOWN fencing, PTS 대응을 fake provider로 구현한다(docs/FRAME_ANIMATION_V1_DESIGN_KO.md 8.3절, 8.5절, 13절; docs/FRAME_ANIMATION_V1_DEVELOPMENT_KO.md ANIM-010).\n완료 기준: 필수 ref/pose/end 입력 누락 거부, 한도 초과 참조 무단 잘라내기 금지, quote 변경·예약·UNKNOWN·동일 입력 resume, 불명 접수의 새 ID 제출 금지, 시작·끝 포함 규칙과 source PTS 대응. 실제 provider 호출·유료 생성은 하지 않는다(별도 제작 승인).\n공통 조건: 해당 항목의 수용 기준은 docs/FRAME_ANIMATION_V1_DESIGN_KO.md 16~17절과 docs/FRAME_ANIMATION_V1_EXECUTION_STORAGE_KO.md 10~11절의 해당 범위다. 기존 전체 pytest, Build 1 replay, 현재 Preview/Final 의미를 회귀로 유지한다. 원곡 파일·원문 가사·검토된 cue를 바꾸지 않는다. 기존 프로젝트를 자동으로 새 모드로 바꾸거나 기존 검수·LOCK을 새 계약에 승계하지 않는다. 유료 요청, credential 발급, 추가 과금, 실제 작품 제작·최종 출력 승인, control-plane runtime 활성화는 하지 않는다. 필요하면 DECISION_REQUIRED로 멈춘다. 실제 서비스·GPU·권한이 없으면 fake로 protocol을 검사하고, 실제 qualification은 미완료로 표시한다(fake 성공을 실제 완료로 집계하지 않는다). PR에 실제 실행한 명령·결과와 현재 HEAD의 CI(Python 3.11 / FFmpeg, Python 3.12 / FFmpeg)를 기록한다. 기능 없는 모듈 틀만 만들고 완료로 집계하지 않는다.",
+      "audit_floor": "A2",
+      "astra_gate": "MILESTONE"
+    },
+    {
+      "id": "anim-011",
+      "title": "ANIM-011: 사용자 흐름 (준비→동작→검토→수정→출력) UI 연결",
+      "depends_on": [
+        "anim-007",
+        "anim-008",
+        "anim-009"
+      ],
+      "spec": "목표: 기존 UI에 한 컷의 준비→노출→import→review→수정→출력·승인 흐름을 연결한다(docs/FRAME_ANIMATION_V1_DESIGN_KO.md 14절; docs/FRAME_ANIMATION_V1_DEVELOPMENT_KO.md ANIM-011). ANIM-010 기능은 adapter가 병합된 뒤에만 연결하고, 병합 전이면 연결 지점을 비활성으로 둔다.\n완료 기준: UI에서 한 컷 교체·현재 검수·경로 결정·최종 승인 흐름을 실제 앱으로 조작해 확인하고, 성공과 주요 오류 상태를 기록한다.\n공통 조건: 해당 항목의 수용 기준은 docs/FRAME_ANIMATION_V1_DESIGN_KO.md 16~17절과 docs/FRAME_ANIMATION_V1_EXECUTION_STORAGE_KO.md 10~11절의 해당 범위다. 기존 전체 pytest, Build 1 replay, 현재 Preview/Final 의미를 회귀로 유지한다. 원곡 파일·원문 가사·검토된 cue를 바꾸지 않는다. 기존 프로젝트를 자동으로 새 모드로 바꾸거나 기존 검수·LOCK을 새 계약에 승계하지 않는다. 유료 요청, credential 발급, 추가 과금, 실제 작품 제작·최종 출력 승인, control-plane runtime 활성화는 하지 않는다. 필요하면 DECISION_REQUIRED로 멈춘다. 실제 서비스·GPU·권한이 없으면 fake로 protocol을 검사하고, 실제 qualification은 미완료로 표시한다(fake 성공을 실제 완료로 집계하지 않는다). PR에 실제 실행한 명령·결과와 현재 HEAD의 CI(Python 3.11 / FFmpeg, Python 3.12 / FFmpeg)를 기록한다. 기능 없는 모듈 틀만 만들고 완료로 집계하지 않는다.",
+      "audit_floor": "A2"
+    },
+    {
+      "id": "anim-012",
+      "title": "ANIM-012: 240초 통합 회귀·desktop packaging·문서",
+      "depends_on": [
+        "anim-010",
+        "anim-011"
+      ],
+      "spec": "목표: legacy/new 두 모드의 240초 통합 회귀, desktop packaging, 문서를 마무리한다(docs/FRAME_ANIMATION_V1_DESIGN_KO.md 16~17절; docs/FRAME_ANIMATION_V1_DEVELOPMENT_KO.md ANIM-012).\n완료 기준: 전환 포함 원본 사용 합계−겹침=5,760, 실제 디코드 프레임·PTS·24/1·240초 검사, 두 모드 회귀, Windows/macOS/Linux 실제 패키지 smoke 기록(desktop-apps workflow). 4분 테스트는 작고 합성된 자료로 CI 비용을 제한한다.\n공통 조건: 해당 항목의 수용 기준은 docs/FRAME_ANIMATION_V1_DESIGN_KO.md 16~17절과 docs/FRAME_ANIMATION_V1_EXECUTION_STORAGE_KO.md 10~11절의 해당 범위다. 기존 전체 pytest, Build 1 replay, 현재 Preview/Final 의미를 회귀로 유지한다. 원곡 파일·원문 가사·검토된 cue를 바꾸지 않는다. 기존 프로젝트를 자동으로 새 모드로 바꾸거나 기존 검수·LOCK을 새 계약에 승계하지 않는다. 유료 요청, credential 발급, 추가 과금, 실제 작품 제작·최종 출력 승인, control-plane runtime 활성화는 하지 않는다. 필요하면 DECISION_REQUIRED로 멈춘다. 실제 서비스·GPU·권한이 없으면 fake로 protocol을 검사하고, 실제 qualification은 미완료로 표시한다(fake 성공을 실제 완료로 집계하지 않는다). PR에 실제 실행한 명령·결과와 현재 HEAD의 CI(Python 3.11 / FFmpeg, Python 3.12 / FFmpeg)를 기록한다. 기능 없는 모듈 틀만 만들고 완료로 집계하지 않는다.",
+      "audit_floor": "A2",
+      "astra_gate": "MILESTONE"
+    },
+    {
+      "id": "anim-013",
+      "title": "ANIM-013: 브라우저 Google 로그인·Drive archive·bounded cache·restore",
+      "depends_on": [
+        "anim-001",
+        "anim-003",
+        "anim-006"
+      ],
+      "spec": "목표: 브라우저 Google 로그인(OAuth)으로 Drive에 연결하고 필요한 자료만 읽는 archive/workspace, bounded cache, restore를 구현한다(docs/FRAME_ANIMATION_V1_EXECUTION_STORAGE_KO.md 3~4절, 9절, 10.2절 ANIM-013, 11절 Drive OAuth·원격 원본·bounded storage).\n보안: OAuth client 값과 토큰을 저장소나 로그에 두지 않는다. 필요한 최소 scope만 요청한다. 실제 OAuth client 발급은 대표님 몫이므로, 없으면 fake Drive로 protocol을 검사하고 실제 연결 qualification은 미완료로 남긴다.\n완료 기준: pack/members 보존, 사용자 거절·만료·다른 계정·권한 부족 처리, 수정/삭제/순서 변경·hash 불일치 차단, peak 공간 상한과 pin 중 eviction 차단, 끊김·복원 검사, 브라우저 UI.\n공통 조건: 해당 항목의 수용 기준은 docs/FRAME_ANIMATION_V1_DESIGN_KO.md 16~17절과 docs/FRAME_ANIMATION_V1_EXECUTION_STORAGE_KO.md 10~11절의 해당 범위다. 기존 전체 pytest, Build 1 replay, 현재 Preview/Final 의미를 회귀로 유지한다. 원곡 파일·원문 가사·검토된 cue를 바꾸지 않는다. 기존 프로젝트를 자동으로 새 모드로 바꾸거나 기존 검수·LOCK을 새 계약에 승계하지 않는다. 유료 요청, credential 발급, 추가 과금, 실제 작품 제작·최종 출력 승인, control-plane runtime 활성화는 하지 않는다. 필요하면 DECISION_REQUIRED로 멈춘다. 실제 서비스·GPU·권한이 없으면 fake로 protocol을 검사하고, 실제 qualification은 미완료로 표시한다(fake 성공을 실제 완료로 집계하지 않는다). PR에 실제 실행한 명령·결과와 현재 HEAD의 CI(Python 3.11 / FFmpeg, Python 3.12 / FFmpeg)를 기록한다. 기능 없는 모듈 틀만 만들고 완료로 집계하지 않는다.",
+      "audit_floor": "A3"
+    },
+    {
+      "id": "anim-014",
+      "title": "ANIM-014: 실행 계약 (FrameStream·ExecutionPlan·worker·receipt·UNKNOWN)",
+      "depends_on": [
+        "anim-001",
+        "anim-004",
+        "anim-007",
+        "anim-013"
+      ],
+      "spec": "목표: 로컬과 원격 worker가 같은 frame 계약으로 동작하는 FrameStream·ExecutionPlan·worker·receipt·job identity/UNKNOWN을 구현한다(docs/FRAME_ANIMATION_V1_EXECUTION_STORAGE_KO.md 5절, 8.3절, 10.2절 ANIM-014, 11절 파이프라인·병렬·작업).\n보안: worker 인증과 권한 범위를 명시하고, 외부 worker 배포나 유료 자원 사용은 하지 않는다. 허용된 원격 자원이 없으면 fake worker로 검사한다.\n완료 기준: out-of-order receipt·중복 범위·누락·stale snapshot·동시 seal 차단, UNKNOWN·늦은 완료·cancel 불명·runtime 종료 후 같은 identity reconciliation, backpressure.\n공통 조건: 해당 항목의 수용 기준은 docs/FRAME_ANIMATION_V1_DESIGN_KO.md 16~17절과 docs/FRAME_ANIMATION_V1_EXECUTION_STORAGE_KO.md 10~11절의 해당 범위다. 기존 전체 pytest, Build 1 replay, 현재 Preview/Final 의미를 회귀로 유지한다. 원곡 파일·원문 가사·검토된 cue를 바꾸지 않는다. 기존 프로젝트를 자동으로 새 모드로 바꾸거나 기존 검수·LOCK을 새 계약에 승계하지 않는다. 유료 요청, credential 발급, 추가 과금, 실제 작품 제작·최종 출력 승인, control-plane runtime 활성화는 하지 않는다. 필요하면 DECISION_REQUIRED로 멈춘다. 실제 서비스·GPU·권한이 없으면 fake로 protocol을 검사하고, 실제 qualification은 미완료로 표시한다(fake 성공을 실제 완료로 집계하지 않는다). PR에 실제 실행한 명령·결과와 현재 HEAD의 CI(Python 3.11 / FFmpeg, Python 3.12 / FFmpeg)를 기록한다. 기능 없는 모듈 틀만 만들고 완료로 집계하지 않는다.",
+      "audit_floor": "A3"
+    },
+    {
+      "id": "anim-015",
+      "title": "ANIM-015: encode/mux/verify 분리와 복수 인코더 (FFmpeg·NVIDIA native·VideoToolbox·GStreamer·service)",
+      "depends_on": [
+        "anim-001",
+        "anim-004",
+        "anim-006"
+      ],
+      "spec": "목표: encode·mux·verify interface를 분리하고 FFmpeg 밖의 독립 native encoder driver를 추가한다(docs/FRAME_ANIMATION_V1_EXECUTION_STORAGE_KO.md 6절, 10.2절 ANIM-015, 11절 encoder·비-FFmpeg).\n완료 기준: FFmpeg와 독립 native 경로가 같은 전달 profile·frame/PTS/audio 조건을 충족, NO_FFMPEG_ENCODING 경로 실제 성공. 이 환경에 없는 hardware(NVENC, VideoToolbox 등)는 결과를 가정으로 채우지 않고 hardware-unverified로 기록한다.\n공통 조건: 해당 항목의 수용 기준은 docs/FRAME_ANIMATION_V1_DESIGN_KO.md 16~17절과 docs/FRAME_ANIMATION_V1_EXECUTION_STORAGE_KO.md 10~11절의 해당 범위다. 기존 전체 pytest, Build 1 replay, 현재 Preview/Final 의미를 회귀로 유지한다. 원곡 파일·원문 가사·검토된 cue를 바꾸지 않는다. 기존 프로젝트를 자동으로 새 모드로 바꾸거나 기존 검수·LOCK을 새 계약에 승계하지 않는다. 유료 요청, credential 발급, 추가 과금, 실제 작품 제작·최종 출력 승인, control-plane runtime 활성화는 하지 않는다. 필요하면 DECISION_REQUIRED로 멈춘다. 실제 서비스·GPU·권한이 없으면 fake로 protocol을 검사하고, 실제 qualification은 미완료로 표시한다(fake 성공을 실제 완료로 집계하지 않는다). PR에 실제 실행한 명령·결과와 현재 HEAD의 CI(Python 3.11 / FFmpeg, Python 3.12 / FFmpeg)를 기록한다. 기능 없는 모듈 틀만 만들고 완료로 집계하지 않는다.",
+      "audit_floor": "A2"
+    },
+    {
+      "id": "anim-016",
+      "title": "ANIM-016: AI 구독 실행 (entitlement·probe·packet/notebook·import)",
+      "depends_on": [
+        "anim-009",
+        "anim-014",
+        "anim-015"
+      ],
+      "spec": "목표: AI 구독 서비스의 실제 도구·용량·사용 권한을 probe한 뒤 선택하는 실행 연결과 packet/notebook·결과 import를 구현한다(docs/FRAME_ANIMATION_V1_EXECUTION_STORAGE_KO.md 7절, 10.2절 ANIM-016, 11절 구독·요금). LLM 추론과 실제 합성·인코딩 실행 환경을 구분한다.\n보안·비용: 구독과 API 과금을 분리하고 추가 과금은 거절한다. 대체 provider 무단 제출을 차단한다. 계정 credential을 저장소에 두지 않는다. 실제 구독 접근이 없으면 fake로 검사하고 qualification 미완료로 남긴다.\n완료 기준: 외부 network 없음·파일 한도·GPU 없음·session expiry·사용량 소진의 명시적 처리, 자동/수동 표기, 실제 한 서비스의 검증된 범위(가능할 때).\n공통 조건: 해당 항목의 수용 기준은 docs/FRAME_ANIMATION_V1_DESIGN_KO.md 16~17절과 docs/FRAME_ANIMATION_V1_EXECUTION_STORAGE_KO.md 10~11절의 해당 범위다. 기존 전체 pytest, Build 1 replay, 현재 Preview/Final 의미를 회귀로 유지한다. 원곡 파일·원문 가사·검토된 cue를 바꾸지 않는다. 기존 프로젝트를 자동으로 새 모드로 바꾸거나 기존 검수·LOCK을 새 계약에 승계하지 않는다. 유료 요청, credential 발급, 추가 과금, 실제 작품 제작·최종 출력 승인, control-plane runtime 활성화는 하지 않는다. 필요하면 DECISION_REQUIRED로 멈춘다. 실제 서비스·GPU·권한이 없으면 fake로 protocol을 검사하고, 실제 qualification은 미완료로 표시한다(fake 성공을 실제 완료로 집계하지 않는다). PR에 실제 실행한 명령·결과와 현재 HEAD의 CI(Python 3.11 / FFmpeg, Python 3.12 / FFmpeg)를 기록한다. 기능 없는 모듈 틀만 만들고 완료로 집계하지 않는다.",
+      "audit_floor": "A3"
+    },
+    {
+      "id": "anim-017",
+      "title": "ANIM-017: 성능 scheduler (부분 재컴파일·병렬 합성·prefetch·캐시 재사용)",
+      "depends_on": [
+        "anim-005",
+        "anim-013",
+        "anim-014",
+        "anim-015",
+        "anim-016"
+      ],
+      "spec": "목표: 부분 재컴파일, 병렬 합성, prefetch, 캐시 재사용, zero-copy 후보로 같은 품질의 전체 완료 시간을 줄인다(docs/FRAME_ANIMATION_V1_EXECUTION_STORAGE_KO.md 8절, 10.2절 ANIM-017, 11절 성능 보고).\n완료 기준: 같은 input/quality의 cold/warm end-to-end 시간, stage timeline, peak PC/worker disk·RAM·VRAM, 전송·cache hit·중단 후 복구 비교. 수치 목표를 약속하거나 단일 best-case를 일반 성능으로 쓰지 않는다. benchmark를 충족한 후보만 AUTO_PERFORMANCE에 등록한다.\n공통 조건: 해당 항목의 수용 기준은 docs/FRAME_ANIMATION_V1_DESIGN_KO.md 16~17절과 docs/FRAME_ANIMATION_V1_EXECUTION_STORAGE_KO.md 10~11절의 해당 범위다. 기존 전체 pytest, Build 1 replay, 현재 Preview/Final 의미를 회귀로 유지한다. 원곡 파일·원문 가사·검토된 cue를 바꾸지 않는다. 기존 프로젝트를 자동으로 새 모드로 바꾸거나 기존 검수·LOCK을 새 계약에 승계하지 않는다. 유료 요청, credential 발급, 추가 과금, 실제 작품 제작·최종 출력 승인, control-plane runtime 활성화는 하지 않는다. 필요하면 DECISION_REQUIRED로 멈춘다. 실제 서비스·GPU·권한이 없으면 fake로 protocol을 검사하고, 실제 qualification은 미완료로 표시한다(fake 성공을 실제 완료로 집계하지 않는다). PR에 실제 실행한 명령·결과와 현재 HEAD의 CI(Python 3.11 / FFmpeg, Python 3.12 / FFmpeg)를 기록한다. 기능 없는 모듈 틀만 만들고 완료로 집계하지 않는다.",
+      "audit_floor": "A2"
+    },
+    {
+      "id": "anim-018",
+      "title": "ANIM-018: 원격 통합 (240초·1080p·Drive→worker→archive·desktop UI)",
+      "depends_on": [
+        "anim-008",
+        "anim-012",
+        "anim-013",
+        "anim-014",
+        "anim-015",
+        "anim-016",
+        "anim-017"
+      ],
+      "spec": "목표: 240초·24fps·1920×1080 작품 프로필로 Drive→worker→archive 전체 경로와 desktop UI를 통합한다(docs/FRAME_ANIMATION_V1_EXECUTION_STORAGE_KO.md 9절, 10.2절 ANIM-018, 11절 전체).\n완료 기준: 실제 허용된 실행 경로의 실행·archive/replay·offline restore, 실패 주입, 성능 보고서(runtime/device/toolchain·delivery profile·cold/warm·stage timeline·peak 자원·전송·사용량·복구 범위), 두 모드 회귀. 없는 hardware/service는 미검증으로 기록한다. 이 프로필은 대상 작품용이며 기존 프로젝트의 기본값을 바꾸지 않는다.\n공통 조건: 해당 항목의 수용 기준은 docs/FRAME_ANIMATION_V1_DESIGN_KO.md 16~17절과 docs/FRAME_ANIMATION_V1_EXECUTION_STORAGE_KO.md 10~11절의 해당 범위다. 기존 전체 pytest, Build 1 replay, 현재 Preview/Final 의미를 회귀로 유지한다. 원곡 파일·원문 가사·검토된 cue를 바꾸지 않는다. 기존 프로젝트를 자동으로 새 모드로 바꾸거나 기존 검수·LOCK을 새 계약에 승계하지 않는다. 유료 요청, credential 발급, 추가 과금, 실제 작품 제작·최종 출력 승인, control-plane runtime 활성화는 하지 않는다. 필요하면 DECISION_REQUIRED로 멈춘다. 실제 서비스·GPU·권한이 없으면 fake로 protocol을 검사하고, 실제 qualification은 미완료로 표시한다(fake 성공을 실제 완료로 집계하지 않는다). PR에 실제 실행한 명령·결과와 현재 HEAD의 CI(Python 3.11 / FFmpeg, Python 3.12 / FFmpeg)를 기록한다. 기능 없는 모듈 틀만 만들고 완료로 집계하지 않는다.",
+      "audit_floor": "A2",
+      "astra_gate": "MILESTONE"
+    }
+  ]
+}
