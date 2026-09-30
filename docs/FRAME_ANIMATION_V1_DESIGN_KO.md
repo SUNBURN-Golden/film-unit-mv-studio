@@ -498,6 +498,14 @@ compile-final은 새 모드에서 FINAL_CANDIDATE_READY까지 만든다. build�
 
 기존 가사 원문 보존·cue 검토·font coverage를 유지한다. 현재 Final의 instrumental/no-lyrics 예외는 구현돼 있지 않으므로 이 작업에서 빈 가사를 자동 면제하지 않는다. 무가사 작품 지원이 필요하면 별도 계약 변경으로 결정한다.
 
+### 10.5. W00 경로 판단과 실제 전체 재생 기록
+
+ANIM-022는 본편에서 가장 어려운 동작/접촉/가림/전환 유형을 가진 컷과 연결 컷을 W00 범위로 먼저 제작하고, 그 컷들이 실제 채택본이 된 시점에 `KEEP / CHANGE / MIX` 경로 결정을 받는다. 별도 작품·고정 길이 pilot을 새로 요구하지 않는다. W00 컷 ID/범위, 어려움의 이유, 실제 source/sequence/artifact hash, 검토한 조건과 경로 결정자를 기록한다. 뒤쪽에 나오는 어려운 컷도 본편 순서를 변경하지 않고 제작 순서만 앞당길 수 있다. 합성 회귀 fixture·모델 추천·한 장의 좋아 보이는 frame이 이 판단을 대신하지 않는다.
+
+CHANGE/MIX는 새 PLAN/WAVE revision과 실제 영향 closure, 사용권·quote·남은 allowance·UNKNOWN fence를 검증한다. 기존 채택 컷·유료 결과를 버리거나 무조건 전부 재생성하지 않고 관련 binding을 유지할 수 있는 범위를 설명한다. 새 generation이나 지출이 요구되면 해당 범위의 별도 승인을 받는다. W00 결정 전 다음 production wave 실행을 열지 않으며, 외부 접근이 없어 실제 W00이 없으면 PENDING으로 표시한다.
+
+전체 검토는 10.1~10.4절의 cut/transition/whole film/최종 전달 파일 binding을 소비한다. UI는 실제 선택한 build의 정상속도 전체 재생, 문제 구간·처분, clean/subbed 출력의 기술 결과와 승인자를 기록한다. 재생 기록은 사람이 어떤 파일/방법으로 검토했는지에 대한 기록이며 자동 의미 QC PASS가 아니다. 편집·sequence·font/cue·encode output이 바뀌면 해당 단계와 최종 실제 파일 승인은 stale다. 박준태 또는 명시적으로 위임받은 사람의 실제 검토·current approval 없이는 FINAL_APPROVED를 만들지 않는다.
+
 ## 11. 프레임 관계·캐시·부분 수정
 
 ### 11.1. frame_map
@@ -556,6 +564,18 @@ LLM·생성 모델의 재실행을 바이트 재현 수단으로 간주하지 �
 sequence content digest에는 순서가 고정된 프레임 바이트·시점·노출·합성 recipe를 넣고, accepted 표시·검수자·승인 기록은 넣지 않는다. 검수는 이 content digest를 참조한다. 승인 레코드가 자기 자신의 digest를 입력으로 요구하는 순환 구조를 만들지 않는다.
 
 공통 표현 의도와 선택 자산의 digest는 명시적인 projection으로 계산한다. 새 모드에서는 미채택 후보 추가, 준비 진행 상태나 검수 메모 변경을 공유 화풍 변경으로 간주하지 않는다. legacy fingerprint는 호환성을 위해 기존 의미를 유지한다.
+
+### 11.5. canonical render manifest와 invalidate closure
+
+ANIM-020은 11.2~11.4절을 기계가 소비하는 dependency graph로 고정한다. asset bytes → exposure/motion/transform/mask → cut sequence → pairwise transition → clean output → subtitle overlay → subbed output → encode/mux artifact 관계를 기록한다. 사용하는 source revision·구간·rational PTS/weight·halo는 정수/rational 표현과 순서가 고정된 canonical UTF-8 serialization으로 hash한다. 중복 key·NaN/Infinity·지원하지 않는 타입/버전은 거부하고 의미가 없는 dict 순서/absolute filesystem path·저장 locator·job 상태·검수 표시를 pixel recipe에 섞지 않는다. schema 버전과 canonicalization 규칙은 ANIM-001 ADR에서 고정한다.
+
+서로 다른 hash 층은 분리한다. `source_digest`는 실제 입력 바이트·역할, `recipe_digest`는 시각 연산·시간/색 정책·필요 toolchain, `clean/subbed_sequence_root`는 각각 ordered frame index·pixel output hash·recipe 관계, `encode_digest`는 해당 sequence root·DeliveryProfile·encoder/mux/검사 계약을 가리킨다. archive manifest는 이 결과와 보관 bytes를 pin하고, 검수/승인은 manifest/실제 artifact를 외부에서 참조한다. renderer가 승인 정보를 입력으로 필요로 한다는 이유로 순환 digest를 만들지 않는다. clean/subbed를 같은 hash로 합치지 않는다.
+
+계산상 바이트 재현을 요구하는 범위는 exact toolchain/수치·색 recipe와 장치를 qualification한 범위뿐이다. GPU/driver 변경·native encode가 다른 bytes를 내면 새 artifact로 보관하고 독립 품질·PTS 검사를 수행한다. deterministic schema/순서가 생성 모델 또는 모든 장치의 byte-identical 실행을 보장한다는 주장은 하지 않는다. replay는 보관한 채택 자료를 사용하며 LLM/generation 재호출로 원본을 복원하지 않는다.
+
+변경 집합에서 downstream closure와 새로 필요한 source/halo 범위·검수/LOCK을 별도 계산한다. location만 이동하면 identity와 검증된 바이트가 같을 때 compose를 재사용한다. font/cue는 subbed와 전달물만 invalidate하고 clean·컷 동작 검수를 유지한다. 전환만 바꾸면 양쪽 입력/halo와 전환 출력만 다시 합성하되 전체 편집/최종 출력 검토는 stale다. 공통 색/렌더 도구 변경은 실제 참조 closure 전체, encoder/profile 변경은 encode/mux와 실제 최종 파일 검토만 바꾼다. stale approval과 cache hit는 독립 판정한다.
+
+수용 fixture는 cold full rebuild와 warm selective rebuild를 동일 고정 source/quality/qualified renderer에서 비교한다. 영향 범위 출력 hash·frame_map은 일치하고, 비영향 sequence는 유지되며, 원곡·가사 원문·cue는 허용된 수정 외에 변하지 않아야 한다. source/font/transition/driver/locator/미채택 후보 변경을 각각 검사하고 실제 읽기/재decode/compose/encode 범위와 peak 자원을 보고한다. scope 밖 output mismatch는 재현 실패이며 빠른 경로의 결과를 조용히 정본으로 택하지 않는다.
 
 ## 12. 출력·빌드·저장량
 

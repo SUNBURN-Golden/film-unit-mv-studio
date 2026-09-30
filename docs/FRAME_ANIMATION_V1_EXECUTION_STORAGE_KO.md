@@ -55,6 +55,14 @@ OAuth는 system browser, PKCE, state 검증과 client 유형에 맞는 공식 re
 
 앱의 Drive 연결과 외부 worker의 접근은 별도 권한 경계다. 기본 경로는 coordinator가 drive.file로 허용된 고정 입력의 hash를 확인해 worker에 중개 전송하고, 검증한 출력만 archive에 쓰는 방식이다. 사용자 refresh token·OAuth access token·Drive 계정 권한은 worker나 LLM packet에 전달하지 않는다. 필요한 임시 전송 권한은 해당 job·허용 객체·읽기/쓰기 범위·단기 만료에 묶고 취소·회수하며, 수명과 접근 로그를 ExecutionPlan/receipt의 비밀 없는 메타데이터로 확인한다. worker의 직접 Drive 인증·서비스 계정 공유·사용자 token 위임은 이 기본 경로에 포함하지 않는다. 도입하려면 별도 ADR과 권한 범위 승인을 먼저 받는다. Drive 접근이 없는 runtime은 제한된 파일 packet 경로로 표시한다.
 
+### 3.1. 계정 세대와 relay 권한 수명
+
+브라우저 연결은 coordinator의 `connection_id`, `account_binding_digest`, `credential_epoch`에 묶는다. account binding은 검증한 계정/허용 파일 집합의 비밀 없는 로컬 식별자이며 이메일·token을 worker에 보내는 필드가 아니다. 계정 전환·로그아웃·권한 회수는 epoch를 올리고 새 read/write·submit·upload resume을 차단한다. 기존 job의 접수/종료 기록은 삭제하지 않는다. 이미 제출한 worker가 계속 실행할 수 있으므로 token 폐기만으로 CANCEL_CONFIRMED를 만들지 않으며 기존 UNKNOWN과 지출 예약은 유지한다.
+
+relay grant는 허용된 transport 구현이 제공하는 짧은 수명의 권한이다. `job_key`, `attempt_id`, `snapshot_digest`, `object/member_digest`, 정확한 read/write range, `max_bytes`, 만료, 목적 endpoint에 묶고 object 목록 밖의 browse·목적지 선택·임의 URL fetch를 허용하지 않는다. bearer URL·upload session URI·nonce 원문은 secret storage에 두며 packet의 provenance나 일반 receipt에는 digest/식별자만 남긴다. 만료 grant 갱신은 같은 job의 같은 객체 접근만 회복하며 새 compute submit이 아니다. 완료/취소 확인·credential epoch 변경 때 폐기하고, 중단 후 재연결도 계정/권한·epoch와 원래 입력을 재검증한다. transport가 이 경계를 강제하지 못하면 그 route는 UNQUALIFIED다.
+
+Drive의 partial read는 허용된 binary pack에 한정한다. Google Workspace 문서 export를 seekable PNG pack으로 취급하지 않는다. resumable upload의 서버 수신 offset은 전송 진척이며 SHA256 검증·archive 확정 증거가 아니다. 공식 protocol의 status query는 같은 upload session 확인이며 product compute 재제출과 구분한다. [Drive 다운로드](https://developers.google.com/workspace/drive/api/guides/manage-downloads), [Drive resumable upload](https://developers.google.com/workspace/drive/api/guides/manage-uploads)는 transport 근거이고 실제 Film Unit 연결 자격은 아래 probe로 증명한다.
+
 ## 4. Drive에서 읽으며 실행하는 저장 구조
 
 ### 4.1. Archive와 workspace
@@ -210,6 +218,14 @@ callback/receipt는 actor·job·attempt·snapshot·범위·request nonce에 연�
 
 여러 worker는 서로 다른 고정 계산 범위에 immutable 결과만 쓴다. 한 coordinator가 선택·receipt·coverage·build seal을 직렬화한다. 제품 계산의 병렬 worker는 engineering task의 여러 writer를 허용하는 근거가 아니다.
 
+### 5.4. durable job journal과 중단 지점
+
+ANIM-021은 5.3절의 상태를 append-only journal로 구현한다. 첫 network side effect 전에 고정 snapshot·operation/range/halo·recipe·실행/toolchain 계약·quote/사용권·예약·credential epoch·job/attempt/request ID와 `SUBMIT_INTENT`를 durable하게 기록한다. response/callback은 관측 기록이며 verifier가 승인한 frame coverage·hash와 분리한다. coordinator 재시작은 last verified checkpoint와 미해결 intent를 복원하며 접수 응답이 없다는 이유로 job key나 attempt를 바꾸지 않는다. 잘린·중복·순서가 다른 journal은 UNKNOWN/RECONCILIATION_REQUIRED다.
+
+계산 checkpoint는 소비가 끝난 GPU surface나 프로세스 메모리가 아니라 검증된 immutable artifact와 receipt다. PNG/member·독립 encode fragment의 범위/출력 hash·도구 계약이 일치해야 재사용한다. 프레임을 다시 계산할 수 있다는 사실로 외부 paid submit의 UNKNOWN을 해제하지 않는다. resumable upload checkpoint는 secret session 참조·로컬 object hash·server offset·반환 object ID를 별도 기록하며, upload 완료 bytes와 member/full hash를 확인해야 archive checkpoint가 된다.
+
+원격 provider가 idempotency key를 지원한다고 문서에 쓰여 있어도 실제 probe 전에는 중복 방지가 검증됐다고 하지 않는다. 공식 접수 확인 수단이 없는 수동 packet은 사용자 import/명시적 확인을 기다리며 자동 attach/polling을 만들지 않는다. FAILED_CONFIRMED에 대한 명시적 bounded retry, cancel/완료 경합과 지출 예약은 5.3절을 그대로 유지한다. 중앙 #47의 Fable 한도 회복 후보는 engineering audit 재개이며 제품 generation/worker retry 권한을 추가하지 않는다.
+
 ## 6. FFmpeg 외 인코더와 출력 계약
 
 FFmpeg는 framework/driver이고 H.264·HEVC·AV1은 codec이다. NVIDIA NVENC·Apple VideoToolbox는 다른 encode 경로를 제공한다. FFmpeg 내부의 hardware flag만 추가하는 작업으로 비-FFmpeg driver 요구를 완료 처리하지 않는다.
@@ -277,6 +293,14 @@ CapabilityEvidence에는 서비스·계정 사용 경로·확인 시각·runtime
 
 subscription allowance·compute unit·API credits·USD·human hand-off 시간을 분리한다. 포함 범위가 확인되지 않으면 추가 과금이 없는 경로로 표시하지 않는다. 구독 소진·UNKNOWN 접수·자원 거절은 다른 계정이나 유료 API로 자동 우회하지 않는다.
 
+### 7.2.1. CapabilityEvidence와 실행 eligibility의 갱신 계약
+
+ANIM-019는 후보 이름 목록과 실제 실행 허용을 분리하는 registry를 제공한다. `evidence_id`, `provider/adapter/worker_digest`, service/account의 비밀 없는 binding·credential epoch, session/device/OS/driver, operation·pixel/color/codec·해상도·frame/range·입출력/scratch/시간 cap, route/transport, 검증 fixture/input/output digest와 관측 시각, 사용권 근거·통화별 allowance·만료/재검증 조건을 기록한다. qualification에 쓴 시험과 production 요청의 operation/scope·현재 환경을 비교하여 superset 추론 없이 허용한다. CPU compose 성공으로 native encode, CUDA 접근으로 NVENC, 글 모델 구독으로 GPU 실행·Drive network·상용 API 크레딧을 허용하지 않는다.
+
+eligibility는 `DOCUMENTED_ONLY / QUALIFIED_FOR_SCOPE / STALE / UNAVAILABLE` 등의 registry 상태를 이유와 함께 계산한다. 이는 프로그램의 qualification facet를 대체하는 enum이 아니다. 실제 scope 일부만 검사했으면 전체 목표 qualification은 PARTIAL이고 나머지는 UNQUALIFIED다. 새 session/device/driver/worker·사용권/계정·route·한도 변경 및 evidence 만료는 기존 probe를 적용 불가로 만들며 다시 probe하거나 사용자 확인을 기다린다. UNKNOWN 작업은 새 자격 증거로도 해제하지 않는다. probe 자체의 유료 실행·credential provisioning은 별도 허용 범위가 필요하다.
+
+AUTO_PERFORMANCE는 eligibility를 먼저 통과한 후보만 계산한다. 측정은 input/quality digest·cold/warm·start/auth/queue·각 stage와 공유 edge·peak disk/RAM/VRAM·전송량·사용량·수동 hand-off 시간을 같은 조건으로 묶는다. 표본 수·관측 구간·변동·누락을 보고하고 측정이 없으면 UNKNOWN으로 표시한다. 실제 예상 시간이 겹치면 사용자가 허용한 우선순위로 결정하고, 미검증 서비스를 빠르다는 모델 추론으로 선택하지 않는다. LLM은 이 고정 evidence를 설명/계획하는 역할이며 매 프레임 계산 권한의 근거가 아니다.
+
 ### 7.3. 사용자 흐름과 packet
 
 Film Unit에서 저장소 연결 → 실행 서비스 선택 → 자원 확인 → 품질/공간/비용/예상 시간 확인 → 컴파일 순서로 진행한다. 수동 runtime은 브라우저/notebook에서 누를 동작과 가져올 결과를 보여준다. 사용자에게 CLI 실행을 요구하는 기본 흐름을 만들지 않는다.
@@ -315,6 +339,10 @@ cache key는 source/recipe/format/toolchain 내용과 위치·인코더 artifact
 
 부분 수정은 seekable pack의 필요 member/halo만 요청하는 경로와 검증된 whole-pack fallback을 구분한다. member hash 검증 없이 decoder로 넘기지 않는다. request 수·실제 edge별 bytes·range/read/decode amplification을 보고하고, cap 밖 whole-pack 응답은 받지 않는다. 구체 수용 fixture는 고도화 설계 6절이다.
 
+### 8.2.1. 변경별 invalidation과 출력 provenance
+
+ANIM-020의 세부 규칙은 상세 설계 11.5절을 따른다. scheduler는 source/recipe dependency graph의 변경 closure를 구하고 실제 필요 member/halo, compose ranges, encode artifact, 기술 검사 및 stale approval을 각각 출력한다. 저장 locator만 이동한 변경, 미채택 후보 추가, 검수 메모는 pixels를 재계산하지 않는다. font/cue 변경은 clean 시퀀스와 컷 동작 검수를 재사용할 수 있지만 subbed 시퀀스·출력 검수는 stale이고, encoder/profile 변경은 PNG를 재사용해도 새 MP4/전달 승인이 필요하다. 실측 없이 cache hit ratio나 speedup을 완료 성과로 보고하지 않는다.
+
 ### 8.3. failure·비용·성능
 
 네트워크 단절·quota 거절·runtime 종료·GPU 미지원·archive 지연은 명시적 상태로 보고한다. 세션 수명보다 큰 작업은 검증된 작은 checkpoint로 나눈다. 이미 원격 보관·검증된 checkpoint부터 재개한다.
@@ -339,6 +367,14 @@ ENCODED·RENDERED·UPLOADED는 COMPLETE가 아니다. 최종 PNG나 source 보�
 LOCAL_FULL은 기존 독립 복사·offline replay 계약을 유지한다. DRIVE_BOUNDED는 archive 접근을 요구하는 online replay다. offline restore를 요청하면 완전한 archive 다운로드·검증·복원 용량을 별도로 확인한다. Drive 접근이 안 되는데 offline 재현 가능하다고 표시하지 않는다.
 
 remote replay도 live project 없이 고정 archive·recipe·toolchain을 사용한다. workspace는 PC 또는 허용된 원격 worker에 있을 수 있다. 과거 승인 MP4의 바이트 보존과 새 encode의 결과를 구분한다. archive 손상·접근 취소·입력 불일치 시 대체 최신 자료로 계속하지 않는다.
+
+### 9.1. archive commit과 build seal의 재개 계약
+
+ANIM-021의 commit key는 coordinator가 선점한 build ID·snapshot·ordered required artifact 목록·recipe와 toolchain/검증 profile digest에 묶인다. 단계는 `OBJECTS_PENDING → OBJECTS_VERIFIED → MANIFEST_INTENT → SEALED`이며 unknown publication은 `SEAL_UNKNOWN`으로 fence한다. 객체는 immutable staging으로 올리고 locator/length/bytes hash를 검증한다. member 검증과 full-pack 검증은 manifest에서 각각 기록하며 검증 범위를 부풀리지 않는다. 필요한 원본·최종 전달 PNG 시퀀스·clean 재현 recipe·frame_map·원곡·cue/font·clean/subbed MP4가 모두 보관/검증되기 전에 완료 manifest를 공개하지 않는다. clean PNG 전량을 추가 보관하는 profile은 별도 선택·용량 예약 대상이며 기존 전달 PNG 보존만을 이유로 두 시퀀스를 자동 이중 적재하지 않는다.
+
+완료 manifest bytes는 순서가 고정된 artifact hash/coverage·source snapshot·render/encode/verification 계약과 journal reference를 담는다. 그 manifest의 digest는 외부 seal/approval 레코드가 참조하며 자기 digest·나중 승인/accepted 상태를 입력에 넣지 않는다. manifest network 공개 전에 `MANIFEST_INTENT`를 durable하게 기록한다. 응답을 잃으면 같은 build identity와 고정 manifest bytes의 게시 여부를 확인하며 새 manifest/COMPLETE를 중복 생성하지 않는다. 이름 검색 결과 하나만으로 일치라고 하지 않고 digest/bytes/required inventory를 검증한다. 여러 후보나 게시 여부 불명은 SEAL_UNKNOWN이며 기존 승인 빌드를 덮어쓰지 않는다.
+
+Drive는 다중 객체 atomic commit 또는 WORM을 제공한다고 가정하지 않는다. 앱의 단일 coordinator seal과 content 검증으로 유효한 완료 view를 제공하고, 외부 삭제/권한 회수는 ARCHIVE_UNAVAILABLE/INTEGRITY_FAILED로 별도 표시한다. 과거 seal 원본은 유지하며 뒤늦은 archive 손상에도 현재 replay 가능을 주장하지 않는다. 삭제는 참조·보존 정책에 따라 명시적으로 승인된 orphan staging만 처리하고, 실패한 job 결과나 채택 원본을 cache eviction으로 제거하지 않는다.
 
 ## 10. 모듈·UI·개발 항목
 

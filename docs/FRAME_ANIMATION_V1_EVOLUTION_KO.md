@@ -169,3 +169,20 @@ ANIM-018의 원격 수용 완료는 **실제로 허용된 한 경로**에서 240
 node ID·DAG·audit floor·milestone·LOCK·사용자 별도 결정은 유지한다. 이 후보 명세는 실행 증거가 아니므로 PENDING을 제거하거나 release/서비스 자격을 만들어내지 않는다.
 
 중앙 bootstrap의 현 채택 검토 후보는 #44/#45를 통합·보완한 [#46](https://github.com/BeautifulMind-JT/ai-ops-control-plane/pull/46)이다. 기존 #44 감사의 DECISION_REQUIRED를 통과한 것으로 간주하지 않는다. PA-1 권한 예외는 PENDING이며, 보호된 reconcile과 실제 host qualification 전에는 전체 실행 NOT_READY다. 기존 중앙 포인터는 이전 체크포인트 기록이고 최종 승인 registration에는 실제 채택·qualification commit을 pin해야 한다.
+
+## 8. 제품 계약 고도화 — 2026-10-01 후보
+
+이번 후속은 transfer/pack 문서만 추가하는 단계에서 더 나아가 정본 상세 설계·실행/저장 설계와 `.aiops/program.json`을 함께 바꾼다. 기존 ANIM-001~018의 ID·범위·선행은 유지하고, 아래 5개 후속 node를 새 승인 plan revision의 23개 개발 분모에 포함한다. 기존 실행 중 plan이나 host 등록을 자동 갱신하지 않으며 전체 closeout의 추가 node는 기존 bootstrap 기능 구현을 선행에서 막지 않는다.
+
+| 보강 계약 | 정본 위치 | 구현 연결 |
+|---|---|---|
+| 계정/credential epoch·relay grant 범위·upload session 비밀 | 실행/저장 3.1 | 013 선행 schema, 019 자격 갱신, 021 중단/재연결 |
+| runtime/encoder/route/사용권 scope·현재 증거·실측 | 실행/저장 7.2.1 | 019; LLM 구독과 실제 compute/API/encoder 권한 구분 |
+| canonical source/recipe/clean/subbed/encode provenance·invalidate closure | 상세 설계 11.5, 실행/저장 8.2.1 | 001 ADR, 017 interface, 020 cold/warm selective 검증 |
+| submit journal·verified checkpoint·upload progress와 archive seal 분리 | 실행/저장 5.4/9.1 | 014 선행 schema, 021 crash/응답 손실·UNKNOWN fence |
+| 어려운 본편 W00의 KEEP/CHANGE/MIX·실제 전체 정상속도 재생/최종 파일 승인 | 상세 설계 10.5 | 007 첫 흐름, 022 늦은 integration; 작품 승인자는 박준태/명시적 위임자 |
+| 23-node 전체 개발/실제 목표 수용 분리 closeout | 개발 안내 ANIM-019~023 | 023은 001~022 모두 의존; 기존 018 baseline만으로 전체 닫기 금지 |
+
+각 추가 node의 구체 산출물·fixture·선행·A3/A2·소유 책임은 [개발 안내](FRAME_ANIMATION_V1_DEVELOPMENT_KO.md)의 후속 표와 executable plan spec에 명시한다. 분모 23은 개발 scope count이며 actual provider qualification·작품 approval·release count가 아니다. 예술적 수용은 합성 240초, fake worker·CI PASS로 대신하지 않으며 실제 W00/최종 출력이 없으면 PENDING이다. 실제 자원 부재를 NOT_REQUIRED로 면제하지 않는다.
+
+중앙 [#47](https://github.com/BeautifulMind-JT/ai-ops-control-plane/pull/47), source HEAD `94a768e19df12703ea0b9a49e49972feb2f6ef4f`는 #46 위의 실패 증거/한도 재개 구현 후보이며 아직 설치·host qualification 근거가 아니다. 그 보호된 Fable audit 재개를 제품의 generation/worker/upload 재제출 권한으로 전이하지 않는다. 이 제품 plan의 채택·actual runtime/사용권 qualification·User 작품 검토와 중앙의 formal 감사·host 적용은 각각 증거를 요구한다.
