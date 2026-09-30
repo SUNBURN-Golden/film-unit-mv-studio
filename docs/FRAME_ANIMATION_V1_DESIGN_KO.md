@@ -6,15 +6,17 @@
 요구사항: 첨부 「4분 이미지 기반 애니메이션 제작 설계안 — 최종 통합 개정본」 전체  
 문서 성격: **구현을 위한 제안 설계**. 제품 코드 변경이나 제작·과금·최종 출력 승인을 뜻하지 않는다.
 
+설계 revision 2 (2026-09-30): User의 Drive 기반 컴파일·AI 구독 실행·복수 인코더·성능 우선 지시를 반영했다. 저장·실행·인코더·원격 보관의 정본은 [실행·저장 성능 설계](FRAME_ANIMATION_V1_EXECUTION_STORAGE_KO.md)다. 해당 문서 2절은 최초 로컬 전용 제안에서 변경한 계약을 명시한다. 제품 코드 확인 main은 41e40478505cf75cf441dd4075c071a0fc462dbf이며 기존 코드 근거 링크는 최초 검토 SHA를 보존한다.
+
 ## 1. 판단
 
-**적용 가능하다. 기존 Film Unit의 로컬 MV compiler를 유지하고, 그 앞에 프레임 제작 계층을 추가하는 방향이 적합하다.**
+**적용 가능하다. 기존 Film Unit의 프로젝트·프레임 계약을 유지하며, 제작 계층과 저장·실행·인코더 선택 계층을 추가한다. 새 모드의 실행 위치를 PC에 고정하지 않는다.**
 
-현재 compiler는 이미 음원과 가사를 독립적으로 보존하고, 외부에서 만든 샷을 선택·교체하며, 전체 곡을 편집하고 빌드를 보관한다. PR #17의 브라우저 hand-off도 이미지 중심 제작에 활용할 수 있다. 새 저장소, 서버, 데이터베이스, 별도 웹서비스부터 만드는 작업은 필요하지 않다.
+현재 compiler는 이미 음원과 가사를 독립적으로 보존하고, 외부에서 만든 샷을 선택·교체하며, 전체 곡을 편집하고 빌드를 보관한다. PR #17의 브라우저 hand-off도 이미지 중심 제작에 활용할 수 있다. 기존 저장소와 데스크톱 UI를 활용한다. 원격 실행은 실제 지원 서비스·worker 연결을 추가하며, 저장·실행 위치는 별도 계약으로 선택한다.
 
 다만 현재의 ‘첫 이미지 → 샷 영상 → 이어 붙이기’만으로는 첨부안의 키포즈·브레이크다운·노출·레이어·전환·프레임 추적을 표현할 수 없다. **이미지 시퀀스를 완성 샷의 독립적인 자산 유형으로 받아들이고, 정확한 프레임 시간축과 제작·검수 상태를 추가해야 한다.** 규모상 작은 provider 추가보다 큰 변경이며, **v0.4의 명시적인 제작 모드**로 구현하는 것을 제안한다.
 
-권장 순서는 **외부에서 제작한 프레임을 받아 컴파일하는 기능 → 로컬 레이어 제작 → 생성 도구의 세밀한 제어 연결**이다. 작품에서는 A·B·C를 처음부터 배정할 수 있으나, 소프트웨어 개발은 이 순서로 위험을 줄인다. ‘프레임 파일을 컴파일할 수 있음’과 ‘모든 중간 동작을 자동으로 제작할 수 있음’은 각각 입증한다.
+권장 순서는 **프레임·저장·실행·인코더 계약 → 외부 프레임의 정확한 컴파일 → native 합성·Drive/원격 실행·복수 인코더 → 생성 도구의 세밀한 제어 연결**이다. 로컬 기준선은 회귀·품질 비교에 사용하고 원격 계약은 ANIM-001부터 함께 설계한다. 작품에서는 A·B·C를 처음부터 배정할 수 있으나, 소프트웨어 개발은 이 순서로 위험을 줄인다. ‘프레임 파일을 컴파일할 수 있음’과 ‘모든 중간 동작을 자동으로 제작할 수 있음’은 각각 입증한다.
 
 ## 2. 확인 범위와 증거
 
@@ -24,7 +26,7 @@ main의 코드·문서·테스트 등 84개 파일을 Git blob SHA와 대조해 
 
 기존 회귀의 240초·5,760프레임은 **합성 음원·320×240·혼합 자산 편집** 검증이다. 실제 애니메이션의 동작·연기·1080p 품질을 입증한 기록으로 확대 해석하지 않는다. 이 문서의 새 기능과 새 수용 테스트는 아직 구현·실행되지 않았다.
 
-열린 PR #18은 governance 문서 변경이며, main에 반영된 기능으로 취급하지 않았다. PR #2의 offline animatic과 PR #3의 Flow trial 역시 main의 애니메이션 제작 능력에 합산하지 않았다.
+최초 코드 검토 시 PR #18은 열린 governance 변경이었다. revision 2에서 확인한 main 41e4047에는 #18이 병합되어 있으며 program-mode M1/M5 규칙을 반영한다. 새 애니메이션 기능 구현으로 집계하지 않는다. PR #2의 offline animatic과 PR #3의 Flow trial 역시 main의 애니메이션 제작 능력에 합산하지 않았다.
 
 ## 3. 기존 구현과 첨부 요구의 대응
 
@@ -39,7 +41,7 @@ main의 코드·문서·테스트 등 84개 파일을 Git blob SHA와 대조해 
 | ones/twos 및 레이어별 혼용 | 프로젝트 fps와 이미지 hold만 존재 | 레이어별 ExposureSchedule 추가 |
 | A 이미지 기반 프레임 제작 | 참조/첫 프레임 생성만 연결 | 제어 이미지·채택 그림·시퀀스 가져오기 |
 | B 조건부 구간 생성 | 기존 영상 renderer 활용 가능 | 구간별 능력 검사·끝점·원본 PTS 대응 |
-| C 레이어·리깅·합성 | preview의 전체 이미지 hold/pan/zoom | 계층·기준점·대체 그림·로컬 합성 |
+| C 레이어·리깅·합성 | preview의 전체 이미지 hold/pan/zoom | 계층·기준점·대체 그림·native 합성; 로컬/원격 실행 |
 | 전환 겹침 | contiguous ms manifest와 concat 중심 | 별도 프레임 편집 계약과 전환 합성 |
 | 프레임별 다중 원본 추적 | 샷·파일 단위 SHA 기록 | 출력 프레임별 sources[]와 합성 recipe |
 | 초기 본편 검증 | legacy 문서에 독립 3샷 비교 권고 | 실제 본편 W00 및 경로 체크포인트 |
@@ -85,11 +87,11 @@ flowchart TD
 | 기획 LLM·감독 | 이야기·컷·감정·동작 사건·수정 제안 | 사람이 채택한 제작 계획 |
 | 프로젝트 데이터 | 시간·참조·경로·버전·준비 상태 | 명시적인 제작 입력 |
 | A/B/C 제작 도구 | 요청된 그림·구간·레이어 결과 | 후보와 채택 원본 |
-| 로컬 프레임 compiler | 노출·변형·합성·전환·번호·검사 | 추적 가능한 출력 프레임 |
+| 프레임 실행기·worker | 노출·변형·합성·전환·번호·검사 | 추적 가능한 출력 프레임; 로컬/원격 선택 |
 | 기존 MV 기능 | 원곡·가사·자막·빌드 보존·MP4 출력 | 후보 영상과 재현 자료 |
 | 사람 | 컷 동작·연기·연결·작품 완료 판단 | 버전에 연결된 검수·승인 |
 
-LLM은 매 프레임 전체 기획을 다시 쓰지 않는다. 번호 계산·노출 적용·합성·캐시·검사·인코딩은 결정적 로컬 작업이다. 기존 compile-preview/compile-final처럼 **컴파일 자체는 외부 생성 호출을 수행하지 않는 계약**을 유지한다.
+LLM은 매 프레임 전체 기획을 다시 쓰지 않는다. 번호·노출·합성·캐시·검사·인코딩은 고정 FramePlan을 선택된 CPU/GPU/runtime에서 실행한다. LLM의 추론과 서비스의 코드 실행 환경을 구분한다. compile은 creative generation을 임의 호출하지 않으며, 새 모드의 remote compose/encode는 선택한 실행 계획·사용 권한·비용 범위에 연결한다. [실행·저장 설계](FRAME_ANIMATION_V1_EXECUTION_STORAGE_KO.md)의 FrameStream·worker·encoder 계약을 따른다.
 
 ### 4.1. 기존 모드와 새 모드
 
@@ -115,6 +117,9 @@ LLM은 매 프레임 전체 기획을 다시 쓰지 않는다. 번호 계산·�
 | AnimationPlan/Timeline | 없음 | 각 1 |
 | Animation asset registry | 없음 | 1 |
 | Animation review/approval | 없음 | 1, legacy review 2와 분리 |
+| StorageArchive / ExecutionPlan | 없음 | 각 1 |
+| CapabilityEvidence / EncodeRecipe | 없음 | 각 1 |
+| WorkerProtocol / FrameStream | 없음 | 각 1 |
 
 이 버전 번호는 제안이다. 구현자가 기존 버전 선언과 소비자를 확인해 확정하되, 미래 버전을 silently accept하는 동작은 허용하지 않는다.
 
@@ -136,11 +141,13 @@ animation:
   assets: manifest/animation_assets.json
   roles: production/roles.json
   schedule: production/schedule.json
+  storage_archive: manifest/storage_archive.json
+  execution_plan: execution/plan.json
   initial_wave: W00
   delivery_sequence: SUBBED
 ```
 
-1920×1080·16:9는 첨부안의 제안 기본값이며 작품에서 확정한다. 60컷은 계획 초기값으로만 다룬다. 240초 제한은 이 프로필의 작품 설정에 적용하며, Film Unit의 모든 노래를 강제로 4분으로 만들지 않는다.
+1920×1080·16:9는 첨부안의 제안 기본값이며 작품에서 확정한다. 60컷은 계획 초기값으로만 다룬다. 240초 제한은 이 프로필의 작품 설정에 적용하며, Film Unit의 모든 노래를 강제로 4분으로 만들지 않는다. format.crf는 기존 FFmpeg 설정의 예시다. 다른 driver에 같은 숫자를 복사하지 않으며, 공통 delivery profile의 품질 조건과 driver별 EncodeRecipe를 구분한다.
 
 ### 5.3. 추가 파일
 
@@ -153,15 +160,19 @@ animation:
 | production/labor_and_usage.csv | 준비·제작·검수·수정 시간과 사용량 |
 | manifest/animation_assets.json | 자산 ID·버전·종류·바이트·준비 상태 |
 | manifest/animation_locks.json | 계획·제작 묶음·최종 LOCK |
+| manifest/storage_archive.json | 고정 storage object/member·hash·보존·접근 정보 |
+| execution/plan.json | 고정 snapshot·작업 DAG·허용 runtime/driver·자원·사용권·예산 |
+| execution/capabilities/ | 실제 probe·fixture·한도·유효 범위에 연결된 실행 능력 근거 |
 | animation/shots/S001/plan.json | 레이아웃·사건·제어·구간·노출·경로 |
 | animation/shots/S001/candidates/ | 미채택·수정·실패 결과 |
 | animation/shots/S001/accepted/ | 채택 원본 및 시퀀스 인덱스 |
 | timeline/edit.json | 편집 순서·사용 원본 범위·전환 |
 | timeline/derived.json | 출력 위치·진행률 등 재계산 가능한 view |
 | builds/B####/frame_map.jsonl | 빌드 출력별 다중 원본 관계 |
-| builds/B####/final_frames/ | 최종 시각 요소를 반영한 번호 시퀀스 |
+| builds/B####/final_frames/ | LOCAL_FULL의 최종 번호 PNG 시퀀스; DRIVE_BOUNDED는 아래 archive pack/index로 동등한 원본 보존 |
+| builds/B####/archive/index.json | 원본·최종 PNG·출력·recipe의 immutable object/member·hash 대응; online replay와 파일 복원 |
 
-기존 Bible·characters·locations·가사·render job·예산 파일을 없애지 않는다. CSV, UI 표, 요청 packet은 정본에서 파생한다. 사용자가 shot_list.csv를 수정해 반영하려면 검증 후 정본 변경을 하나의 명시적인 작업으로 수행한다.
+기존 Bible·characters·locations·가사·render job·예산 파일을 없애지 않는다. CSV, UI 표, 요청 packet은 정본에서 파생한다. 사용자가 shot_list.csv를 수정해 반영하려면 검증 후 정본 변경을 하나의 명시적인 작업으로 수행한다. 위 파일은 사용자 작품의 프로젝트 데이터이며, 개발 작업의 mutable 실행 로그를 이 제품 저장소에 커밋하라는 뜻이 아니다. credential은 어떤 프로젝트·build 파일에도 저장하지 않는다.
 
 ### 5.4. 자산
 
@@ -283,7 +294,7 @@ LINEAR_INTERIOR_V1은 O프레임 겹침의 k번째에서 incoming weight=(k+1)/(
 
 이 정의가 FFmpeg xfade의 샘플링 방식과 일치한다고 가정하지 않는다. 첫 구현은 출력 프레임 단위 합성을 기준으로 한다. xfade를 빠른 실행 경로로 쓰려면 같은 프레임 수·가중치·끝점을 fixture로 검증한다.
 
-FFmpeg xfade 입력은 CFR, 해상도, pixel format, FPS, timebase를 맞춰야 한다.[공식 조건][FFMPEG_FILTERS]
+FFmpeg xfade backend를 선택한 경우 CFR, 해상도, pixel format, FPS, timebase를 맞춘다.[공식 조건][FFMPEG_FILTERS] 다른 합성 backend도 같은 프레임·가중치·색·끝점 계약으로 검증한다.
 
 ### 6.5. 음원과의 정합성
 
@@ -340,7 +351,7 @@ start/end/control images, 목표 구간, 제공처가 지원하는 제어 방식
 
 ### 8.4. C: 레이어·리깅·합성
 
-v1 로컬 구현 범위는 RGBA 레이어, 부모·자식 계층, pivot, translation/rotation/scale/opacity, mask, 명시적 z-order, replacement drawing, 카메라 transform이다. 초기 curve는 step/linear 등 구현·검증한 종류를 선언한다.
+v1 native 구현 범위는 RGBA 레이어, 부모·자식 계층, pivot, translation/rotation/scale/opacity, mask, 명시적 z-order, replacement drawing, 카메라 transform이다. 초기 curve는 step/linear 등 구현·검증한 종류를 선언한다.
 
 복잡한 mesh 변형·IK·3D 회전·자동 립싱크까지 구현됐다고 주장하지 않는다. 필요하면 외부 도구에서 제작한 시퀀스를 같은 SequenceArtifact로 받아들인다. 내부에서 제공하지 않는 기능은 기능 목록에 미지원으로 표시한다.
 
@@ -371,7 +382,7 @@ Google의 **FILM interpolator**는 이 프로젝트 **Film Unit**과 다른 도�
 
 [ToonCrafter 공식 공개 구현][TOONCRAFTER]의 안내는 최대 16프레임·512×320이다. 따라서 사례를 그대로 96프레임·1080p 제작 능력으로 읽을 수 없다. 구간 분할·끝점·화면비·확대와 검수가 별도로 필요하다.
 
-이 둘은 선택 가능한 후보의 예시이며 이번 설계에서 채택·설치·실행한 도구가 아니다. 초기 v0.4는 외부 도구 의존 없이 직접 만든 시퀀스와 로컬 합성을 처리할 수 있게 한다.
+이 둘은 선택 가능한 후보의 예시이며 이번 설계에서 채택·설치·실행한 도구가 아니다. 초기 기준선은 직접 만든 시퀀스와 native 합성의 정확성을 검증한다. production 실행은 저장·runtime·encoder 계약으로 로컬 또는 허용된 원격 환경을 선택한다.
 
 ## 9. LOCK·초기 본편 검증·경로 결정
 
@@ -444,7 +455,7 @@ provider 대기는 같은 operation을 사용자가 다음 실행에서 한 번 
 
 ### 10.2. binding
 
-컷 검수는 로컬 시퀀스 digest, 사용 구간, MotionPlan digest, 해당 자산 버전, 공통 표현 의도에 연결한다. 전환 검수는 양쪽 채택 시퀀스, 출력 연결, transition recipe에 연결한다. 최종 승인은 실제 MP4, 최종 시퀀스, 빌드 inventory, 음원·가사·font·최종 편집에 연결한다.
+컷 검수는 컷 시퀀스 content digest, 사용 구간, MotionPlan digest, 해당 자산 버전, 공통 표현 의도에 연결한다. 전환 검수는 양쪽 채택 시퀀스, 출력 연결, transition recipe에 연결한다. 최종 승인은 실제 MP4, 최종 시퀀스, 빌드 inventory, 음원·가사·font·최종 편집에 연결한다.
 
 단순한 ‘final’ 파일명이나 검수자의 이름만으로 current approval을 만들지 않는다. 과거 review 2를 새 프레임·노출·전환 계약으로 자동 승계하지 않는다.
 
@@ -522,7 +533,7 @@ compile-final은 새 모드에서 FINAL_CANDIDATE_READY까지 만든다. build�
 | 공통 마스터·화풍 | 실제 의존하는 컷; 전역 표현 기준이면 전체 | 관련 컷·계획/묶음·최종 파일 |
 | 가사 timing/font | 자막 합성과 전달 출력 | 가사 검수·최종 LOCK/파일, 컷 동작 검수 유지 |
 | 미채택 후보 추가 | 채택 결과에는 영향 없음 | 기존 채택 승인 유지 |
-| 출력 해상도·색 recipe | 로컬 정규화·합성·출력 | 새 출력의 시각/기술 검토·최종 승인 |
+| 출력 해상도·색 recipe | 선택된 worker의 정규화·합성·출력 | 새 출력의 시각/기술 검토·최종 승인 |
 
 사용 원본과 요청 설정을 바꾸지 않은 단순한 출력 확대는 자동으로 새 유료 생성을 요구하지 않는다. 다만 확대 결과의 품질과 출력 검토는 새롭게 필요하다.
 
@@ -534,7 +545,7 @@ frame/composite key는 사용 자산의 digest, 노출/변형/합성 recipe, loc
 
 job state·작업자 표시·검수 메모 등 결과 픽셀에 영향을 주지 않는 상태를 render key에 섞지 않는다. 다만 검수 허용 여부는 cache와 별도로 current binding을 확인한다. 캐시를 찾았다는 이유로 승인되지는 않는다.
 
-LLM·생성 모델의 재실행을 바이트 재현 수단으로 간주하지 않는다. **실제 채택 결과와 합성 자료를 저장**하고, 동일 환경의 로컬 replay와 다른 환경에서의 새 인코딩을 구분한다.
+LLM·생성 모델의 재실행을 바이트 재현 수단으로 간주하지 않는다. **실제 채택 결과와 합성 자료를 저장**하고, 고정 archive·도구 환경의 replay와 다른 환경에서의 새 인코딩을 구분한다.
 
 ### 11.4. 내용과 상태의 digest 분리
 
@@ -549,7 +560,7 @@ sequence content digest에는 순서가 고정된 프레임 바이트·시점·�
 1. 컷 시퀀스의 노출·레이어·카메라를 적용한다.
 2. 전역 시간축에 따라 전환·색·제목을 합성한다.
 3. 같은 전역 시각 자료에서 CLEAN 출력을 만들고, 가사/자막을 적용한 전달 시퀀스를 만든다.
-4. F_000001.png부터 F_005760.png까지를 전달 시퀀스 정본으로 저장한다.
+4. F_000001.png부터 F_005760.png까지의 실제 PNG 바이트·논리 번호·hash를 전달 시퀀스 정본으로 보존한다. LOCAL_FULL은 폴더, DRIVE_BOUNDED는 검증된 pack+index를 사용하고 동일 번호 폴더로 복원할 수 있어야 한다.
 5. 그 시퀀스로 MASTER_SUBBED.mp4를 인코딩한다. 음원은 원곡에서 만든 동일한 AAC 트랙을 사용한다.
 6. 디코딩 검사·inventory 확인 후 최종 후보로 제시한다.
 
@@ -557,11 +568,11 @@ sequence content digest에는 순서가 고정된 프레임 바이트·시점·�
 
 기존 lyrics.ass/srt, 원문·timing·font coverage를 보존한다. 자막은 컷의 ms 시간으로 다시 계산하지 않고 원곡의 독립 cue를 글로벌 시간축에 적용한다.
 
-image2 입력에는 -framerate 24와 -start_number 1을 명시한다. 입력 기본 FPS를 사용하지 않는다.[image2 공식 문서][FFMPEG_FORMATS]
+FFmpeg image2 backend를 사용할 때 -framerate 24와 -start_number 1을 명시한다.[image2 공식 문서][FFMPEG_FORMATS] native/GStreamer/service backend도 FrameStream의 정확한 FPS·PTS·순서로 실행한다. 인코더의 입력 기본값에 의존하지 않는다.
 
 ### 12.2. 기술적 수용 조건
 
-- 실제 이미지 5,760개가 연속 인덱스로 존재하며 추가·누락·손상 프레임이 없다.
+- 실제 PNG 바이트 5,760개가 연속 논리 인덱스로 보존되며 추가·누락·손상이 없다. 로컬 폴더 또는 원격 pack+index의 멤버를 검사하고 번호 폴더 복원을 검증한다.
 - 이미지 크기·형식·색 처리 정책이 정해진 출력과 일치한다.
 - 디코딩한 영상 프레임은 5,760개, rational FPS는 24/1이다.
 - 출력 PTS와 프레임 duration을 timebase의 정수/rational 값으로 검사한다. 첫 시점 0, 마지막 노출 종료 240초를 확인한다.
@@ -575,23 +586,23 @@ image2 입력에는 -framerate 24와 -start_number 1을 명시한다. 입력 기
 
 ### 12.3. 빌드와 replay
 
-Build 2는 선택 원본·MotionPlan·노출/합성 recipe·전환·frame_map·자막·font·음원·최종 시퀀스·출력 파일을 보존한다. mutable 프로젝트 자산을 build에 hard link하지 않는다.
+Build 2는 선택 원본·MotionPlan·노출/합성 recipe·전환·frame_map·자막·font·음원·최종 시퀀스·출력을 보존한다. LOCAL_FULL은 독립 복사, DRIVE_BOUNDED는 앱이 덮어쓰지 않는 고정 object와 검증된 archive manifest를 사용한다. mutable live 자산이나 최신 file ID만으로 snapshot을 대신하지 않는다.
 
-시퀀스 snapshot은 등록된 멤버 목록·hash·recipe를 한 revision으로 고정한다. 각 파일 복사 전후의 바이트와 캡처한 전체 content digest를 확인한다. 렌더·검수는 이 snapshot을 사용하며, 실행 중 변경된 라이브 입력에 과거 승인이나 새 결과를 다시 연결하지 않는다.
+시퀀스 snapshot은 멤버 목록·hash·recipe를 한 revision으로 고정한다. 로컬 복사 전후 또는 원격 읽기·보관 검증에서 바이트와 전체 content digest를 확인한다. 렌더·검수는 이 snapshot을 사용하며, 실행 중 변경된 라이브 입력에 과거 승인이나 새 결과를 다시 연결하지 않는다.
 
 새 replay는 보관된 최종 시퀀스와 음원을 사용해 다시 인코딩할 수 있어야 한다. 선택 원본과 recipe로 합성을 재실행하는 경로도 별도로 검증한다. Build 1 replay는 기존 concat 경로로 남긴다.
 
-검수·승인이 끝난 원본 빌드를 덮어쓰지 않는다. replay나 수정 출력에는 새 경로/빌드 ID를 사용한다. 승인된 MP4의 정확한 바이트는 보존하되 다른 FFmpeg/font 환경에서 새 인코딩이 바이트까지 같다고 보장하지 않는다.
+검수·승인이 끝난 원본 빌드를 덮어쓰지 않는다. replay나 수정 출력에는 새 경로/빌드 ID를 사용한다. 승인된 MP4의 정확한 바이트는 보존하되 다른 encoder/device/font 환경에서 새 인코딩이 바이트까지 같다고 보장하지 않는다.
 
 ### 12.4. 저장량과 실행
 
 최종 PNG 평균 3MB라면 최종 시퀀스만 약 17.28GB다. 원본·후보·여유분·수정본·캐시·MP4를 추가해야 한다. 실제 작품의 평균 바이트를 측정해 공간을 예상하고 부족하면 렌더 전에 알린다.
 
-5,760장을 메모리에 동시에 올리지 않고 프레임/구간 단위로 처리한다. 새 출력은 임시 위치에 쓰고 검사 후 확정한다. 원본과 승인된 빌드는 단순 캐시 청소 대상으로 분류하지 않는다.
+5,760장을 메모리·작업 디스크에 전량 쌓는 것을 필수로 하지 않는다. 프레임/구간·halo·bounded queue·보관 확인으로 처리한다. 새 출력은 선택된 workspace/archive에 임시로 쓰고 검사 후 확정한다. 원본과 승인된 빌드는 단순 캐시 청소 대상으로 분류하지 않는다.
 
-데스크톱에서는 여러 GB 시퀀스를 기존 ‘영상 500MB 업로드’에 억지로 넣지 않는다. v1은 **로컬 sequence index+폴더 import CLI**를 제공하고, UI는 작은 묶음의 파일 import와 명시적인 로컬 경로 연결을 지원한다. 대용량 import는 원본 파일을 이동·삭제하지 않는다.
+데스크톱에서는 여러 GB 시퀀스를 기존 ‘영상 500MB 업로드’에 억지로 넣지 않는다. 기본 UI는 **브라우저 Google 로그인·프로젝트 연결·필요 범위 가져오기·Drive 보관·복원**을 제공한다. 로컬 index/폴더 import도 지원하며 CLI는 개발·고급 사용의 선택 경로다. 대용량 import는 원본 파일을 이동·삭제하지 않는다.
 
-index는 허용된 이미지 형식·명시적 순서·파일 hash를 가진다. 프로젝트 내부 복사와 index commit이 끝나기 전에는 선택 자산으로 공개하지 않는다. ZIP import를 추가하면 경로 탈출·절대경로·symlink·압축 폭탄·누락 멤버를 검사하고 원본 경로와 작업 코드를 실행하지 않는다.
+index는 허용된 이미지 형식·명시적 순서·파일 hash를 가진다. 선택한 저장 backend의 원본 보관·hash 검증과 index commit이 끝나기 전에는 선택 자산으로 공개하지 않는다. ZIP import를 추가하면 경로 탈출·절대경로·symlink·압축 폭탄·누락 멤버를 검사하고 원본 경로와 작업 코드를 실행하지 않는다.
 
 ## 13. 비용·노동·구독 hand-off
 
@@ -604,7 +615,7 @@ ImageProvider의 첫 프레임 장당 견적을 5,760장 또는 460장에 기계
 | 외부 이미지·영상 생성 | provider 청구 단위, 최초·후보·재시도, 예약/확정 |
 | 공통 자산 준비 | clean plate·cutout·rig·대체 그림의 사람 시간 |
 | 컷별 제작·수정 | 그림·동작·mask 보수·합성·검수 시간 |
-| 로컬 합성·렌더 | 실행 시간·장비·실제 외부 비용이 있다면 그 금액 |
+| 로컬/원격 합성·인코딩 | 실행 환경·시간·장비·scratch·구독 사용량·별도 외부 비용 |
 | 구독 앱 제작 | 사람 입력/다운로드, 수동 사용량, 기존 구독 범위 |
 | 저장 | 원본·후보·채택·캐시·빌드 바이트 |
 
@@ -631,7 +642,7 @@ PR #17 hand-off는 계속 **사람의 사이트 열기·복사·붙여넣기·�
 
 엔진 종류나 hash 내부 구조를 사용자의 주요 작업 화면에 길게 노출하지 않는다. 검토할 버전·대상·변경 영향은 보여주고 필요하면 상세 이력을 연다.
 
-제안 CLI 이름은 구현 전 계약 확정 대상이다.
+제안 CLI 이름은 구현 전 계약 확정 대상이며 기본 사용자 흐름은 브라우저/앱 버튼이다. Drive 연결·실행 서비스·인코더·사용량·이어하기 UI는 실행·저장 설계 7·10절을 따른다.
 
 | 작업 | 예시 명령 |
 |---|---|
@@ -668,6 +679,10 @@ PR #17 hand-off는 계속 **사람의 사이트 열기·복사·붙여넣기·�
 | engine/animation_review.py | 컷·전환·최종 approval binding |
 | engine/animation_locks.py | PLAN/WAVE/FINAL scope |
 | engine/animation_compiler.py | snapshot·frame_map·시퀀스·출력 조율 |
+| engine/frame_stream.py | 프레임·PTS·pixel/color·buffer ownership |
+| engine/storage_backends/, workspace.py | Drive/local archive·보관·복원·상한 cache |
+| engine/execution_plan.py, execution_workers/ | worker·capability·DAG·receipt·예약 |
+| engine/encoder_backends/, media_mux.py, media_verify.py | 복수 driver·원음 mux·독립 출력 검사 |
 
 | 기존 모듈 | 변경 |
 |---|---|
@@ -683,7 +698,7 @@ PR #17 hand-off는 계속 **사람의 사이트 열기·복사·붙여넣기·�
 | timeline.py | 새 모드 frame edit/split/merge/move 및 영향 분석 |
 | app/control_panel.py 등 | 위 엔진을 이용하는 기존 UI 확장 |
 
-v1은 현재 로컬 파일·project_mutex 구조를 유지한다. 외부 queue/daemon/DB를 먼저 도입하지 않는다. 파일 작업·compile은 직렬화하고, 생성 결과는 변경 가능한 라이브 계획 대신 캡처한 입력 revision에 연결한다.
+legacy는 현재 로컬 파일·project_mutex 경로를 유지한다. 새 모드는 coordinator의 선택·상태·seal 쓰기를 직렬화하고 독립 계산은 자원 예약 범위에서 병렬 실행한다. 모든 worker 결과는 고정 snapshot·recipe·출력 범위에 연결한다. 실행·저장 설계의 callback/수동 receipt·UNKNOWN fence를 사용하며 상시 daemon·status polling을 추가하지 않는다.
 
 ## 16. 개발 순서와 완료 기준
 
@@ -691,20 +706,26 @@ v1은 현재 로컬 파일·project_mutex 구조를 유지한다. 외부 queue/d
 
 | 단계/제안 티켓 | 범위 | 끝났다고 판단할 증거 |
 |---|---|---|
-| ANIM-001 계약 | profile·schema·frame 시간축·자산·노출·scope approval 문서 | 충돌이 해결된 ADR/명세와 수용 조건 |
+| ANIM-001 계약 | profile·schema·frame·자산·노출·scope·storage/execution/encoder 계약 | 충돌이 해결된 ADR/명세와 수용 조건 |
 | ANIM-002 migration | 기존 프로젝트 명시적 전환·backup·legacy reader | 원음·가사·기존 빌드 보존, 새 계약 승인 자동 승계 없음 |
 | ANIM-003 프레임 자산 | index/폴더 import·version·hash·resolver | 손상/누락/alpha 유실 없이 가져오고 draft preview |
 | ANIM-004 노출·컴파일 | ones/twos·frame clock·시퀀스 정규화 | 24fps, 슬롯 전체 coverage, 끝점 중복 없음 |
 | ANIM-005 전환·추적 | pairwise transition·frame_map·길이 검산 | 96+96−12=180 및 다중 원본 대응 |
 | ANIM-006 검수·출력 | 컷/전환 review, Final 후보, sequence·inventory·replay | 새 시퀀스를 Final 후보로 만들고 미검수/누락은 차단 |
 | ANIM-007 범위 제작 | PLAN/WAVE/FINAL LOCK·W00·경로 결정 | 나머지 상세 자산 없이 어려운 본편 컷 제작·checkpoint 정지 |
-| ANIM-008 로컬 C | RGBA 계층·pivot·변형·대체 그림·mask | 카메라와 별개인 피사체 동작 및 투명 경계 재생 |
+| ANIM-008 native C | RGBA 계층·pivot·변형·대체 그림·mask | 카메라와 별개인 피사체 동작 및 투명 경계 재생 |
 | ANIM-009 A 작업지시 | 제어 이미지·세부 packet·browser hand-off | 마스터/layout/control과 프레임 시점이 일치하는 draft import |
 | ANIM-010 생성 adapter | 능력·구간·quote·ledger·UNKNOWN·PTS | fake provider로 누락 조건/중복 접수 차단; 실제 실행은 별도 제작 승인 |
 | ANIM-011 사용자 흐름 | 준비→동작→검토→수정→출력 화면 연결 | UI에서 한 컷 교체·현재 검수·경로 결정·최종 승인 |
 | ANIM-012 통합 | 240초 회귀·빌드·desktop packaging·문서 | legacy/new 모드 회귀, 세 OS의 실제 패키지 검사 기록 |
+| ANIM-013 Drive 저장 | OAuth·archive·bounded cache·restore | 원본/PNG 보존·공간 상한·복원·끊김 검사 |
+| ANIM-014 실행 계약 | FrameStream·ExecutionPlan·worker·UNKNOWN | 로컬/원격 같은 계약·scope·stale/중복 fence |
+| ANIM-015 복수 인코더 | encode/mux/verify·독립 native backend | 비-FFmpeg encode의 실제 frame/PTS/품질/원음 검사 |
+| ANIM-016 구독 실행 | entitlement·probe·packet/notebook·import | 실제 구독 서비스의 검증된 범위·수동/자동 표시 |
+| ANIM-017 성능 scheduler | 부분 재컴파일·parallel·prefetch·zero-copy 후보 | 같은 품질의 end-to-end·공간·전송·복구 비교 |
+| ANIM-018 원격 통합 | 240초·1080p·Drive/remote/encoder·UI | 실제 실행·archive/replay·실패 주입·성능 보고 |
 
-ANIM-003~007이 **외부에서 제작한 프레임을 받아 전체 작품을 컴파일하는 첫 기능 묶음**이다. ANIM-008은 로컬 제작 능력을 추가하고, ANIM-009~010은 반복적인 프레임 제작 입력·생성 연결을 확대한다.
+ANIM-003~007이 **외부에서 제작한 프레임을 받아 전체 작품을 컴파일하는 첫 기능 묶음**이다. ANIM-008은 native 제작 능력을 추가하고, ANIM-009~010은 프레임 제작 입력·생성 연결을 확대한다. ANIM-013~018의 의존성·수용 조건은 실행·저장 설계 10~11절을 따른다. 로컬 기준선 완료를 새 모드의 원격·성능 목표 완료로 집계하지 않는다.
 
 이 첫 기능 묶음도 완성 애니메이션을 자동으로 만들어 주지는 않는다. 필요한 그림·레이어·동작은 실제 제작하고 채택해야 한다. W00은 소프트웨어의 합성 fixture와 별개로 작품의 경로 적합성을 검증한다.
 
@@ -733,6 +754,7 @@ ANIM-003~007이 **외부에서 제작한 프레임을 받아 전체 작품을 �
 | 변경 범위 | 한 컷 교체 후 다른 source/recipe·원음·가사 보존 |
 | legacy | 기존 전체 회귀와 Build 1 replay, 현재 Preview/Final 의미 보존 |
 | UI·포터블 | 한 컷의 준비→노출→import→review→수정→출력, Windows/macOS/Linux 실제 smoke |
+| Drive·원격·인코더·성능 | 실행·저장 설계 11절: 실제 capability·공간·stale/UNKNOWN·archive·복수 encode·end-to-end 비교 |
 
 4분 테스트는 현재처럼 작고 합성된 영상/그림으로 실행해 CI 비용을 제한한다. 단, 정지 슬레이트만으로 C 제작의 동작 기능을 검증하지 않는다. 실제 피사체 위치·교체 그림·가림이 변하는 로컬 fixture를 포함한다.
 
@@ -746,7 +768,7 @@ legacy ms 경계는 현재 frame_at 규칙으로 한 번 매핑하고 차이·�
 
 새 frame/motion/approval 계약으로 바뀌는 부분의 기존 승인은 새 승인으로 둔갑시키지 않는다. 과거 빌드와 원본은 계속 열고 검증할 수 있다.
 
-main AGENTS가 가리키는 pinned shared policy를 확인했다. 설계·schema·LOCK·Final 의미 변경은 A3 architecture 범위다. 승인된 계약 내부의 구현 티켓은 실제 위험과 변경 범위에 맞춰 non-author review/A2를 적용하고, milestone/release gate는 명시적으로 설정한다.
+현재 main 41e4047의 AGENTS와 pinned shared policy를 확인했다. program-mode task에는 M1/M5 및 해당 task envelope 규칙이 적용된다. 이 직접 사용자 지시의 설계 PR은 program dispatch/activation을 시작하지 않는다. 설계·schema·LOCK·Final 의미 변경은 A3 architecture 범위다. 승인된 계약 내부의 구현 티켓은 실제 위험과 변경 범위에 맞춰 non-author review/A2를 적용하고, milestone/release gate는 명시적으로 설정한다.
 
 이 문서를 작성한 세션이 자신의 설계를 독립 감사 PASS로 처리하지 않는다. 구현 후에는 실제 작성에 참여하지 않은 reviewer가 정확한 HEAD를 검토한다. engineering PASS는 실제 생성 비용 승인이나 작품 최종 승인을 대신하지 않는다.
 
@@ -774,9 +796,9 @@ Control-plane에 맡기더라도 프로젝트·canonical task·한 writer·한 d
 
 ## 20. 권장 개발 방향
 
-**현재 Film Unit을 유지하고 FRAME_ANIMATION_V1 제작 모드를 추가한다. 첫 변경은 schema·frame timeline·sequence asset·scope approval 계약을 확정하는 ANIM-001이다.**
+**현재 Film Unit을 유지하고 FRAME_ANIMATION_V1 제작 모드를 추가한다. 첫 변경은 frame·sequence·scope·Drive 저장·로컬/원격 실행·복수 인코더 계약을 확정하는 ANIM-001이다.**
 
-이후 직접 제작한 프레임을 가져와 노출·전환·자막·원곡·빌드 보존까지 연결하는 묶음을 먼저 완성한다. 다음으로 RGBA 레이어 제작과 제어 이미지·생성 adapter를 붙인다. 작품 제작에서는 어려운 W00을 먼저 채택하고 경로 유지·변경·혼용을 판단한다.
+이후 직접 제작한 프레임을 가져와 노출·전환·자막·원곡·빌드 보존까지 연결하는 묶음을 먼저 완성한다. 다음으로 RGBA native 제작과 제어 이미지·생성 adapter를 붙이며, 기반 계약이 생기는 시점부터 Drive·원격 worker·독립 인코더를 연결한다. 실행 경로는 품질·사용 권한·공간·예산을 충족하는 후보의 전체 완료 시간으로 비교한다. 작품 제작에서는 어려운 W00을 먼저 채택하고 경로 유지·변경·혼용을 판단한다.
 
 구현의 핵심은 이미지 수를 늘리는 기능이 아니라 **의도한 동작을 만들고, 정확한 시간축에 합성하고, 필요한 범위만 수정하며, 실제 결과를 사람이 승인할 수 있게 하는 것**이다.
 
