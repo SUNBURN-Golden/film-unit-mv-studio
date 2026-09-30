@@ -1,11 +1,13 @@
 # FRAME_ANIMATION_V1 — Drive 저장·원격 실행·복수 인코더 성능 설계
 
-설계 revision: 2, 2026-09-30 KST  
+설계 revision: 3, 2026-09-30 KST  
 제품 코드 확인 main: 41e40478505cf75cf441dd4075c071a0fc462dbf  
 원래 애니메이션 코드 검토 기준: 1f5684a8f19893d8f83f487cf329bb2425eeb25b  
 선행 문서: [상세 설계](FRAME_ANIMATION_V1_DESIGN_KO.md), [개발 시작 안내](FRAME_ANIMATION_V1_DEVELOPMENT_KO.md)
 
 User가 요청한 브라우저 Google 로그인, Drive에서 필요한 자료를 가져오는 컴파일, FFmpeg 외 인코더, AI 구독의 실행 서비스 활용, 성능 우선 방향을 구체화한다. 기능 구현·실제 연결·원격 실행·추가 과금 승인·독립 감사 PASS의 기록은 아니다.
+
+[옵션 A 채택 결정](decisions/FRAME_ANIMATION_V1_ADOPTION_20260930.md)을 개발 범위의 근거로 삼는다. ARCHITECTURE.md·PROJECT_SPEC.md에 새 모드 예외를 연결했으며, ANIM-001에서 소비자·ADR·수용 조건을 상세 확정한다. 최초 main/CI와 중앙 운영 상태의 외부 링크는 탐색 자료이며 작성자 설명만으로 현재 감사의 검증 실적이 되지 않는다.
 
 ## 1. 설계 방향
 
@@ -25,7 +27,7 @@ LLM은 MotionPlan·작업 분해·도구 선택을 제안할 수 있다. 실제 
 
 ## 2. 원래 제안에서 변경하는 계약
 
-본 문서가 아래 항목의 새 모드 정본이다. LEGACY_MV 실행 계약은 유지한다.
+본 문서가 채택 결정에 연결된 아래 항목의 새 모드 개발 정본이다. LEGACY_MV 실행 계약은 유지한다. 독립 감사와 병합 완료는 해당 exact HEAD의 별도 기록으로 확인한다.
 
 | 원래 제안 | revision 2 |
 |---|---|
@@ -43,11 +45,13 @@ compile은 creative generation을 임의 실행하지 않는다. remote compose/
 
 사용자는 Film Unit에서 Google Drive 연결을 누르고 기본 브라우저의 Google 화면에서 계정·권한·프로젝트 폴더를 선택한다. 개발자가 OAuth 앱 등록과 API 연결을 준비한다. 프로젝트 사용에 CLI·수동 token·사용자별 API 키 붙여넣기를 요구하지 않는다.
 
-OAuth는 system browser, PKCE, state 검증과 client 유형에 맞는 공식 redirect를 사용한다. 토큰은 OS credential store 등 프로젝트 밖의 비공개 사용자 설정에 보관한다. 프로젝트·빌드·packet·로그·GitHub에 비밀번호·refresh token·authorization code·session cookie를 넣지 않는다.[Google OAuth][OAUTH]
+OAuth는 system browser, PKCE, state 검증과 client 유형에 맞는 공식 redirect를 사용한다. OAuth 앱/Google Cloud project와 배포 client ID의 관리 책임은 배포 책임자에게 있다. installed-app client ID는 공개 설정이며 client secret을 비밀 저장소나 인증 수단으로 신뢰하지 않는다. 이 개발 결정은 Cloud project 생성·credential 발급을 실행하는 승인이 아니다.[Google OAuth][OAUTH]
+
+토큰은 지원 OS credential store에만 보관한다. credential store가 없거나 잠긴 환경에서는 연결을 차단하거나 사용자에게 명시한 메모리 한정 세션으로 연결한다. 기존 mode 0600 settings 파일로 OAuth token을 자동 저장하지 않는다. 로그아웃·권한 회수·계정 전환은 credential store와 메모리의 token·job 연결을 폐기하고 후속 접근을 차단한다. 프로젝트·빌드·packet·로그·GitHub에 비밀번호·refresh token·authorization code·session cookie를 넣지 않는다.
 
 기본 범위는 앱이 만들거나 사용자가 선택해 허용한 파일의 drive.file이다. 폴더 하나 선택이 모든 기존 하위 파일의 권한을 자동 부여한다고 가정하지 않는다. 앱 전용 프로젝트 폴더·앱이 만든 pack을 우선 지원하고 기존 자료는 선택/import로 권한을 얻는다.[Google Picker][PICKER]
 
-앱의 Drive 연결과 외부 worker의 접근은 별도 권한 경계다. worker는 공식 인증으로 허용된 프로젝트 객체만 읽고 쓰거나 허용된 중개 전송을 사용한다. PC의 refresh token을 LLM 대화 packet에 전달하지 않는다. Drive 접근이 없는 runtime은 제한된 파일 packet 경로로 표시한다.
+앱의 Drive 연결과 외부 worker의 접근은 별도 권한 경계다. 기본 경로는 coordinator가 drive.file로 허용된 고정 입력의 hash를 확인해 worker에 중개 전송하고, 검증한 출력만 archive에 쓰는 방식이다. 사용자 refresh token·OAuth access token·Drive 계정 권한은 worker나 LLM packet에 전달하지 않는다. 필요한 임시 전송 권한은 해당 job·허용 객체·읽기/쓰기 범위·단기 만료에 묶고 취소·회수하며, 수명과 접근 로그를 ExecutionPlan/receipt의 비밀 없는 메타데이터로 확인한다. worker의 직접 Drive 인증·서비스 계정 공유·사용자 token 위임은 이 기본 경로에 포함하지 않는다. 도입하려면 별도 ADR과 권한 범위 승인을 먼저 받는다. Drive 접근이 없는 runtime은 제한된 파일 packet 경로로 표시한다.
 
 ## 4. Drive에서 읽으며 실행하는 저장 구조
 
@@ -178,14 +182,29 @@ stateDiagram-v2
     SUBMITTING --> UNKNOWN: 응답 불명
     UNKNOWN --> RUNNING: 기존 작업 확인
     UNKNOWN --> FAILED_CONFIRMED: 미접수 확정
+    UNKNOWN --> OUTPUT_PENDING_VERIFY: 기존 완료 확인
+    UNKNOWN --> CANCEL_CONFIRMED: 기존 취소 확인
+    RESERVED --> CANCEL_CONFIRMED: 제출 전 취소
+    WAITING_USER --> CANCEL_CONFIRMED: 제출 전 취소
+    SUBMITTING --> CANCEL_REQUESTED: 취소 요청
+    RUNNING --> CANCEL_REQUESTED: 취소 요청
+    OUTPUT_PENDING_VERIFY --> CANCEL_REQUESTED: 취소 요청
+    CANCEL_REQUESTED --> CANCEL_CONFIRMED: 종료 확인
+    CANCEL_REQUESTED --> OUTPUT_PENDING_VERIFY: 완료가 먼저 확정
+    CANCEL_REQUESTED --> UNKNOWN: 종료 불명
     RUNNING --> OUTPUT_PENDING_VERIFY
     RUNNING --> FAILED_CONFIRMED
+    RUNNING --> UNKNOWN: runtime 종료·상태 불명
     OUTPUT_PENDING_VERIFY --> VERIFIED
     OUTPUT_PENDING_VERIFY --> FAILED_CONFIRMED
+    OUTPUT_PENDING_VERIFY --> UNKNOWN: 결과·완료 불명
     VERIFIED --> ARCHIVED
+    CANCEL_CONFIRMED --> [*]
 ```
 
-UNKNOWN은 명시적 확인/reconciliation을 기다린다. FAILED_CONFIRMED도 무제한 자동 재시도하지 않고 승인된 실행 범위 안에서 새 attempt를 계획한다. cancel 요청과 실제 종료 확인을 구분하고 종료 불명 시 예약을 해제하거나 대체 worker를 동시에 시작하지 않는다.
+UNKNOWN은 명시적 확인/reconciliation을 기다린다. CANCEL_REQUESTED는 요청 전달만 뜻하며 CANCEL_CONFIRMED는 worker 종료 또는 미접수가 확인된 상태다. 완료가 취소보다 먼저 확정되면 결과를 OUTPUT_PENDING_VERIFY로 가져와 독립 검증하고, 취소됐다는 이유만으로 완료·비용·예약 소모를 지우지 않는다. VERIFIED/ARCHIVED 빌드의 취소는 과거 seal을 변경하지 않는다. 제출 전 미접수 또는 종료 확인에 따른 예약 처리는 실제 ledger 근거로만 수행하며, 취소 자체를 provider 환불로 집계하지 않는다. 종료 불명 시 예약 해제·동일 범위 대체 worker·새 attempt를 fence한다.
+
+FAILED_CONFIRMED 후 새 attempt는 사용자에게 실패·현재 예약·남은 retry allowance를 표시한 뒤 명시적인 이어하기 동작으로만 시작한다. 기존 bounded retry 상한과 quote·사용권·남은 예산을 재검증하고 새 attempt ID/submission request ID를 기록한다. 이는 자동 재제출이 아니며 allowance 소진·권한/가격 변경·불명 작업이 있으면 차단한다. engineering program의 빌더 재개와 제품 remote job 재시도는 서로 다른 계약이다.
 
 callback/receipt는 actor·job·attempt·snapshot·범위·request nonce에 연결하고 중복·오래된 revision을 거부한다. worker의 COMPLETE나 LLM의 완료 문장을 실제 출력 검증으로 승격하지 않는다. 상태 확인은 공식 완료 이벤트 또는 사용자의 한 번의 이어하기/가져오기 동작으로 수행한다. standing routine·주기적 status polling·소비자 UI 자동 조작을 추가하지 않는다.
 

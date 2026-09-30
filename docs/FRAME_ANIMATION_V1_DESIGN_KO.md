@@ -4,9 +4,11 @@
 대상: BeautifulMind-JT/film-unit-mv-studio  
 기준 main: **1f5684a8f19893d8f83f487cf329bb2425eeb25b**, PR #17 병합 상태  
 요구사항: 첨부 「4분 이미지 기반 애니메이션 제작 설계안 — 최종 통합 개정본」 전체  
-문서 성격: **구현을 위한 제안 설계**. 제품 코드 변경이나 제작·과금·최종 출력 승인을 뜻하지 않는다.
+문서 성격: **User가 채택한 방향의 개발 기준**. [채택 결정](decisions/FRAME_ANIMATION_V1_ADOPTION_20260930.md)에 따라 새 모드의 ANIM-001~018에 적용하며 제품 코드 변경이나 제작·과금·최종 출력 승인을 뜻하지 않는다. 이 수정본의 독립 감사와 병합은 별도 게이트다.
 
 설계 revision 2 (2026-09-30): User의 Drive 기반 컴파일·AI 구독 실행·복수 인코더·성능 우선 지시를 반영했다. 저장·실행·인코더·원격 보관의 정본은 [실행·저장 성능 설계](FRAME_ANIMATION_V1_EXECUTION_STORAGE_KO.md)다. 해당 문서 2절은 최초 로컬 전용 제안에서 변경한 계약을 명시한다. 제품 코드 확인 main은 41e40478505cf75cf441dd4075c071a0fc462dbf이며 기존 코드 근거 링크는 최초 검토 SHA를 보존한다.
+
+설계 revision 3 (2026-09-30): 옵션 A 채택 경로의 결정 기록과 ARCHITECTURE.md·PROJECT_SPEC.md의 새 모드 예외를 추가했다. main 41e4047의 AGENTS·공유 정책 변경을 이 브랜치에 함께 통합해 감사 입력에 포함한다. remote worker에는 사용자 OAuth token을 전달하지 않는 중개 전송을 기본으로 고정하고, cancel/UNKNOWN 및 명시적 bounded retry를 보완했다. 최초 문서의 외부 CI·중앙 host 상태는 작성자가 제공한 탐색 포인터이며 이번 감사의 로컬 입력만으로 입증된 실적으로 취급하지 않는다.
 
 ## 1. 판단
 

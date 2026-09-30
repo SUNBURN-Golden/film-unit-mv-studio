@@ -18,7 +18,8 @@ The machine-readable pin and status are `.github/control-plane-client.json`.
 Central paths below are relative to the central repository root; the policy root
 is its `control_source_subdirectory` (`engineering`).
 Project defaults come from pinned `engineering/projects/film-unit-mv-studio.md`.
-Builder/model qualification and Astra Slack routing use the pinned central policy.
+Builder/model qualification uses the pinned central policy. Astra is Claude Fable, run by the
+central `aiops-fable` tool (User decision M5, 2026-09-30).
 Product contracts, task specifications, protected files and product CI remain here.
 GitHub task/decision/audit records remain authoritative; Slack is a collaboration surface.
 
@@ -46,6 +47,8 @@ start a builder or assume KIX activation/audit evidence transfers from this
 repository. Preserve task, owner, request and ledger identities. Fence/drain
 legacy dispatch before retiring it; never run two dispatchers. Runtime identity
 separation and host/Slack cutover are separate gates.
-User-only merge; no automatic fallback, retries, polling or standing routines.
+User-authorized merge; program mode delegates only the merge executor (User decision M1,
+`AGENTS.md` program mode section). No automatic fallback, retries, polling or standing routines.
 
 Migration history: https://github.com/BeautifulMind-JT/ai-ops-control-plane/issues/1
+

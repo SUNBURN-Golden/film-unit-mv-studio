@@ -5,6 +5,8 @@
 정본 설계: [상세 설계](FRAME_ANIMATION_V1_DESIGN_KO.md), [Drive 저장·원격 실행·복수 인코더 성능 설계](FRAME_ANIMATION_V1_EXECUTION_STORAGE_KO.md)
 설계 revision 2 (2026-09-30): 제품 확인 main 41e40478505cf75cf441dd4075c071a0fc462dbf. User의 브라우저 Google 로그인·Drive 스트리밍·AI 구독 실행·복수 인코더·성능 우선 지시를 반영한다.
 
+설계 revision 3: [옵션 A 채택 결정](decisions/FRAME_ANIMATION_V1_ADOPTION_20260930.md)을 개발 범위 근거로 연결했다. ARCHITECTURE.md·PROJECT_SPEC.md는 LEGACY_MV 계약과 새 모드 예외를 구분하며, ANIM-001은 채택한 방향의 상세 ADR을 확정한다. worker credential·token store·cancel/UNKNOWN·명시적 bounded retry는 실행·저장 설계 3절과 5.3절을 따른다.
+
 ## 개발 목표와 첫 결과물
 
 외부 이미지 시퀀스·레이어를 정확한 프레임 시간축에서 원곡·가사·전환·자막과 컴파일한다. Drive/local archive, 로컬/원격/구독 runtime, FFmpeg/native/service encoder를 독립 선택하고 원본·최종 PNG·빌드를 보존한다. 기존 LEGACY_MV 프로젝트와 Build 1 replay는 계속 지원한다.
@@ -57,7 +59,7 @@ ANIM-001~018은 개발 항목 이름이다. 중앙 control-plane의 TASK_ID, 실
 
 ### 완료 증거
 
-1. ADR/명세가 두 정본 설계와 기존 제품 계약 사이의 변경 범위·migration·버전 소비자를 명시한다. 저장/worker/encoder 선택·완료 보관·online/offline replay·구독 사용권·공간/예산 경계를 포함한다.
+1. ADR/명세가 두 정본 설계와 기존 제품 계약 사이의 변경 범위·migration·버전 소비자를 명시한다. ARCHITECTURE.md·PROJECT_SPEC.md·채택 결정 문서를 명시적 소유 경로로 포함하며, 이미 채택한 방향과 추가 consequential decision을 구분한다. 저장/worker/encoder 선택·완료 보관·online/offline replay·구독 사용권·공간/예산 경계, OAuth client 책임·worker 중개 전송·token store 차단, cancel 경합·UNKNOWN fencing·명시적 bounded retry를 포함한다.
 2. 96+96−12=180프레임과 출력 파일 90번의 두 원본 대응을 같은 인덱스 규칙으로 설명한다. 내부 output frame 89는 S001 frame 89와 S002 frame 5에 대응한다.
 3. 240초·24fps 작품에서 원본 사용 합계−전환 overlap 합계=5,760을 만족하도록 예시를 제시한다. 60×96프레임에 overlap 144를 추가하면 5,616프레임이므로 원본 길이/여유분을 다시 계획해야 한다.
 4. 빈 노출·부족한 소스·미검수 시퀀스·stale 승인·세 컷 중첩을 차단할 수용 조건과 legacy 보존 조건이 있다.
