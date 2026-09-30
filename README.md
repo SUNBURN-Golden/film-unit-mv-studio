@@ -221,6 +221,10 @@ python -m engine.cli packets projects/project_001 --shots S001,S002
 - 영상 서비스가 프로젝트 화면비를 지원하지 않으면 가장 가까운 비율로 만듭니다. 컴파일 때 여백을 넣어 맞추고 클립 소리는 제거합니다.
 - 캐릭터·장소 참조 이미지는 `bible/characters.yaml`, `bible/locations.yaml`의 `reference_images`에 프로젝트 안 경로로 적습니다.
 
+## 프레임 애니메이션 개발 설계
+
+`FRAME_ANIMATION_V1` 확장은 [개발 시작 안내](docs/FRAME_ANIMATION_V1_DEVELOPMENT_KO.md)와 [적용 검토·상세 설계](docs/FRAME_ANIMATION_V1_DESIGN_KO.md)를 기준으로 진행합니다. 정수 프레임 시간축, 이미지 시퀀스 자산, 레이어별 노출, 전환·프레임 추적, W00 제작·검수 범위를 다루며 ANIM-001~012의 개발 순서와 수용 조건을 제공합니다. 이 문서는 구현 제안이며, 현재 v0.3의 실행 기능은 기존 안내를 따릅니다.
+
 ## 검증 범위
 
 ```bash
