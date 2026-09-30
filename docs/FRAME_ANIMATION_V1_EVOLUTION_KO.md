@@ -1,6 +1,6 @@
 # FRAME_ANIMATION_V1 — 전송 경로·seekable pack·완료 근거 고도화 설계
 
-공통 후속 규약: [중앙 #45](https://github.com/BeautifulMind-JT/ai-ops-control-plane/pull/45), 후보 HEAD `112110c2c0a996e309abf2c62a57368a9a673126`. [고정 설계](https://github.com/BeautifulMind-JT/ai-ops-control-plane/blob/112110c2c0a996e309abf2c62a57368a9a673126/engineering/docs/PROGRAM_EXECUTION_EVOLUTION_DESIGN_KO.md)는 아직 운영·승인 evidence가 아니다.
+공통 후속 규약: [중앙 #46](https://github.com/BeautifulMind-JT/ai-ops-control-plane/pull/46), 후보 HEAD `a8b7355712c58de8d27c85a535fb241a09a4037c`. [고정 설계](https://github.com/BeautifulMind-JT/ai-ops-control-plane/blob/a8b7355712c58de8d27c85a535fb241a09a4037c/engineering/docs/PROGRAM_EXECUTION_EVOLUTION_DESIGN_KO.md)는 아직 운영·승인 evidence가 아니다.
 
 작성일: 2026-09-30 KST  
 설계 상태: **후속 후보, DESIGN_ONLY / PENDING_APPROVAL_DO_NOT_DISPATCH**  
@@ -8,7 +8,7 @@
 
 이 문서는 User가 요청한 설계 고도화와 검토용 PR 작성의 결과다. 기존 감사 대상 HEAD를 이동하지 않고 그 위의 후속 후보로 준비한다. 제품 코드·실제 Drive/worker·추가 과금·credential·호스트·activation·작품 승인·벤치마크를 실행한 증거가 아니다. 채택 전에는 revision 3과 이 후보 사이의 변경을 운영 계약으로 소비하지 않는다. 독립 exact-HEAD 검토와 적용되는 사용자 채택·병합 게이트가 필요하다.
 
-범위는 [실행·저장 설계](FRAME_ANIMATION_V1_EXECUTION_STORAGE_KO.md)의 데이터 이동·pack 읽기 계약과 완료 증거를 구체화하는 것이다. 원곡·가사·frame/PTS·색·LOCK·최종 사람 승인·UNKNOWN fencing·bounded retry·독립 encode 검사와 별도 권한 경계는 유지한다. 기술 검사를 예술적 승인으로 바꾸지 않는다.
+범위는 [실행·저장 설계](FRAME_ANIMATION_V1_EXECUTION_STORAGE_KO.md)의 데이터 이동·pack 읽기 계약과 완료 증거를 구체화하는 것이다. 연속성 검토에서 발견한 ANIM-010 이후의 늦은 B adapter UI 통합은 기존 ANIM-012의 명시적 책임으로 보완한다. 원곡·가사·frame/PTS·색·LOCK·최종 사람 승인·UNKNOWN fencing·bounded retry·독립 encode 검사와 별도 권한 경계는 유지한다. 기술 검사를 예술적 승인으로 바꾸지 않는다.
 
 ## 1. 정본·소비자와 채택 순서
 
@@ -17,13 +17,13 @@
 | 데이터 이동과 자원 계산 | 2절 | ExecutionPlan·scheduler·coordinator·workspace·capability probe |
 | pack/index와 구간 검증 | 3~4절 | archive writer/reader·Drive/local backend·restore·cache |
 | 완료 facets와 실제 수용 근거 | 5절 | program 집계·qualification 보고·제품 UI·milestone 검토 |
-| 수용 fixture와 증거 | 6~7절 | ANIM-001/013/014/017/018 구현자·독립 reviewer |
+| 수용 fixture와 증거 | 6~7절 | ANIM-001/012/013/014/017/018 구현자·독립 reviewer |
 
 모듈 및 schema 이름은 구현 대상이다. v1의 `ExecutionPlan 1`·`StorageArchive 1`·`CapabilityEvidence 1`을 구현 전 ANIM-001에서 아래 필드까지 확정한다. 이미 배포된 소비자가 있으면 별도 명시적 migration/지원 버전을 정하고 무조건 덮어쓰지 않는다. 이번 후보만으로 데이터 버전을 올리거나 제품을 변경하지 않는다.
 
-중앙 선행은 [ai-ops-control-plane #44](https://github.com/BeautifulMind-JT/ai-ops-control-plane/pull/44)의 보호 브리지와 그 위에 작성할 `engineering/docs/PROGRAM_EXECUTION_EVOLUTION_DESIGN_KO.md` 후보다. 후속 설계 문서의 채택은 중앙 구현·host qualification·attestation 완료가 아니다. 중앙 문서 경로를 실제 승인 commit에 pin하기 전에는 이 pointer가 운영 증거가 될 수 없다.
+중앙 선행의 검토 후보는 #44/#45의 보호 브리지와 후속 설계를 통합·보완한 [ai-ops-control-plane #46](https://github.com/BeautifulMind-JT/ai-ops-control-plane/pull/46), 고정 HEAD `a8b7355712c58de8d27c85a535fb241a09a4037c`이다. #44를 별도로 병합하는 경로는 전제가 아니다. 후속 설계 문서의 채택은 중앙 구현·host qualification·attestation 완료가 아니다. 중앙 문서 경로를 실제 승인 commit에 pin하기 전에는 이 pointer가 운영 증거가 될 수 없다.
 
-순서는 선행 설계/등록과 해당 중앙 기능의 채택·qualification을 확인하고, 이 후속 후보를 exact HEAD로 검토해 채택한 뒤, 최종 승인 plan commit의 task에서 계약을 구현하는 것이다. `.aiops/program.json`의 PENDING과 중앙 #44 전제는 실제 근거가 확정될 때만 갱신한다. 이 bootstrap PR은 스스로 프로그램의 자동 병합 대상이 되지 않는다.
+순서는 선행 설계/등록과 해당 중앙 기능의 채택·qualification을 확인하고, 이 후속 후보를 exact HEAD로 검토해 채택한 뒤, 최종 승인 plan commit의 task에서 계약을 구현하는 것이다. `.aiops/program.json`의 PENDING과 중앙 #46 후보 포인터는 실제 채택·qualification commit 및 근거가 확정될 때만 갱신한다. 이 bootstrap PR은 스스로 프로그램의 자동 병합 대상이 되지 않는다.
 
 ## 2. 기본 경로: coordinator 중개를 데이터 DAG로 표현
 
@@ -151,6 +151,7 @@ ANIM-018의 원격 수용 완료는 **실제로 허용된 한 경로**에서 240
 | `RESTORE-BOUNDARY` | 파일명/path/symlink 공격·기존 승인 output·공간 부족 | 앱 생성 basename+허용 root만 사용; 승인 output/원본 유지; offline 완료 오표시 없음 |
 | `FACETS-NO-RUNTIME` | fake worker PASS와 merged 개발 delivery, 실제 remote 접근 없음 | host 근거 있으면 개발 DONE 가능; qualification UNQUALIFIED, 수용 PENDING, release NOT_AUTHORIZED 유지 |
 | `FACETS-REAL-SCOPE` | 실제 한 허용 route의 고정 통합 fixture와 실패 주입 | 검사한 scope만 QUALIFIED; 실제 수용 evidence로 해당 gate ACCEPTED; 예술적 승인·release 자동승격 없음 |
+| `UI-LATE-ADAPTER` | 011이 010보다 먼저 비활성 연결로 병합된 뒤 두 결과를 012에서 통합 | [개발 안내의 ANIM-012 수용](FRAME_ANIMATION_V1_DEVELOPMENT_KO.md)의 UI-B-READY/INPUT-QUOTE/UNKNOWN/CANCEL-RACE를 실행; fake로 늦은 활성 연결·오류·fence를 검증하고 실제 provider 호출 0 |
 
 성능 수용은 동일 input/quality·cold/warm·실제 network/device 조건에서 edge별 바이트와 요청수, stage/전체 완료 시간, peak PC/worker disk/RAM/VRAM·spool·검증 읽기, 중단 후 복구를 보고한다. 반복 측정의 변동과 수동 동작 시간을 포함한다. 구현/실측 없는 배수·최소 용량·완료 시간을 약속하지 않는다.
 
@@ -159,9 +160,12 @@ ANIM-018의 원격 수용 완료는 **실제로 허용된 한 경로**에서 240
 | node | 추가 명세·완료 증거 |
 |---|---|
 | ANIM-001 | 2절 transfer edge/위치·3절 pack/index·5절 facets의 schema/소비자/migration 고정. 권한 없는 DIRECT_DRIVE 제외 |
+| ANIM-012 | 병합된 010/011의 늦은 B adapter UI 연결과 UI-LATE-ADAPTER fixture. 기존 240초·두 모드·세 OS 패키지 수용도 유지; fake UI 증거를 실제 provider/작품 승인으로 승격하지 않음 |
 | ANIM-013 | seekable pack 작성/읽기·index/member/full hash 구분·미지원 fallback·bounded restore·PACK/RESTORE fixtures |
 | ANIM-014 | 실제 기본 relay edge·비밀 없는 receipt·resource reservation·backpressure·ROUTE fixtures. 기존 UNKNOWN/cancel fence 유지 |
 | ANIM-017 | relay의 실제 이동과 경합까지 critical path에 포함; sparse 재컴파일의 request/bytes/decode amplification 실측 |
 | ANIM-018 | 실제 허용된 route의 통합 수용 evidence와 네 facets 보고. 개발 merged와 실제 qualification/작품 approval/release 구분 |
 
 node ID·DAG·audit floor·milestone·LOCK·사용자 별도 결정은 유지한다. 이 후보 명세는 실행 증거가 아니므로 PENDING을 제거하거나 release/서비스 자격을 만들어내지 않는다.
+
+중앙 bootstrap의 현 채택 검토 후보는 #44/#45를 통합·보완한 [#46](https://github.com/BeautifulMind-JT/ai-ops-control-plane/pull/46)이다. 기존 #44 감사의 DECISION_REQUIRED를 통과한 것으로 간주하지 않는다. PA-1 권한 예외는 PENDING이며, 보호된 reconcile과 실제 host qualification 전에는 전체 실행 NOT_READY다. 기존 중앙 포인터는 이전 체크포인트 기록이고 최종 승인 registration에는 실제 채택·qualification commit을 pin해야 한다.

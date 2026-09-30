@@ -83,8 +83,8 @@ ANIM-001~018은 개발 항목 이름이다. 중앙 control-plane의 TASK_ID, 실
 | ANIM-008 | 007 | native C 계층·pivot·대체 그림·mask | 피사체 동작과 카메라 이동을 별도로 재생 |
 | ANIM-009 | 007 | A 제어 이미지·packet·수동 hand-off | 역할·시점·참조를 확인한 draft import |
 | ANIM-010 | 008, 009 | capability·구간·quote·UNKNOWN·PTS adapter | fake provider로 필수 입력·중복 제출 차단 |
-| ANIM-011 | 007, 008, 009 | 기존 UI 연결, 010 기능은 adapter 구현 후 연결 | 한 컷 준비→검토→수정→출력·승인 |
-| ANIM-012 | 010, 011 | 240초 통합 회귀·desktop packaging·문서 | 두 모드 회귀와 각 OS의 패키지 검사 |
+| ANIM-011 | 007, 008, 009 | 기존 UI 연결, 010 미병합 기능은 비활성으로 둠 | 한 컷 준비→검토→수정→출력·승인; 늦은 adapter 연결은 012 책임 |
+| ANIM-012 | 010, 011 | 240초 통합 회귀·늦은 B adapter UI 연결·desktop packaging·문서 | 두 모드 회귀·fake adapter UI 수용·각 OS 패키지 검사 |
 | ANIM-013 | 001, 003, 006 | browser Drive OAuth·archive·bounded cache·restore | 멤버/원본 보존·공간 상한·접근/끊김·복원 |
 | ANIM-014 | 001, 004, 007, 013 | FrameStream·ExecutionPlan·worker·receipt·UNKNOWN | 같은 frame 계약의 실제 remote·stale/중복 fence |
 | ANIM-015 | 001, 004, 006 | encode/mux/verify 분리·복수 driver | FFmpeg와 독립 native encode의 실제 품질·PTS·원음 |
@@ -93,6 +93,21 @@ ANIM-001~018은 개발 항목 이름이다. 중앙 control-plane의 TASK_ID, 실
 | ANIM-018 | 008, 012~017 | 240초·1080p·Drive→worker→archive·UI | 실제 실행·restore·실패 주입·성능 보고 |
 
 모듈·UI·선택 CLI 후보는 상세 설계 14~15절과 실행·저장 설계 10절을 따른다. 한 티켓의 acceptance criteria는 상세 설계 16~17절과 실행·저장 설계 10~11절의 해당 범위를 참조한다. 의존성은 계약을 고정하기 위한 권장 순서이며, 여러 writer를 자동으로 dispatch하는 지시가 아니다.
+
+## ANIM-012: 늦게 병합된 B adapter의 UI 통합 수용
+
+ANIM-011은 ANIM-010보다 먼저 병합될 수 있다. 이때 adapter 연결 지점을 비활성으로 둔 것은 011의 허용된 중간 결과이며, 이후 adapter가 생겨도 비활성 상태를 최종 통합 완료로 남기지 않는다. **ANIM-012가 010과 011의 병합 결과를 같은 source HEAD에서 연결하고 검사한다.** 기존 DAG와 18개 node ID는 유지한다.
+
+012의 산출물은 기존 앱에서 B 경로의 제어 입력·capability·quote/예약·요청·상태·결과 검증·draft import를 adapter에 연결하는 구현과 UI 수용 증거다. 실제 provider 호출이나 유료 생성은 하지 않으며, 명시적인 개발/시험용 fake adapter와 합성 입력을 사용한다. fixture에서 구성한 LOCK·quote·승인·예약은 엔진 경계 검사이며 실제 작품·지출·provider qualification 승인으로 기록하지 않는다.
+
+| fixture | 앱에서 수행할 동작 | 필요한 증거 |
+|---|---|---|
+| `UI-B-READY` | 고정 입력과 scope에 맞는 fake capability/quote로 요청하고 반환 시퀀스를 draft로 가져옴 | 연결 지점이 활성화되고 job/attempt·입력 hash·quote binding이 유지됨; 반환 bytes/시점 검증 후 draft import; 외부 provider 요청 0 |
+| `UI-B-INPUT-QUOTE` | 필수 ref/pose/end 입력을 누락하거나 quote 후 입력/가격/권한 binding을 변경함 | 원인을 UI에 표시하고 제출 전에 차단; fake submit 횟수 0; 참조를 무단으로 자르거나 새 quote를 승인으로 간주하지 않음 |
+| `UI-B-UNKNOWN` | fake가 접수 뒤 응답을 잃게 하고 동일 입력으로 다시 실행하려 함 | 기존 identity의 UNKNOWN을 표시하고 새 job/attempt·대체 제출·예약 해제를 차단; 명시적 동일 작업 확인만 수행하고 자동 polling/retry 없음 |
+| `UI-B-CANCEL-RACE` | fake에서 취소 요청 후 완료/취소 확인 순서를 각각 바꿈 | 요청과 확인을 구분; 완료가 먼저 확정되면 같은 identity 결과를 검증하고 draft로 취급; 종료 불명 중 예약·대체 제출을 fence하고 취소를 환불로 표시하지 않음 |
+
+해당 증거는 source HEAD·fixture/input digest·fake adapter version·동작과 관측 결과·실제 실행 명령에 연결한다. 늦은 연결을 기존 011의 완료 기록에 덧씌우지 않고 012 delivery의 변경/수용 범위로 기록한다. 이 UI 통합과 기존 240초/두 모드/세 OS 패키지 조건을 함께 충족해야 012의 개발 수용을 완료할 수 있다. 실제 B provider의 사용 가능 여부·작품 채택·예술적 승인·release는 별도 근거를 요구한다.
 
 ## 첫 기능 묶음의 검증
 
