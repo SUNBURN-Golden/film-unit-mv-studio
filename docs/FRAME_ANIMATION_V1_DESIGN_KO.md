@@ -10,6 +10,8 @@
 
 설계 revision 3 (2026-09-30): 옵션 A 채택 경로의 결정 기록과 ARCHITECTURE.md·PROJECT_SPEC.md의 새 모드 예외를 추가했다. main 41e4047의 AGENTS·공유 정책 변경을 이 브랜치에 함께 통합해 감사 입력에 포함한다. remote worker에는 사용자 OAuth token을 전달하지 않는 중개 전송을 기본으로 고정하고, cancel/UNKNOWN 및 명시적 bounded retry를 보완했다. 최초 문서의 외부 CI·중앙 host 상태는 작성자가 제공한 탐색 포인터이며 이번 감사의 로컬 입력만으로 입증된 실적으로 취급하지 않는다.
 
+설계 revision 4 후보 (2026-09-30): [전송·pack·완료 근거 고도화](FRAME_ANIMATION_V1_EVOLUTION_KO.md)는 기본 coordinator relay의 실제 transfer edge/위치·seekable pack의 구간/member 검증·bounded restore·개발/qualification/수용/release 독립 facets를 제안한다. 선행 감사 HEAD를 보존한 후속 DESIGN_ONLY 후보이며 채택 전 운영 정본 변경·제품 구현·실제 qualification·작품 승인·release를 뜻하지 않는다.
+
 ## 1. 판단
 
 **적용 가능하다. 기존 Film Unit의 프로젝트·프레임 계약을 유지하며, 제작 계층과 저장·실행·인코더 선택 계층을 추가한다. 새 모드의 실행 위치를 PC에 고정하지 않는다.**
@@ -606,6 +608,8 @@ Build 2는 선택 원본·MotionPlan·노출/합성 recipe·전환·frame_map·�
 
 index는 허용된 이미지 형식·명시적 순서·파일 hash를 가진다. 선택한 저장 backend의 원본 보관·hash 검증과 index commit이 끝나기 전에는 선택 자산으로 공개하지 않는다. ZIP import를 추가하면 경로 탈출·절대경로·symlink·압축 폭탄·누락 멤버를 검사하고 원본 경로와 작업 코드를 실행하지 않는다.
 
+seekable pack 후보의 index는 고정 pack bounds·멤버 offset/length/hash·coverage를 포함한다. archive가 pin한 index를 먼저 확인하고 전체 멤버 hash 검증 뒤에만 decode한다. 부분 검증은 전체 pack 검증과 구분하며 Range 미지원/전체 응답은 cap·사용량·시간을 먼저 허용한 명시적 fallback만 소비한다. decode 확장·restore path·partial 상태를 포함한 수용 계약은 고도화 설계 3~4·6절이다.
+
 ## 13. 비용·노동·구독 hand-off
 
 기존 budget/ledger/quote/approval 구조를 활용한다. USD·provider credits는 별도 상한과 예약으로 관리하고, 장수와 GPU 시간·사람 노동 시간을 화폐처럼 서로 합산하지 않는다.
@@ -728,6 +732,8 @@ legacy는 현재 로컬 파일·project_mutex 경로를 유지한다. 새 모드
 | ANIM-018 원격 통합 | 240초·1080p·Drive/remote/encoder·UI | 실제 실행·archive/replay·실패 주입·성능 보고 |
 
 ANIM-003~007이 **외부에서 제작한 프레임을 받아 전체 작품을 컴파일하는 첫 기능 묶음**이다. ANIM-008은 native 제작 능력을 추가하고, ANIM-009~010은 프레임 제작 입력·생성 연결을 확대한다. ANIM-013~018의 의존성·수용 조건은 실행·저장 설계 10~11절을 따른다. 로컬 기준선 완료를 새 모드의 원격·성능 목표 완료로 집계하지 않는다.
+
+후속 고도화의 node 계약은 고도화 설계 7절을 함께 소비한다. 중앙 `node_state=DONE`은 host-pinned delivery가 실제 merge된 개발 결과이며, 필요한 실제 환경의 `qualification_state`와 gate의 `acceptance_state`, 별도 `release_state`는 다른 근거로 보고한다. 실제 원격 자원이 없으면 fake 회귀·개발 merge만으로 ANIM-018 목표 수용이나 실제 작품 승인을 완료로 표시하지 않는다. 예술적 완료·sealed build 승인·공개 배포 권한은 기존 독립 계약을 유지한다.
 
 이 첫 기능 묶음도 완성 애니메이션을 자동으로 만들어 주지는 않는다. 필요한 그림·레이어·동작은 실제 제작하고 채택해야 한다. W00은 소프트웨어의 합성 fixture와 별개로 작품의 경로 적합성을 검증한다.
 

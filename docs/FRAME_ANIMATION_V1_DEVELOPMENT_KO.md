@@ -22,6 +22,7 @@
 3. [실행·저장 성능 설계](FRAME_ANIMATION_V1_EXECUTION_STORAGE_KO.md) 1~9절: Drive archive·workspace·FrameStream·worker·encoder·구독·scheduler·seal.
 4. 상세 설계 9~13·15~18절 및 실행·저장 설계 10~11절: LOCK·검수·비용·모듈·티켓·수용 테스트.
 5. [공유 정책 포인터](CONTROL_PLANE_POINTER.md)와 실제 착수 시 사용할 [TASKS/TEMPLATE.md](../TASKS/TEMPLATE.md).
+6. [전송·pack·완료 근거 고도화 후보](FRAME_ANIMATION_V1_EVOLUTION_KO.md): transfer edge·seekable pack·bounded restore·독립 완료 facets. 선행 #19/#20 위의 DESIGN_ONLY 후보이며 채택 후 승인 plan commit에 pin한다.
 
 ANIM-001~018은 개발 항목 이름이다. 중앙 control-plane의 TASK_ID, 실행 소유자 또는 dispatch 상태를 자동 생성한 것이 아니다. 실제 구현 작업의 canonical GitHub task는 이 명세의 해당 절을 링크하고, mutable 실행 상태는 issue/PR/control record에 둔다.
 
@@ -43,6 +44,8 @@ ANIM-001~018은 개발 항목 이름이다. 중앙 control-plane의 TASK_ID, 실
 | 빌드·replay | Build 2 archive·frame_map·PNG·encode receipt; LOCAL_FULL offline / DRIVE_BOUNDED online·restore; Build 1 호환 |
 | 저장·작업 공간 | browser OAuth·object/member hash·immutable revision·PC/worker disk·RAM·VRAM·bounded cache |
 | 실행·인코더 | ExecutionPlan·FrameStream·capability·job identity/UNKNOWN·복수 driver·mux·독립 verifier·품질·entitlement·예산 |
+| 전송·pack 후보 | coordinator relay의 실제 위치/edge·resource reservation, seekable pack offset/length/member hash·range/full 검증·fallback·restore |
+| 완료 증거 후보 | host-pinned merged 개발 node와 qualification/acceptance/release의 독립 facets·필요 scope·현재 evidence binding |
 
 ### 지켜야 할 조건
 
@@ -64,6 +67,7 @@ ANIM-001~018은 개발 항목 이름이다. 중앙 control-plane의 TASK_ID, 실
 3. 240초·24fps 작품에서 원본 사용 합계−전환 overlap 합계=5,760을 만족하도록 예시를 제시한다. 60×96프레임에 overlap 144를 추가하면 5,616프레임이므로 원본 길이/여유분을 다시 계획해야 한다.
 4. 빈 노출·부족한 소스·미검수 시퀀스·stale 승인·세 컷 중첩을 차단할 수용 조건과 legacy 보존 조건이 있다.
 5. 아키텍처/승인 의미를 변경하는 계약은 저장소의 A3·non-author 검토와 User 결정 근거에 연결한다. 문서 작성자의 자체 검증을 독립 감사 PASS로 기록하지 않는다.
+6. 고도화 후보를 채택한 task는 고도화 설계 1~5절의 schema/소비자·경로 eligibility·index bounds·검증/확정 순서·실제 완료 근거를 ADR에 고정한다. worker 직접 Drive 인증은 별도 ADR/사용자 결정/qualification 전에는 기본 후보에서 제외한다. 설계 채택이 중앙 구현·host qualification이나 제품 자격을 대신하지 않는다.
 
 ## 구현 묶음과 의존성
 
@@ -109,6 +113,10 @@ ANIM-003~007은 실제 원본 그림과 파일을 사용하는 기능 단위로 
 ANIM-013~018은 실행·저장 설계 11절을 따른다. 실제 Drive/member hash·cache/spool 상한·PC/worker 공간, job UNKNOWN/stale/중복·seal crash, 독립 native encode·frame/PTS/원음/품질, 실제 구독의 검증된 범위, 고정 archive online replay/offline restore를 확인한다. 권한·GPU·도구가 없으면 fake 성공과 실제 qualification 미완료를 분리한다.
 
 성능 보고는 동일 input/quality의 cold/warm end-to-end 시간, stage timeline, peak PC/worker disk·RAM·VRAM, 전송·cache hit·사용량/비용·중단 후 복구를 포함한다. CLI를 사용하지 않는 browser/app/notebook 사용자 흐름을 실제 검증한다.
+
+고도화 후보의 ANIM-013/014/017/018은 고도화 설계 6~7절의 ROUTE/PACK/RESTORE/FACETS fixture를 해당 범위에 구현한다. 기본 relay의 PC WAN 이동·공유 링크 경합까지 보고하고, 한 컷 sparse 변경은 필요 member/halo의 실제 read/request/decode 증폭을 확인한다. Range 미지원은 명시적으로 사전 예약한 whole-pack fallback 또는 차단으로 처리한다. 부분 멤버 검증으로 full-pack 검증/완료를 기록하지 않는다.
+
+개발 결과의 `node_state=DONE`은 중앙의 host-pinned merged delivery 근거를 요구한다. `qualification_state=NOT_REQUIRED/UNQUALIFIED/PARTIAL/QUALIFIED`, `acceptance_state=NOT_REQUIRED/PENDING/ACCEPTED/REJECTED`, `release_state=NOT_AUTHORIZED/NOT_RELEASED/RELEASED`는 별도 현재 scope 근거로 보고한다. 필요한 실제 환경이 없으면 UNQUALIFIED/PENDING으로 남기며 NOT_REQUIRED로 면제하지 않는다. ANIM-018 목표 수용은 실제 허용된 한 경로의 240초 통합 evidence가 필수다. 코드 개발 merge·fake 검사·합성 qualification은 작품 사람 승인과 release 권한을 생성하지 않는다.
 
 ## 이번 설계의 실행 경계
 

@@ -37,3 +37,22 @@ registered main plan commit, and let the central layer materialize canonical tas
 issues. Do not manufacture task envelopes, MACs, session receipts, audit verdicts
 or host state. The bootstrap PRs themselves are not program tasks and are not
 self-authorized for automatic merge.
+
+## Design evolution candidate
+
+[FRAME_ANIMATION_V1 evolution](../FRAME_ANIMATION_V1_EVOLUTION_KO.md) is a
+DESIGN_ONLY follow-up on the fixed registration HEAD
+`c716bce521bb897b6196b0111f9615973a00584e`. It preserves node IDs, dependencies,
+audit floors, milestone gates, LOCKs and all separate User permissions. The
+candidate specifies coordinator-mediated transfer edges, seekable pack/range
+verification and bounded restore, and independent completion facets. It does not
+move #19/#20's audit HEADs or claim actual product/runtime qualification.
+
+The prospective central contract is
+`engineering/docs/PROGRAM_EXECUTION_EVOLUTION_DESIGN_KO.md`, a follow-up on
+central #44. Require its actual adopted commit, applicable implemented central
+consumer and host qualification before operational consumption. Keep PENDING
+until the real approval/merge/qualification pointers exist. Development DONE
+requires the host-pinned merged delivery; qualification, acceptance and release
+need their own current scope evidence. Fake success or merge alone never means
+the remote product is usable, the artwork is approved or release is authorized.
