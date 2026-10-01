@@ -4,7 +4,8 @@
 
 작성일: 2026-09-30 KST  
 설계 상태: **후속 후보, DESIGN_ONLY / PENDING_APPROVAL_DO_NOT_DISPATCH**  
-고정 선행: 설계 #19 `c66a90cedb4ef0da5719b69c9771da0b46fd7868`, 등록 #20 `c716bce521bb897b6196b0111f9615973a00584e`
+고정 선행: 설계 #19 `c66a90cedb4ef0da5719b69c9771da0b46fd7868`  
+과거 기록(고정 선행 아님): 이 PR #20의 이전 HEAD `c716bce521bb897b6196b0111f9615973a00584e`
 
 이 문서는 User가 요청한 설계 고도화와 검토용 PR 작성의 결과다. 기존 감사 대상 HEAD를 이동하지 않고 그 위의 후속 후보로 준비한다. 제품 코드·실제 Drive/worker·추가 과금·credential·호스트·activation·작품 승인·벤치마크를 실행한 증거가 아니다. 채택 전에는 revision 3과 이 후보 사이의 변경을 운영 계약으로 소비하지 않는다. 독립 exact-HEAD 검토와 적용되는 사용자 채택·병합 게이트가 필요하다.
 
@@ -202,7 +203,7 @@ ANIM-018은 앞선 코드-only integration을 actual route qualification로 닫�
 
 node ID·DAG·audit floor·milestone·LOCK·사용자 별도 결정은 유지한다. 018의 merge executor 위임만 회수해 실제 qualification evidence의 User-only 병합 조건을 강제한다. 이 후보 명세는 실행 증거가 아니므로 PENDING을 제거하거나 release/서비스 자격을 만들어내지 않는다.
 
-중앙 bootstrap의 현 채택 검토 후보는 #44/#45를 통합·보완한 [#46](https://github.com/BeautifulMind-JT/ai-ops-control-plane/pull/46)이다. 기존 #44 감사의 DECISION_REQUIRED를 통과한 것으로 간주하지 않는다. PA-1 권한 예외는 PENDING이며, 보호된 reconcile과 실제 host qualification 전에는 전체 실행 NOT_READY다. 기존 중앙 포인터는 이전 체크포인트 기록이고 최종 승인 registration에는 실제 채택·qualification commit을 pin해야 한다.
+중앙 bootstrap의 현 채택 검토 대상은 [#47](https://github.com/BeautifulMind-JT/ai-ops-control-plane/pull/47)의 HEAD `09e161caa652d75e9617caf632b3b9899be35740` 단일 후보다. 이 source는 새 독립 감사 PASS·설치·qualification·activation 증거가 아니다. 기존 #44 감사의 DECISION_REQUIRED를 통과한 것으로 간주하지 않는다. PA-1 권한 예외는 PENDING이며, 보호된 reconcile과 실제 host qualification 전에는 전체 실행 NOT_READY다. 기존 중앙 포인터는 이전 체크포인트 기록이고 최종 승인 registration에는 실제 채택·qualification commit을 pin해야 한다.
 
 ## 8. 제품 계약 고도화 — 2026-10-01 후보
 
