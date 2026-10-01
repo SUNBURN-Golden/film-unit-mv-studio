@@ -51,3 +51,4 @@ User-authorized merge; program mode delegates only the merge executor (User deci
 `AGENTS.md` program mode section). No automatic fallback, retries, polling or standing routines.
 
 Migration history: https://github.com/BeautifulMind-JT/ai-ops-control-plane/issues/1
+

@@ -2,6 +2,25 @@
 
 FILM UNIT is a local, file-based music-video compiler. Work and the director establish the story, art direction and approved shot inputs. The central path selects existing assets, compiles the entire song and preserves a new build. Generation is a separate workflow with its existing spend and approval controls.
 
+## FRAME_ANIMATION_V1 scope exception (2026-09-30)
+
+The descriptions below remain the implemented v0.3 / LEGACY_MV contract. The
+User's [FRAME_ANIMATION_V1 adoption decision](docs/decisions/FRAME_ANIMATION_V1_ADOPTION_20260930.md)
+adopts a separate development contract for the explicitly selected new mode:
+browser Google OAuth and Drive archives; fixed-plan remote/subscription compose
+and encode; qualified encoder drivers; immutable worker ranges in parallel with
+one coordinator serializing state and build seals. LOCAL_FULL preserves copied
+inputs and offline replay. DRIVE_BOUNDED preserves fixed object/member revisions
+and hashes, provides online replay and explicit offline restore, and reports
+external deletion or revoked access as an unavailable archive.
+
+The [execution/storage design](docs/FRAME_ANIMATION_V1_EXECUTION_STORAGE_KO.md)
+governs those exceptions for the new mode. ANIM-001 owns the detailed ADR, schema
+consumers and migration boundaries before implementation. This decision does not
+install these features, submit paid jobs, provision credentials or activate a
+host. Existing projects, Build 1 and creative-generation approvals keep their
+legacy contracts; mode and approval migration is explicit.
+
 ## Sources of truth
 
 | Source | Authority |

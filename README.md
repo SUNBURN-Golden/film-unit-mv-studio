@@ -221,6 +221,10 @@ python -m engine.cli packets projects/project_001 --shots S001,S002
 - 영상 서비스가 프로젝트 화면비를 지원하지 않으면 가장 가까운 비율로 만듭니다. 컴파일 때 여백을 넣어 맞추고 클립 소리는 제거합니다.
 - 캐릭터·장소 참조 이미지는 `bible/characters.yaml`, `bible/locations.yaml`의 `reference_images`에 프로젝트 안 경로로 적습니다.
 
+## 프레임 애니메이션 개발 설계
+
+`FRAME_ANIMATION_V1` 확장은 [채택 결정](docs/decisions/FRAME_ANIMATION_V1_ADOPTION_20260930.md), [개발 시작 안내](docs/FRAME_ANIMATION_V1_DEVELOPMENT_KO.md), [상세 설계](docs/FRAME_ANIMATION_V1_DESIGN_KO.md), [Drive 저장·원격 실행·복수 인코더 성능 설계](docs/FRAME_ANIMATION_V1_EXECUTION_STORAGE_KO.md)를 개발 기준으로 진행합니다. 정수 프레임·시퀀스·노출·전환·W00 검수와 함께 브라우저 Google 로그인, Drive에서 읽는 컴파일, AI 구독 실행 환경, FFmpeg 외 native 인코더, 성능 우선 scheduler를 다룹니다. ANIM-001~018의 순서·수용 조건을 제공합니다. 새 모드 예외는 ARCHITECTURE.md·PROJECT_SPEC.md에 연결되어 있으며 구현·실서비스 qualification은 후속 작업입니다. 현재 v0.3 기능은 기존 안내를 따릅니다.
+
 ## 검증 범위
 
 ```bash
