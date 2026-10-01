@@ -1,6 +1,6 @@
 # FRAME_ANIMATION_V1 — 전송 경로·seekable pack·완료 근거 고도화 설계
 
-공통 후속 규약: [중앙 #46](https://github.com/BeautifulMind-JT/ai-ops-control-plane/pull/46), 후보 HEAD `a8b7355712c58de8d27c85a535fb241a09a4037c`. [고정 설계](https://github.com/BeautifulMind-JT/ai-ops-control-plane/blob/a8b7355712c58de8d27c85a535fb241a09a4037c/engineering/docs/PROGRAM_EXECUTION_EVOLUTION_DESIGN_KO.md)는 아직 운영·승인 evidence가 아니다.
+공통 후속 규약: [중앙 #47](https://github.com/BeautifulMind-JT/ai-ops-control-plane/pull/47), 후보 HEAD `09e161caa652d75e9617caf632b3b9899be35740`. [고정 설계](https://github.com/BeautifulMind-JT/ai-ops-control-plane/blob/09e161caa652d75e9617caf632b3b9899be35740/engineering/docs/PROGRAM_EXECUTION_EVOLUTION_DESIGN_KO.md)는 아직 운영·승인 evidence가 아니다.
 
 작성일: 2026-09-30 KST  
 설계 상태: **후속 후보, DESIGN_ONLY / PENDING_APPROVAL_DO_NOT_DISPATCH**  
@@ -21,9 +21,9 @@
 
 모듈 및 schema 이름은 구현 대상이다. v1의 `ExecutionPlan 1`·`StorageArchive 1`·`CapabilityEvidence 1`을 구현 전 ANIM-001에서 아래 필드까지 확정한다. 이미 배포된 소비자가 있으면 별도 명시적 migration/지원 버전을 정하고 무조건 덮어쓰지 않는다. 이번 후보만으로 데이터 버전을 올리거나 제품을 변경하지 않는다.
 
-중앙 선행의 검토 후보는 #44/#45의 보호 브리지와 후속 설계를 통합·보완한 [ai-ops-control-plane #46](https://github.com/BeautifulMind-JT/ai-ops-control-plane/pull/46), 고정 HEAD `a8b7355712c58de8d27c85a535fb241a09a4037c`이다. #44를 별도로 병합하는 경로는 전제가 아니다. 후속 설계 문서의 채택은 중앙 구현·host qualification·attestation 완료가 아니다. 중앙 문서 경로를 실제 승인 commit에 pin하기 전에는 이 pointer가 운영 증거가 될 수 없다.
+중앙 선행의 검토 후보는 #44/#45의 보호 브리지와 후속 설계를 통합·보완한 [ai-ops-control-plane #47](https://github.com/BeautifulMind-JT/ai-ops-control-plane/pull/47), 고정 HEAD `09e161caa652d75e9617caf632b3b9899be35740`이다. #44를 별도로 병합하는 경로는 전제가 아니다. 후속 설계 문서의 채택은 중앙 구현·host qualification·attestation 완료가 아니다. 중앙 문서 경로를 실제 승인 commit에 pin하기 전에는 이 pointer가 운영 증거가 될 수 없다.
 
-순서는 선행 설계/등록과 해당 중앙 기능의 채택·qualification을 확인하고, 이 후속 후보를 exact HEAD로 검토해 채택한 뒤, 최종 승인 plan commit의 task에서 계약을 구현하는 것이다. `.aiops/program.json`의 PENDING과 중앙 #46 후보 포인터는 실제 채택·qualification commit 및 근거가 확정될 때만 갱신한다. 이 bootstrap PR은 스스로 프로그램의 자동 병합 대상이 되지 않는다.
+순서는 선행 설계/등록과 해당 중앙 기능의 채택·qualification을 확인하고, 이 후속 후보를 exact HEAD로 검토해 채택한 뒤, 최종 승인 plan commit의 task에서 계약을 구현하는 것이다. `docs/aiops/FRAME_ANIMATION_V1_PROGRAM_DRAFT.json`의 PENDING과 중앙 #47 최종 source 후보 포인터는 실제 채택·qualification commit 및 근거가 확정될 때만 갱신한다. 이 bootstrap PR은 스스로 프로그램의 자동 병합 대상이 되지 않는다.
 
 ## 2. 기본 경로: coordinator 중개를 데이터 DAG로 표현
 
@@ -206,7 +206,7 @@ node ID·DAG·audit floor·milestone·LOCK·사용자 별도 결정은 유지한
 
 ## 8. 제품 계약 고도화 — 2026-10-01 후보
 
-이번 후속은 transfer/pack 문서만 추가하는 단계에서 더 나아가 정본 상세 설계·실행/저장 설계와 `.aiops/program.json`을 함께 바꾼다. 기존 ANIM-001~018의 ID·범위·선행은 유지하고, 아래 5개 후속 node를 새 승인 plan revision의 23개 개발 분모에 포함한다. 기존 실행 중 plan이나 host 등록을 자동 갱신하지 않으며 전체 closeout의 추가 node는 기존 bootstrap 기능 구현을 선행에서 막지 않는다.
+이번 후속은 transfer/pack 문서만 추가하는 단계에서 더 나아가 정본 상세 설계·실행/저장 설계와 `docs/aiops/FRAME_ANIMATION_V1_PROGRAM_DRAFT.json`을 함께 바꾼다. 기존 ANIM-001~018의 ID·범위·선행은 유지하고, 아래 5개 후속 node를 새 승인 plan revision의 23개 개발 분모에 포함한다. 기존 실행 중 plan이나 host 등록을 자동 갱신하지 않으며 전체 closeout의 추가 node는 기존 bootstrap 기능 구현을 선행에서 막지 않는다.
 
 | 보강 계약 | 정본 위치 | 구현 연결 |
 |---|---|---|
@@ -219,4 +219,4 @@ node ID·DAG·audit floor·milestone·LOCK·사용자 별도 결정은 유지한
 
 각 추가 node의 구체 산출물·fixture·선행·A3/A2·소유 책임은 [개발 안내](FRAME_ANIMATION_V1_DEVELOPMENT_KO.md)의 후속 표와 executable plan spec에 명시한다. 분모 23은 개발 scope count이며 actual provider qualification·작품 approval·release count가 아니다. 예술적 수용은 합성 240초, fake worker·CI PASS로 대신하지 않으며 실제 W00/최종 출력이 없으면 PENDING이다. 실제 자원 부재를 NOT_REQUIRED로 면제하지 않는다.
 
-중앙 [#47](https://github.com/BeautifulMind-JT/ai-ops-control-plane/pull/47), source HEAD `94a768e19df12703ea0b9a49e49972feb2f6ef4f`는 #46 위의 실패 증거/한도 재개 구현 후보이며 아직 설치·host qualification 근거가 아니다. 그 보호된 Fable audit 재개를 제품의 generation/worker/upload 재제출 권한으로 전이하지 않는다. 이 제품 plan의 채택·actual runtime/사용권 qualification·User 작품 검토와 중앙의 formal 감사·host 적용은 각각 증거를 요구한다.
+중앙 [#47](https://github.com/BeautifulMind-JT/ai-ops-control-plane/pull/47), source HEAD `09e161caa652d75e9617caf632b3b9899be35740`는 #47의 실패 증거/한도 재개 구현 후보이며 아직 설치·host qualification 근거가 아니다. 그 보호된 Fable audit 재개를 제품의 generation/worker/upload 재제출 권한으로 전이하지 않는다. 이 제품 plan의 채택·actual runtime/사용권 qualification·User 작품 검토와 중앙의 formal 감사·host 적용은 각각 증거를 요구한다.

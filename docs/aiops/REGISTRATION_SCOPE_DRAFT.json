@@ -5,24 +5,36 @@
   "program": "film",
   "encoding": "UTF8_JSON_SORTED_KEYS_COMPACT_ENSURE_ASCII_FALSE",
   "plan_definition": {
-    "path": ".aiops/program.json",
+    "path": "docs/aiops/FRAME_ANIMATION_V1_PROGRAM_DRAFT.json",
     "excluded_root_fields": [
       "approval_pointer",
       "registration_scope"
     ],
-    "definition_sha256": "9694f0fd011aff84ac1d060754a3cff6b91139fad677d2f70c23c810e734bf6d",
+    "definition_sha256": "22f0a7bff1819431650cd3f69d2bf5c0df201814b0e9270ce83c3e5785d7ef8c",
     "node_count": 23
   },
   "pending_catalogues": [],
   "finance_subset": null,
   "candidate_node_count": 23,
   "user_only_nodes": [
-    "anim-018"
+    "anim-001",
+    "anim-003",
+    "anim-005",
+    "anim-006",
+    "anim-010",
+    "anim-013",
+    "anim-014",
+    "anim-015",
+    "anim-016",
+    "anim-018",
+    "anim-019",
+    "anim-020",
+    "anim-021"
   ],
   "node_definitions": [
     {
       "id": "anim-001",
-      "definition_sha256": "58a60ca775ed5f724f89cff6452c58d3d1f7f51a280eb666c3382e3fc824e7d7"
+      "definition_sha256": "f18f289dab88cbfd1eada4afd633244cc84533b41608cce77123768c663a6085"
     },
     {
       "id": "anim-002",
@@ -30,7 +42,7 @@
     },
     {
       "id": "anim-003",
-      "definition_sha256": "df7eeb6b762da0c21c32574b43c50e4011b3bfdc54555bfd9973a380307c33c3"
+      "definition_sha256": "2fba66649e6b9a8ca46ee92bdf85e66dd2821aa11f10bbd8e882c33422b5b06f"
     },
     {
       "id": "anim-004",
@@ -38,11 +50,11 @@
     },
     {
       "id": "anim-005",
-      "definition_sha256": "223b7833236696f2f765fd92b5abf2404c1c734269c4267d3a702b4a5a75807d"
+      "definition_sha256": "600bee250b55ce15c7226e4eb49d38f5d49edea938fcd11ccf5478a6f9d33f6d"
     },
     {
       "id": "anim-006",
-      "definition_sha256": "68fc37594add9eee243649df64564543ede03f7e6dc4ba4696bb38bb0db2a3e4"
+      "definition_sha256": "912da2ad821855783ae09d8a2aa490204013d2bf3656458b294ac2544b109864"
     },
     {
       "id": "anim-007",
@@ -58,7 +70,7 @@
     },
     {
       "id": "anim-010",
-      "definition_sha256": "283fa77c0bc05ade5c7e9eb70df0ab419e7abfcc6a80691c576bbb51ef60298d"
+      "definition_sha256": "5128c87ff1bd88b818b35b7b53e3e3c97e7ce25cf26ea382e507150365f4d3b6"
     },
     {
       "id": "anim-011",
@@ -70,19 +82,19 @@
     },
     {
       "id": "anim-013",
-      "definition_sha256": "a4934bc6c52f77cfaae30a638dc5e66bb565f997b2ed4d11ef8dcca2e36671e6"
+      "definition_sha256": "c21ba5e479cd7c83487237f41086461e807c3530061c2a0ef6f094fd3bc02150"
     },
     {
       "id": "anim-014",
-      "definition_sha256": "e82688704b6a0f6e369c132ed1661f67d3c0e88b62a9fada55d35f9196ea48f2"
+      "definition_sha256": "b964bef2fd770e157861ee9237df60b4859a3467057835123ecc7c47cc95a46f"
     },
     {
       "id": "anim-015",
-      "definition_sha256": "372eb7c0e96ae439ea96ca3ec1ef4b818ddd4c179f8f77d54c3297513ea988ea"
+      "definition_sha256": "d9d1139ba4047b88b7bb9ed5388a50fa92e454944369c24b1c6ff54c818ed570"
     },
     {
       "id": "anim-016",
-      "definition_sha256": "cde57dfc3622379eb6fa50991bae6ac193fb397e253bc7ff256dd6640f216302"
+      "definition_sha256": "a0dd3b04262076f4115cbba69770b13f73d70bd86fa71caff4b9fda403fdb920"
     },
     {
       "id": "anim-017",
@@ -94,15 +106,15 @@
     },
     {
       "id": "anim-019",
-      "definition_sha256": "fef410b412739bb3e0a41613cd2bc6e8c63de0b7cb1ff2717be3d9a7f03161ac"
+      "definition_sha256": "e1d81b6caf07bc4e605ba989e25b1c7d0b32bc6598799ba72be9002719f76bf1"
     },
     {
       "id": "anim-020",
-      "definition_sha256": "4419e95cb63f235da80eb588956fd2149320443cddd487e6bf9d9a26475d6424"
+      "definition_sha256": "17889949b42572c065204b1d3f2188dffeb8b066e68645d72a727dc038d87eb4"
     },
     {
       "id": "anim-021",
-      "definition_sha256": "fa20a0704f97f6c300c8a0dff3345e674868935a3c61c46439678fb33e7a6f48"
+      "definition_sha256": "2e98d06f3eba95b1303a9a714994d89f6b1684d16e635a0ef46bbf582e783ca8"
     },
     {
       "id": "anim-022",
@@ -115,10 +127,10 @@
   ],
   "definition_document_sha256": {
     "docs/FRAME_ANIMATION_V1_EXECUTION_STORAGE_KO.md": "c5658d4e262979c5f390a8f6800b66f56680682f4bd5ba61500873ae87289f5b",
-    "docs/FRAME_ANIMATION_V1_DEVELOPMENT_KO.md": "05bb6aa5925cc512c03388bd1bf70cfff92cb661749a316999c2e5f9f6c2d1c5",
-    "docs/FRAME_ANIMATION_V1_EVOLUTION_KO.md": "f9e836ff4efa4e6c6a7470eabe767af549abd5b0d6b7e586d26f4cbbc01afaa5",
-    "docs/aiops/REGISTRATION_SCOPE_APPROVAL_KO.md": "47266e564ee350ada9040ec2c3c2ebd7a55cb293f890792c2c04af19345d7656",
-    "docs/aiops/PROGRAM_ASTRA_DELEGATION.md": "805b02c9746bc33b97b9e6d08980e02c410658e954182bcaa6bf85d608655b49"
+    "docs/FRAME_ANIMATION_V1_DEVELOPMENT_KO.md": "9d21f52969b3735df1caa8704f4df51268d8543463f56056851ef7f32c51d5cc",
+    "docs/FRAME_ANIMATION_V1_EVOLUTION_KO.md": "cdf6b60bae0beb8d6b255ebeb5c4905065e57798170052847aafc5e5a3bc7796",
+    "docs/aiops/REGISTRATION_SCOPE_APPROVAL_KO.md": "27a7bc960282f7c25b5e9551847c6e881329e1a8a01facf823b67627765d2cea",
+    "docs/aiops/PROGRAM_ASTRA_DELEGATION.md": "ba682dc597f66e0b31a8ce822f13b1a13158b2acfa1c0388c30521305a5bd14a"
   },
   "approval_evidence": {
     "scope_decision_pointer": "PENDING_EXACT_WHOLE_SCOPE_USER_DECISION",
@@ -127,7 +139,7 @@
   },
   "central_source_candidate": {
     "pr": "BeautifulMind-JT/ai-ops-control-plane#47",
-    "head": "15f7fe67726c04efd5a6d289ef985041f40c511a",
+    "head": "09e161caa652d75e9617caf632b3b9899be35740",
     "authority": "SOURCE_ONLY_NOT_ADOPTED_INSTALLED_QUALIFIED_OR_ACTIVATED"
   },
   "rule": "Any changed definition needs a new manifest and exact-head review. Finance aliases are counted once. No inherited approval, edited status, partial selection, ordinary comment or source CI grants execution. The manifest digest and approval target commit are recorded externally to avoid hash self-reference."

@@ -1,68 +1,45 @@
-# FILM_UNIT — approved-scope Astra execution delegation candidate
+# film-unit-mv-studio — 프로그램 위임 초안
 
-This registration/revision is a draft until its actual approval and audit pointers
-are recorded. It prepares the User's 2026-09-30 one-command development request.
-Parent scope: [BeautifulMind-JT/film-unit-mv-studio#19](https://github.com/BeautifulMind-JT/film-unit-mv-studio/pull/19).
-The parent PR's existing audit HEAD is not changed by this delegation candidate.
+상태: NON_EXECUTABLE_DRAFT / PENDING_APPROVAL_DO_NOT_DISPATCH. 범위·시작 승인과 설치/qualification은 아직 완료되지 않았다. 전체 정의 정본은 `docs/aiops/FRAME_ANIMATION_V1_PROGRAM_DRAFT.json`와 등록 manifest의 pending catalogue다. ID·spec·선행을 보존하고 계약 변경의 병합 flag/등급을 아래 판정대로 바꿨다.
 
-The nodes keep their complete specifications, dependency DAG, audit floors and
-milestone gates. `astra_auto_merge=true` delegates only the merge executor inside
-each non-User node's explicitly approved scope, through the protected bridge in
-[central #47](https://github.com/BeautifulMind-JT/ai-ops-control-plane/pull/47),
-minimum source checkpoint `e34868c6a12e5488224095b3248e59c8be9128f1` or a verified descendant retaining its external-field rejection.
-Existing independent reviews, current-head CI, required product gates and exact
-merge HEAD remain mandatory. A protected Fable PASS/PASS_WITH_NOTES plus
-WITHIN_APPROVED_PLAN is required whenever an Astra gate applies or review
-promotes the delivery to A3. An arbitrary GitHub audit comment is not a receipt.
+## 정책 C — 대표님 결정 2026-10-01
 
-`user_merge=true` nodes retain the User's final decision. Both delegation flags
-cannot be true. User-only node in this plan: anim-018 (actual-route qualification); it has user_merge=true and astra_auto_merge=false. Its permitted240-second24fps1080p source/route/artifact-bound integration, archive verification/replay/restore and failure/performance evidence plus the User's exact-evidence approval are mandatory before delivery merge/DONE. Missing real environment/permission/evidence keeps018 WAITING; earlier code-only nodes may deliver within their scope with qualification still UNQUALIFIED. Node023 cannot omit018 or convert fake/code-only evidence into its DONE. Other separately scoped User approvals still apply.
-No new product scope, credential, paid resource, public/financial/chain permission,
-production approval, screen baseline or release follows from this flag. The node
-specifications and protected source contracts retain those boundaries. A real
-service or hardware that is absent remains unqualified; fake tests do not make it
-complete. UNKNOWN model/task/job outcomes remain fenced.
+원문: [중앙 #47 결정 기록](https://github.com/BeautifulMind-JT/ai-ops-control-plane/pull/47#issuecomment-5927605393). Fable PASS가 나온 위임 노드는 보호된 중앙 executor가 자동 병합한다. `contract_change=YES`, `RELEASE`, `user_merge=true`는 대표님이 병합한다. 계약 변경 노드는 `user_merge=true`, `audit_floor=A3`, `astra_auto_merge=false`로 기록한다. 기존 대표님 전용 노드도 유지한다. 동적 감사에서 계약 변경 YES가 나오면 정적 NO 판정에도 자동 병합하지 않는다.
 
-The flags do not activate the existing adopted runtime. Its gates still
-hold. The new path applies only after the final central #47 source has an exact-HEAD independent
-A3 result, User adoption, root-owned host install, canary/qualification and updated
-runtime attestation. Product client pins and activation records are not altered
-by this candidate; actual runtime/source qualification must be established at
-registration. Cross-repository pending dependencies remain pending.
+공개 계약·schema·protocol·operation·capability·BUILD_ID·ruleVersion·solverVersion·SDK/manifest 형식 변경을 계약 변경으로 판정했다. 선행 설계가 있다고 해서 실제 공개 형식 변경의 대표님 병합을 면제하지 않는다. 구현·소비 노드의 NO는 채택된 의미/형식을 그대로 지키는 범위이며, 변경이 필요해지면 YES/A3/User 경계로 다시 분류한다. 비작성자 exact-HEAD 리뷰·CI·제품 gate·호스트에 결합된 보호된 PASS·정확한 병합 HEAD를 모두 요구한다. GitHub 댓글만으로 protected receipt를 만들지 않는다.
 
-Before start: adopt the parent scope, retarget/merge the dependent registration
-with its own current-head review, replace PENDING_APPROVAL_DO_NOT_DISPATCH with
-actual durable scope/start and audit/merge/qualification evidence, obtain the
-registered main plan commit, and let the central layer materialize canonical task
-issues. Do not manufacture task envelopes, MACs, session receipts, audit verdicts
-or host state. The bootstrap PRs themselves are not program tasks and are not
-self-authorized for automatic merge.
+이전 위임에서 계약 변경도 자동 병합하도록 둔 flag를 아래 표의 대표님 경계로 바꿨다. DAG나 과거 전달/승인 증거를 새 승인으로 전이하지 않는다. 개발 DONE·실환경 qualification·화면/작품 acceptance·release는 각각 독립 증거가 필요하다. UNKNOWN fencing·단일 writer·금융/chain/외부 전송/과금/공개 운영 잠금은 유지한다.
 
-## Design evolution candidate
+## 노드별 spec 판정 (23개)
 
-[FRAME_ANIMATION_V1 evolution](../FRAME_ANIMATION_V1_EVOLUTION_KO.md) is a
-DESIGN_ONLY follow-up on the fixed registration HEAD
-`c716bce521bb897b6196b0111f9615973a00584e`. It preserves node IDs, dependencies,
-audit floors, milestone gates, LOCKs and all separate User permissions. The
-candidate specifies coordinator-mediated transfer edges, seekable pack/range
-verification and bounded restore, and independent completion facets. It does not
-move #19/#20's audit HEADs or claim actual product/runtime qualification.
+| Node | contract_change | 병합 | audit_floor | spec 근거 |
+|---|---|---|---|---|
+| `anim-001` | YES | 대표님 | A3 | Project/Shot/Build·frame·storage·execution·encoder schema ADR |
+| `anim-002` | NO | 정책 C 위임 | A2 | 선행에서 채택한 계약의 구현·소비; 새로운 공개 의미/형식 변경은 제외 |
+| `anim-003` | YES | 대표님 | A3 | 새 versioned 자산 index·sequence resolver/입력 계약 |
+| `anim-004` | NO | 정책 C 위임 | A2 | spec의 승인된 동작 구현 또는 문서/계획 정리; 새 공개 계약 정의 없음 |
+| `anim-005` | YES | 대표님 | A3 | frame_map·전환 frame/weight 표현 계약 |
+| `anim-006` | YES | 대표님 | A3 | Build 2 inventory·archive/replay 출력 형식 |
+| `anim-007` | NO | 정책 C 위임 | A2 | spec의 승인된 동작 구현 또는 문서/계획 정리; 새 공개 계약 정의 없음 |
+| `anim-008` | NO | 정책 C 위임 | A2 | spec의 승인된 동작 구현 또는 문서/계획 정리; 새 공개 계약 정의 없음 |
+| `anim-009` | NO | 정책 C 위임 | A2 | spec의 승인된 동작 구현 또는 문서/계획 정리; 새 공개 계약 정의 없음 |
+| `anim-010` | YES | 대표님 | A3 | provider capability·quote/ledger·구간/PTS operation 계약 |
+| `anim-011` | NO | 정책 C 위임 | A2 | 선행에서 채택한 계약의 구현·소비; 새로운 공개 의미/형식 변경은 제외 |
+| `anim-012` | NO | 정책 C 위임 | A2 | 기존 승인 계약의 시험·측정·증거/수용 인계; 새 계약 정의 없음 |
+| `anim-013` | YES | 대표님 | A3 | archive pack/member·restore/OAuth capability 경계 |
+| `anim-014` | YES | 대표님 | A3 | FrameStream·ExecutionPlan·worker receipt/job operation 계약 |
+| `anim-015` | YES | 대표님 | A3 | encode/mux/verify driver interface·delivery capability |
+| `anim-016` | YES | 대표님 | A3 | 서비스 probe/사용권·실행 연결 capability 계약 |
+| `anim-017` | NO | 정책 C 위임 | A2 | spec의 승인된 동작 구현 또는 문서/계획 정리; 새 공개 계약 정의 없음 |
+| `anim-018` | NO | 대표님 | A2 | 기존 대표님 결정/실환경 수용의 user_merge 경계 보존 |
+| `anim-019` | YES | 대표님 | A3 | current capability registry schema·epoch/eligibility 계약 |
+| `anim-020` | YES | 대표님 | A3 | canonical render manifest·serializer·dependency/hash 형식 |
+| `anim-021` | YES | 대표님 | A3 | durable submit/checkpoint journal·archive seal operation 형식 |
+| `anim-022` | NO | 정책 C 위임 | A2 | spec의 승인된 동작 구현 또는 문서/계획 정리; 새 공개 계약 정의 없음 |
+| `anim-023` | NO | 정책 C 위임 | A2 | 기존 승인 계약의 시험·측정·증거/수용 인계; 새 계약 정의 없음 |
 
-The prospective central contract is
-`engineering/docs/PROGRAM_EXECUTION_EVOLUTION_DESIGN_KO.md`, incorporated in
-the pinned central #46 replacement for #44/#45. Require its actual adopted commit, applicable implemented central
-consumer and host qualification before operational consumption. Keep PENDING
-until the real approval/merge/qualification pointers exist. Development DONE
-requires the host-pinned merged delivery; qualification, acceptance and release
-need their own current scope evidence. Fake success or merge alone never means
-the remote product is usable, the artwork is approved or release is authorized.
+## 중앙 및 시작 경계
 
-## 중앙 채택 후보 갱신 — 2026-09-30
+채택 검토 source는 [중앙 #47](https://github.com/BeautifulMind-JT/ai-ops-control-plane/pull/47) `09e161caa652d75e9617caf632b3b9899be35740` 하나다. source 후보로 구현됐으며 설치·독립 A3·User 채택·실제 host qualification·activation은 PENDING이다. runtime/client pin이나 host record는 이 변경으로 바꾸지 않는다. 과거 checkpoint 목록과 별도 시작 PR 절차는 [REGISTRATION_SCOPE_APPROVAL_KO.md](REGISTRATION_SCOPE_APPROVAL_KO.md)를 따른다.
 
-중앙 #46의 `a8b7355712c58de8d27c85a535fb241a09a4037c`는 #44/#45 대체 검토의 역사적 checkpoint이며 R-1 §6-2 미충족으로 단독 채택 대상이 아니다. 채택 검토는 최소 중앙 #47 `e34868c6a12e5488224095b3248e59c8be9128f1` 또는 같은 거부 검사를 유지한 후손을 대상으로 한다. #44의 DECISION_REQUIRED 차단을 수정하는 새 후보이며 독립 PASS나 사용자 채택을 주장하지 않는다. RELEASE·contract_change=YES·User-only는 자동 병합에서 제외된다. 권한 예외 PA-1, 실제 서비스 authorization·reconcile·host qualification·activation은 아직 PENDING/NOT_READY다. approval pointer는 PENDING 상태로 비활성이며, 실제 등록 시 대체 후보의 최종 승인·qualification evidence로 갱신한다.
-
-## 중앙 채택 최소 조건과 대기 노드 승격 — 2026-10-01 수정 요청 5
-
-중앙 #46의 `a8b7355712c58de8d27c85a535fb241a09a4037c`와 역사적 #47의 `94a768e19df12703ea0b9a49e49972feb2f6ef4f`는 KIX R-1 §6-2의 `depends_on_external` 거부 조건을 충족하지 못하므로 단독 채택 대상이 아니다. 최소 source 후보는 [중앙 #47](https://github.com/BeautifulMind-JT/ai-ops-control-plane/pull/47)의 `e34868c6a12e5488224095b3248e59c8be9128f1` 또는 `user_merge` 보호와 외부 필드 거부를 유지한 검증된 후손이다. 실제 최종 HEAD의 독립 A3, 대표님 채택, 보호된 설치·service authorization·host qualification·activation은 별도이며 아직 PENDING/NOT_READY다. 최소 버전 표시나 source commit은 승인·PASS·설치 증거가 아니다.
-
-이 로더는 비어 있어도 `depends_on_external` 필드를 거부한다. 대기 정의를 그대로 active plan에 복사하거나 필드를 조용히 삭제하지 않는다. 외부 선행 각각의 실제 완료를 정확한 저장소·program/node·승인된 plan/정의·전달 HEAD·병합 SHA·필요한 병합 후 검증 및 권위 있는 완료 증거에 결합해 확인한 뒤, 별도 대표님 병합 plan revision에서 그 증거와 변환 전/후 정의 digest를 기록하고 해당 완료된 외부 필드를 명시적으로 제거한다. 원본 pending catalogue는 검토 이력으로 보존한다. 미완료·UNKNOWN·wrong-revision은 승격하지 않는다. 필드를 유지해 소비하려면 먼저 외부 완료 reader/consumer의 별도 채택·감사·실제 qualification이 필요하다. PENDING, 기존 ID·선행·감사 등급·User-only·금융/chain/공개 운영 제한은 그대로 유지한다.
+외부 선행은 pending catalogue에 둔다. 실제 저장소/program/node·plan/definition·delivery HEAD·merge SHA·필요한 post-merge 검증의 보호된 완료를 확인한 뒤, 별도 대표님 병합 plan revision에서 변환 전/후 digest와 근거를 기록해 승격한다. 현 schema v1은 빈 `depends_on_external`도 거부한다. 미완료·UNKNOWN·wrong-revision을 삭제해서 실행하지 않는다. bootstrap/범위/시작 PR은 자동 병합할 program delivery가 아니다.
