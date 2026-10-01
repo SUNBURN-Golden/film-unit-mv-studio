@@ -90,7 +90,7 @@ ANIM-001~018은 기존 개발 항목이며 이번 후속 후보는 ANIM-019~023�
 | ANIM-015 | 001, 004, 006 | encode/mux/verify 분리·복수 driver | FFmpeg와 독립 native encode의 실제 품질·PTS·원음 |
 | ANIM-016 | 009, 014, 015 | 구독 probe·사용권·packet/notebook·import | 실제 서비스의 도구·한도·결과·자동/수동 구분 |
 | ANIM-017 | 005, 013~016 | 부분 재컴파일·parallel·prefetch·zero-copy 후보 | 같은 품질 end-to-end cold/warm·공간·전송·복구 |
-| ANIM-018 | 008, 012~017 | 240초·1080p·Drive→worker→archive·UI | 실제 실행·restore·실패 주입·성능 보고 |
+| ANIM-018 | 008, 012~017 | User-only actual240초·1080p·Drive→worker→archive·UI qualification | 실제 허용 route/source/artifact의 실행·verification·restore·실패/성능 evidence와 User 승인 전 merge/DONE 금지; 부재면 WAITING |
 | ANIM-019 | 001, 013~016 | capability evidence registry·scope eligibility·갱신/측정 | session/계정/도구/사용권 변경 차단·현재 scope만 허용 |
 | ANIM-020 | 003~006, 017, 019 | canonical render manifest·invalidate closure·부분 재현 | cold/warm 동일 범위·비영향 보존·clean/subbed/encode 승인 분리 |
 | ANIM-021 | 013~015, 019 | durable worker journal·업로드 checkpoint·archive commit/seal | submit/publication 응답 손실·crash·취소 경합·중복/UNKNOWN fence |
@@ -136,7 +136,7 @@ ANIM-013~018은 실행·저장 설계 11절을 따른다. 실제 Drive/member ha
 
 고도화 후보의 ANIM-013/014/017/018은 고도화 설계 6~7절의 ROUTE/PACK/RESTORE/FACETS fixture를 해당 범위에 구현한다. 기본 relay의 PC WAN 이동·공유 링크 경합까지 보고하고, 한 컷 sparse 변경은 필요 member/halo의 실제 read/request/decode 증폭을 확인한다. Range 미지원은 명시적으로 사전 예약한 whole-pack fallback 또는 차단으로 처리한다. 부분 멤버 검증으로 full-pack 검증/완료를 기록하지 않는다.
 
-개발 결과의 `node_state=DONE`은 중앙의 host-pinned merged delivery 근거를 요구한다. `qualification_state=NOT_REQUIRED/UNQUALIFIED/PARTIAL/QUALIFIED`, `acceptance_state=NOT_REQUIRED/PENDING/ACCEPTED/REJECTED`, `release_state=NOT_AUTHORIZED/NOT_RELEASED/RELEASED`는 별도 현재 scope 근거로 보고한다. 필요한 실제 환경이 없으면 UNQUALIFIED/PENDING으로 남기며 NOT_REQUIRED로 면제하지 않는다. ANIM-018 목표 수용은 실제 허용된 한 경로의 240초 통합 evidence가 필수다. 코드 개발 merge·fake 검사·합성 qualification은 작품 사람 승인과 release 권한을 생성하지 않는다.
+개발 결과의 `node_state=DONE`은 중앙의 host-pinned merged delivery 근거를 요구한다. `qualification_state=NOT_REQUIRED/UNQUALIFIED/PARTIAL/QUALIFIED`, `acceptance_state=NOT_REQUIRED/PENDING/ACCEPTED/REJECTED`, `release_state=NOT_AUTHORIZED/NOT_RELEASED/RELEASED`는 별도 현재 scope 근거로 보고한다. 필요한 실제 환경이 없으면 UNQUALIFIED/PENDING으로 남기며 NOT_REQUIRED로 면제하지 않는다. ANIM-018은 user_merge=true/astra_auto_merge=false인 실제 qualification milestone이다. 실제 허용된 한 경로의240초 통합·archive/replay/restore·UI·실패 및 고도화 RELAY-AUTH/TRANSPORT-RETRY/ARCHIVE-LEVEL evidence를 exact implementation/source HEAD·input/recipe/profile·device/toolchain·route/epoch·artifact hashes·시각에 pin하고, User의 exact evidence 승인 뒤에만018 merge/DONE을 허용한다. code/fake PASS나 이전 개발 merge는 대신하지 못하며 환경/권한/evidence 부재면018 WAITING이다. 작품 사람 승인과 release는 계속 별도다.
 
 ## ANIM-019~023: 후속 개발 범위와 수용
 
@@ -152,7 +152,9 @@ ANIM-013~018은 실행·저장 설계 11절을 따른다. 실제 Drive/member ha
 
 019~022의 fake fixture는 개발 수용을 검증한다. 실제 Drive/remote/native/subscription probe, 실제 W00 채택본·최종 음악영상 전체 재생은 해당 환경·사용권·작품 승인 범위가 있을 때만 검증한다. 개발 코드가 merged되어도 필요한 실제 qualification/acceptance가 없으면 제품 목표 READY/FINAL_APPROVED를 선언하지 않는다. 023은 개발 delivery complete와 product-qualified/작품 accepted/release authorized를 별도 보고하며, 보고 도구의 개발 DONE이 missing facet를 해제하지 않는다. 실제 환경을 기다리는 일을 명시적 WAITING/UNQUALIFIED/PENDING으로 남기며 NOT_REQUIRED로 면제하거나 User 승인을 builder가 대리 기록하지 않는다.
 
-분모 23은 승인된 이 plan revision의 개발 노드 수다. qualification과 작품 검수·release는 단순 완료 node 수로 합산하지 않으며, 018 baseline 수용만으로 019~022의 새 scope나 최종 023을 닫지 않는다. 기존 plan 실행 중이라면 중앙의 보호된 plan 개정/승인 절차로 새 revision을 채택하기 전 이 JSON을 live registration에 덮어쓰지 않는다.
+018 실제 qualification이 없으면023의 전체 delivery closeout도 WAITING이며 missing018을 분모에서 빼거나 code-only018 DONE으로 바꾸지 않는다. 앞선013~017의 허용된 code-only 개발 delivery는 별도 qualification 미완료를 표시하며 계속 준비할 수 있다.
+
+분모 23은 승인된 이 plan revision의 작업 노드 수이며018은 실제 qualification을 요구한다. qualification과 작품 검수·release는 단순 완료 node 수로 합산하지 않으며, 018 baseline 수용만으로 019~022의 새 scope나 최종 023을 닫지 않는다. 기존 plan 실행 중이라면 중앙의 보호된 plan 개정/승인 절차로 새 revision을 채택하기 전 이 JSON을 live registration에 덮어쓰지 않는다.
 
 ## 이번 설계의 실행 경계
 

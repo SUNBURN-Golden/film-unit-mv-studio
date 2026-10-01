@@ -63,6 +63,8 @@ relay grant는 허용된 transport 구현이 제공하는 짧은 수명의 권�
 
 Drive의 partial read는 허용된 binary pack에 한정한다. Google Workspace 문서 export를 seekable PNG pack으로 취급하지 않는다. resumable upload의 서버 수신 offset은 전송 진척이며 SHA256 검증·archive 확정 증거가 아니다. 공식 protocol의 status query는 같은 upload session 확인이며 product compute 재제출과 구분한다. [Drive 다운로드](https://developers.google.com/workspace/drive/api/guides/manage-downloads), [Drive resumable upload](https://developers.google.com/workspace/drive/api/guides/manage-uploads)는 transport 근거이고 실제 Film Unit 연결 자격은 아래 probe로 증명한다.
 
+기본 연결은 [고도화2.1.1](FRAME_ANIMATION_V1_EVOLUTION_KO.md)의 coordinator→고정 worker HTTPS endpoint outbound TLS/input push/output pull이다. desktop inbound listener/NAT port forwarding은 없다. 사전 허용된 peer credential과 issuer/audience·job/attempt·object/range·bytes·epoch·만료 binding을 검증하고 cross-host redirect를 거부한다. worker 인증 credential은 Drive OAuth와 별개며 새로운 credential/배포 권한을 만들지 않는다.
+
 ## 4. Drive에서 읽으며 실행하는 저장 구조
 
 ### 4.1. Archive와 workspace
@@ -214,6 +216,8 @@ UNKNOWN은 명시적 확인/reconciliation을 기다린다. CANCEL_REQUESTED는 
 
 FAILED_CONFIRMED 후 새 attempt는 사용자에게 실패·현재 예약·남은 retry allowance를 표시한 뒤 명시적인 이어하기 동작으로만 시작한다. 기존 bounded retry 상한과 quote·사용권·남은 예산을 재검증하고 새 attempt ID/submission request ID를 기록한다. 이는 자동 재제출이 아니며 allowance 소진·권한/가격 변경·불명 작업이 있으면 차단한다. engineering program의 빌더 재개와 제품 remote job 재시도는 서로 다른 계약이다.
 
+같은 attempt 안의 idempotent GET/Range·공식 upload-status retry는 [고도화4.2.1](FRAME_ANIMATION_V1_EVOLUTION_KO.md)의 edge별 명시적 횟수/시간/request/byte caps 안에서만 허용한다. 미설정은 retry0이며 신규 create/compute submit/manifest 게시 불명을 자동 재시도로 해소하지 않는다. resumable write는 status로 확인한 offset 이후만 전송하며 모든 중복 bytes를 계수한다.
+
 callback/receipt는 actor·job·attempt·snapshot·범위·request nonce에 연결하고 중복·오래된 revision을 거부한다. worker의 COMPLETE나 LLM의 완료 문장을 실제 출력 검증으로 승격하지 않는다. 상태 확인은 공식 완료 이벤트 또는 사용자의 한 번의 이어하기/가져오기 동작으로 수행한다. standing routine·주기적 status polling·소비자 UI 자동 조작을 추가하지 않는다.
 
 여러 worker는 서로 다른 고정 계산 범위에 immutable 결과만 쓴다. 한 coordinator가 선택·receipt·coverage·build seal을 직렬화한다. 제품 계산의 병렬 worker는 engineering task의 여러 writer를 허용하는 근거가 아니다.
@@ -360,6 +364,8 @@ Drive의 rate/전송·계정 저장 한도도 preflight와 usage guard에 넣는
 5. 모든 필요한 객체가 보관됐을 때 완료 manifest를 마지막에 공개한다.
 6. 실제 출력의 사람 검토·최종 승인은 sealed build에 별도 연결한다.
 
+required artifact별 archive verification은 [고도화4.2.2](FRAME_ANIMATION_V1_EVOLUTION_KO.md)를 따른다. 로컬 전송 hash/offset/성공 응답만의 UPLOADED_UNVERIFIED는 archive checkpoint/seal에 부족하다. 완료 seal에는 최소 UPLOAD_HASH_MATCHED(인증된 provider의 실제 고정 object SHA256·length 일치)가 필요하며, 그 강한 checksum 근거가 없으면 bounded FULL_READBACK을 요구한다. profile의 더 강한 required level을 면제하지 않고 index/member/full-pack integrity와 저장 검증 level을 별도 manifest에 기록한다. readback 비용/bytes/공간도 사전 예약한다.
+
 Drive 다중 파일 업로드를 하나의 atomic transaction으로 가정하지 않는다. 객체 생성·업로드 확인·완료 manifest 공개의 idempotent 절차와 crash reconciliation을 구현한다. 완료 공개 접수가 불명확하면 같은 build identity로 확인하며 새 COMPLETE 레코드를 임의 생성하지 않는다.
 
 ENCODED·RENDERED·UPLOADED는 COMPLETE가 아니다. 최종 PNG나 source 보관이 미완료인 빌드는 archive pending으로 표시한다. 검증 끝난 chunk를 소비한 뒤 필요 없어진 임시 cache만 정리한다. archive를 가리키는 index만 먼저 만들고 원본 없이 성공 처리하지 않는다.
@@ -405,13 +411,13 @@ UI는 저장소/프로젝트 연결, 실행 서비스와 실제 지원 상태, �
 | ANIM-015 복수 인코더 | 001, 004, 006 | encode/mux/verify 분리·native driver | FFmpeg와 독립 native 경로가 같은 전달 profile·frame/PTS/audio 조건 충족 |
 | ANIM-016 구독 실행 | 009, 014, 015 | entitlement·probe·packet/notebook·import | 실제 한 서비스의 입출력·한도·도구·결과 검사; 자동/수동 표기 |
 | ANIM-017 성능 scheduler | 005, 013~016 | 부분 재컴파일·parallel·prefetch·zero-copy 후보 | 동일 품질 end-to-end cold/warm·공간·전송·복구 비교 |
-| ANIM-018 원격 통합 | 008, 012~017 | 240초·1080p·Drive→worker→archive·desktop UI | 실제 허용 실행·복원·성능 보고와 실패 주입, 두 모드 회귀 |
+| ANIM-018 원격 통합 | 008, 012~017 | User-only 실제240초·1080p·Drive→worker→archive·desktop UI qualification | exact source/route/artifact 실제 실행·검증 보관·복원·실패/성능 evidence를 User가 승인하기 전 merge/DONE 금지; 환경 부재면 WAITING |
 
 ANIM-001에 storage/execution/encoder 계약을 먼저 넣는다. ANIM-013~015는 각 기반 기능이 생기는 시점부터 세로 기능으로 구현하고 ANIM-012가 끝날 때까지 모든 원격 설계를 미루지 않는다. 로컬 기준선은 parity·회귀 비교용이며 최종 성능 모드를 PC 전용으로 고정하는 완료 조건이 아니다.
 
 실제 서비스 권한·자원이 아직 없으면 fake worker로 protocol을 검사하고 runtime qualification은 미완료로 남긴다. fake 성공을 실제 구독 원격 실행이나 성능 완료로 집계하지 않는다. AIOPS 착수 task는 해당 명세를 pin하고 실행 소유자·reviewer·현재 HEAD를 기존 규칙에 연결한다. 이 항목명은 dispatch/control record가 아니다.
 
-고도화 설계 5절의 `node_state`, `qualification_state`, `acceptance_state`, `release_state`를 독립 근거로 보고한다. 개발 DONE은 host-pinned delivery의 실제 merge 근거만 뜻한다. 필요한 qualification/acceptance를 자원 부재 때문에 NOT_REQUIRED로 면제하지 않는다. ANIM-018의 목표 수용은 실제 허용된 한 경로의 240초 통합·archive/replay·UI·실패 fixture 근거가 있어야 하며, fake/개발 merge·합성 fixture가 실제 작품 승인이나 공개 release를 만들지 않는다. 해당 중앙 집계 기능을 채택/구현하기 전에는 draft 증거 표로 미완료를 유지한다.
+고도화 설계 5절의 `node_state`, `qualification_state`, `acceptance_state`, `release_state`를 독립 근거로 보고한다. 개발 DONE은 host-pinned delivery의 실제 merge 근거만 뜻한다. 필요한 qualification/acceptance를 자원 부재 때문에 NOT_REQUIRED로 면제하지 않는다. ANIM-018은 user_merge=true/astra_auto_merge=false인 actual qualification task다. 실제 허용된 한 경로의240초 통합·archive/replay/restore·UI·실패/verification fixture evidence와 User의 exact-set 승인이 merge 선행 조건이며, 부재면 WAITING이고 code/fake PASS만으로018 merge/DONE을 허용하지 않는다. 앞선 개발 delivery와 실제 작품 승인/공개 release는 별도다. 해당 중앙 집계 기능을 채택/구현하기 전에는 draft 증거 표로 미완료를 유지한다.
 
 ## 11. 수용 테스트와 성능 보고
 

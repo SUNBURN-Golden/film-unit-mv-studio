@@ -16,7 +16,7 @@ WITHIN_APPROVED_PLAN is required whenever an Astra gate applies or review
 promotes the delivery to A3. An arbitrary GitHub audit comment is not a receipt.
 
 `user_merge=true` nodes retain the User's final decision. Both delegation flags
-cannot be true. User-only nodes in this plan: none; separately scoped User approvals still apply.
+cannot be true. User-only node in this plan: anim-018 (actual-route qualification); it has user_merge=true and astra_auto_merge=false. Its permitted240-second24fps1080p source/route/artifact-bound integration, archive verification/replay/restore and failure/performance evidence plus the User's exact-evidence approval are mandatory before delivery merge/DONE. Missing real environment/permission/evidence keeps018 WAITING; earlier code-only nodes may deliver within their scope with qualification still UNQUALIFIED. Node023 cannot omit018 or convert fake/code-only evidence into its DONE. Other separately scoped User approvals still apply.
 No new product scope, credential, paid resource, public/financial/chain permission,
 production approval, screen baseline or release follows from this flag. The node
 specifications and protected source contracts retain those boundaries. A real

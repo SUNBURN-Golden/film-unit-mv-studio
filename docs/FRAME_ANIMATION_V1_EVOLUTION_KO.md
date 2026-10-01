@@ -39,6 +39,15 @@ worker에 job/object/범위/만료로 제한한 전송 권한을 주는 것과 w
 
 기본 coordinator의 위치는 `USER_DESKTOP`으로 명시한다. `PROTECTED_REMOTE_RELAY`는 이미 허용·검증한 별도 중개 배포가 있을 때만 다른 위치로 계획할 수 있다. 이번 설계는 원격 중개 서비스 배포를 승인하지 않는다. coordinator가 PC에 있으면 stream 방식으로 PC 디스크 적재를 줄일 수 있어도 입력/출력의 WAN 바이트는 PC를 통과한다. 이를 ‘PC를 거치지 않는 Drive 직접 처리’로 표시하지 않는다.
 
+
+### 2.1.1. 기본 relay의 연결·인증 계약
+
+v1 USER_DESKTOP coordinator가 고정 allowlist의 **worker HTTPS endpoint로 outbound TLS 연결을 연다**. 같은 job에 묶인 bounded upload로 검증 입력을 push하고, 확인된 결과 locator에서 bounded download로 출력을 pull한다. PC에 들어오는 worker 연결·public listener·NAT port forwarding·임의 callback URL은 기본 경로가 아니다. 이 예외나 새 relay 배포는 별도 A3 ADR·사용자 권한·실제 자격 증명 전 도입하지 않는다. endpoint certificate/hostname을 검증하며 cross-host redirect나 grant 안의 임의 URL을 실행하지 않는다.
+
+worker endpoint 운영자가 사전에 허용된 worker identity와 coordinator peer credential/trust anchor를 제공한다. coordinator는 OS credential store/명시적 memory session의 worker peer credential로 endpoint를 인증하고, endpoint는 해당 coordinator와 route를 인증한다. Drive OAuth credential과 worker 인증 credential은 분리한다. 실행 중 새 credential·service account·deployment를 자동 발급하지 않으며, 필요한 승인/credential이 없으면 route는 UNQUALIFIED다.
+
+전송 grant 발급자는 인증된 coordinator/worker trust 계약에 pin한다. 입력 push는 worker가 승인한 해당 upload session에 한정하고, output pull은 worker가 제공한 verified job-result session에 한정한다. coordinator가 위임 grant를 발급하는 구현이면 worker가 사전 pin한 coordinator issuer/검증 key로만 수용한다. issuer·audience(endpoint/peer)·connection/account digest·credential epoch·job/attempt·snapshot·object/member digest·정확한 read/write range·max_bytes·만료·nonce를 모두 확인하고 한 scope 밖 browse/submit/URL fetch를 거부한다. bearer/session 원문은 secret store에만 두고 receipt에는 digest와 검증 scope만 남긴다. 만료/회수/epoch 변경 뒤 grant를 재사용하지 않으며 grant 갱신이 새로운 compute submit을 만들지 않는다.
+
 ### 2.2. ExecutionPlan의 transfer edge
 
 고정 plan은 storage/runtime/encoder 선택 외에 `transfer_route`, `coordinator_location`, `transfer_edges[]`와 `resource_reservations[]`를 포함한다. edge의 최소 계약은 다음과 같다.
@@ -48,10 +57,11 @@ worker에 job/object/범위/만료로 제한한 전송 권한을 주는 것과 w
 | `edge_id`, `from_role`, `to_role` | DAG의 유일 edge와 실제 송수신 위치. archive/coordinator/worker 역할과 계정 비밀 없는 위치 ID |
 | `snapshot_digest`, `object_digest`, `index_digest` | 고정 입력/출력 및 pack index binding. 파일 이름·최신 file ID로 대신하지 않음 |
 | `member_ids`, `byte_ranges` | 필요한 전체 멤버와 halo. 범위는 0-based `[offset, offset + length)` |
-| `verification` | 수신 완료 후 member hash 또는 full-pack hash의 요구. 전송 완료와 검증 완료를 구분 |
+| `verification` | member/full-pack hash 요구와 별개의 archive verification level(UPLOADED_UNVERIFIED/UPLOAD_HASH_MATCHED/FULL_READBACK). 전송 진척·부분검증·전체검증을 구분 |
 | `max_inflight_bytes`, `spool_limit_bytes` | 송신·수신·검증 읽기 및 실패 복구 중간물의 hard cap |
 | `evidence_ref`, `measured_at` | 같은 경로/환경의 throughput·latency·request 한도 근거. 없는 값은 UNKNOWN |
-| `credential_boundary`, `expiry_binding` | 비밀 없는 권한 소유 경계 및 job-scoped 전송 권한 만료/회수 binding |
+| `credential_boundary`, `expiry_binding` | issuer/audience/peer·job/attempt·object/range·credential epoch·bytes·만료/회수의 비밀 없는 binding |
+| `transport_retry_policy` | edge별 max_retries(0..3), backoff_base_ms/max_backoff_ms/max_elapsed_ms, max_requests/max_transferred_bytes. 미설정 시 자동 전송 retry 0 |
 | `dependencies`, `completion_receipt_ref` | 검증/소비 순서와 실제 edge 완료 근거. receipt 자체는 실행 중 생성 |
 
 계획에 receipt 자리만 있어도 실행 완료로 집계하지 않는다. 선언한 byte range는 실제 요청 바이트와 구분하고, retry가 발생한 실제 전송은 별도로 모두 계수한다. buffer ownership·GPU fence·UNKNOWN/cancel은 기존 WorkerProtocol/FrameStream을 소비한다.
@@ -110,6 +120,25 @@ backend가 Range를 지원하지 않거나 requested Range에 전체 응답을 �
 
 검증이 끝난 멤버를 content digest로 재사용한다. 검증되지 않은 일부 바이트는 verified cache로 공개하지 않는다. 다운로드 중단 뒤 같은 고정 pack/index로 붙일 수 있는 partial bytes의 bounds·length·receipt를 먼저 확인하고, 완료 멤버 hash를 재검사한다. 해석 불명 입력은 새 snapshot을 만들어 덮어쓰지 않는다. 재개 동작/시도 제한은 기존 명시적 bounded retry 계약을 따르며 standing polling·자동 무한 retry를 추가하지 않는다.
 
+
+### 4.2.1. 동일 attempt 안의 bounded transport retry
+
+전송 retry는 compute 재제출과 다른 계약이다. ExecutionPlan의 각 edge에 max_retries(0..3), backoff_base_ms/max_backoff_ms/max_elapsed_ms, max_requests/max_transferred_bytes를 먼저 고정한다. 미설정이면 retry0이고, backoff는 `min(max_backoff_ms, backoff_base_ms × 2^retry_index)`와 provider Retry-After를 만족하는 bounded wait만 허용한다. Retry-After가 max_backoff_ms 또는 남은 elapsed/allowance를 넘으면 기다리거나 재제출하는 routine을 만들지 않고 사용자에게 중단 원인을 표시한다. 모든 요청·실제 중복 바이트·검증 readback을 기존 예약/예산에 계수하며 identity·provider·계정·route·quote/quality를 바꾸지 않는다.
+
+고정 object/revision의 idempotent GET/Range 및 같은 upload session의 공식 status query만 network interruption/408/429/명시적 rate-limit reason의403/5xx에서 이 정책으로 재시도할 수 있다. 401·권한 거절403·404·snapshot/range/hash mismatch는 자동 retry 대상이 아니며 원래 권한/입력 확인을 기다린다. 모든403을 rate-limit로 취급하지 않는다. status query는 해당 사용자 실행의 bounded 전송 복구 안에서만 수행하며 standing polling이 아니다.
+
+resumable chunk write는 같은 session·같은 object hash에서 서버가 확인한 offset 이후의 bytes만 전송한다. 응답 손실 뒤 status가 확인되기 전 같은 chunk를 blind 재송신하지 않는다. session 생성·compute submit·archive manifest 게시의 미접수/접수 불명은 이 HTTP retry allowance로 다시 create/submit/publish할 수 없다. 같은 durable intent/identity를 reconciliation하고 불명이 남으면 UNKNOWN/SEAL_UNKNOWN으로 fence한다. compute FAILED_CONFIRMED 이후 새 attempt는 기존 명시적 사용자 이어하기 계약을 유지한다.
+
+### 4.2.2. 원격 저장 verification level
+
+| Level | 확인한 근거 | 승격 제한 |
+|---|---|---|
+| `UPLOADED_UNVERIFIED` | 로컬 전송 원본 SHA256과 bytes, 서버 수신 offset/업로드 응답 | 실제 원격 content 검증이 아님; archive checkpoint/완료 seal에 부족 |
+| `UPLOAD_HASH_MATCHED` | 인증된 provider endpoint가 실제 고정 object/revision에 대해 계산한 SHA256·byte length가 로컬 원본과 일치; locator/revision·epoch·응답 근거 pin | 로컬 hash echo·업로드 성공·filename·MD5/ETag만으로 인정하지 않음; endpoint의 checksum 의미를 route qualification에서 확인 |
+| `FULL_READBACK` | 고정 object/revision의 전체 bytes를 bounded stream으로 다시 읽어 SHA256·length를 원본과 대조 | 실제 읽은 범위만 인정; 부분 member read를 전체 pack readback으로 표시하지 않음 |
+
+ANIM-001은 required artifact마다 최소 level을 manifest 계약에 고정한다. v1 완료 seal에는 required object 각각 최소 UPLOAD_HASH_MATCHED가 필요하고, provider의 신뢰 가능한 SHA256/length 근거가 없으면 FULL_READBACK을 요구한다. 불명/손상/미검증 object를 포함해 seal하지 않는다. 특정 profile이 FULL_READBACK을 요구하면 checksum match로 이를 면제하지 않는다. index/member/full-pack integrity 단계와 이 archive level은 독립적으로 기록한다. 필요 readback bytes·requests·시간·buffer/workspace는 계획/예약에 넣고 cap을 넘으면 완료를 주장하지 않는다. 새로운 permission이나 provider 자동 전환은 없다.
+
 ### 4.3. bounded restore
 
 restore는 archive의 순서/coverage를 확인하고 `F_000001.png`부터 지정 끝까지 상대 basename을 앱이 생성한다. index의 경로 문자열을 그대로 filesystem 목적지로 신뢰하지 않는다. 출력은 허용 root의 임시 경로에 write→hash/형식 검증→확정 순으로 공개한다. symlink·절대/상위 경로·기존 승인 output overwrite를 거부한다. 전체 offline restore 공간 예약이 없으면 online 범위 읽기를 offline 재현으로 표시하지 않는다.
@@ -133,7 +162,9 @@ node facets는 host-pinned delivery/중앙 집계 계약이고 제품 worker job
 
 ANIM-013/014/015/016의 protocol 구현·fake 회귀는 개발 증거로 기록할 수 있다. 실제 Drive/remote/native/subscription 환경이 없으면 필요한 qualification은 UNQUALIFIED 또는 검증된 일부 scope만 PARTIAL이며 그 이유를 남긴다. 아직 중앙이 facets를 구현하지 않았으면 작성자가 host record를 조작해 채우지 않고 draft qualification 표에만 미완료를 보고한다.
 
-ANIM-018의 원격 수용 완료는 **실제로 허용된 한 경로**에서 240초·24fps·1080p 입력→relay/worker→verified PNG/MP4→archive→replay/restore와 해당 UI·실패 fixture를 검증한 근거가 필요하다. 후보 driver/service 전부를 검사했다고 일반화하지 않는다. 환경이 없으면 코드 개발 범위가 병합돼도 원격 수용은 PENDING이며 프로그램의 목표 수용 완료를 선언하지 않는다. 실제 작품의 컷/전체 정상속도 검토·최종 승인과 공개 release는 이 합성 qualification과 독립이다.
+ANIM-018은 앞선 코드-only integration을 actual route qualification로 닫는 **User-only MILESTONE**이다(`user_merge=true`, `astra_auto_merge=false`). 실제 허용된 한 경로의240초·24fps·1080p 입력→relay/worker→verified PNG/MP4→archive→replay/restore, 해당 UI·실패 fixture·전송/저장 verification evidence가 **018 merge의 선행 조건**이다. reviewer가 exact implementation/source HEAD·input/recipe/profile·runtime/device/toolchain·route/credential epoch·artifact hashes·시각·scope를 확인하고 User가 그 exact evidence를 승인한 뒤에만 delivery merge/DONE을 허용한다. code/fake PASS와 개발 완료 문장은 이 User qualification을 대신하지 않는다.
+
+실제 환경/권한/evidence가 없으면 018은 WAITING이며 PR을 준비할 수 있어도 merge/DONE을 허용하지 않는다. 013~017의 코드-only delivery를 해당 개발 범위에서 병합할 수 있는 것과 구별하고, 023도 missing018을 전체 개발 완료로 세지 않는다. 후보 driver/service 전부를 검사했다고 일반화하지 않는다. 실제 작품의 컷/전체 정상속도 검토·최종 승인과 공개 release는 이 합성 qualification과 독립이다.
 
 ## 6. 구현 수용 fixture
 
@@ -143,14 +174,17 @@ ANIM-018의 원격 수용 완료는 **실제로 허용된 한 경로**에서 240
 |---|---|---|
 | `ROUTE-RELAY` | 같은 input/quality로 relay edge의 단계적 지연과 공유 PC 링크 경합 | 기본 경로가 DIRECT_DRIVE로 바뀌지 않음; edge별 bytes/request와 stage timeline·각 cap을 실제 기록 |
 | `ROUTE-ELIGIBILITY` | worker는 network 가능하나 별도 Drive ADR/권한 증거 없음 | DIRECT_DRIVE 제외; 사용자 OAuth/refresh token이 packet/worker/receipt에 없음 |
+| `RELAY-AUTH` | issuer/audience/peer·job/attempt·object/range·epoch·expiry 변조와 cross-host redirect | 고정 outbound TLS peer/session만 허용; desktop inbound0; scope 밖 접근·credential 유출0 |
+| `TRANSPORT-RETRY` | 같은 range의429/403 rate-limit/5xx, auth403/404, upload 응답 손실·offset 불명 | 허용 idempotent 요청만 caps 안에서 같은 identity로 retry; 실제 duplicate bytes 계수; new create/compute submit/seal0; 불명은 fence |
+| `ARCHIVE-LEVEL` | 로컬 hash만 있음/provider SHA256 match/전체 readback/mismatch | 최소 required level 전 checkpoint/seal0; provider checksum 미지원이면 FULL_READBACK; member read를 full-pack 검증으로 승격0 |
 | `PACK-SPARSE` | 세 독립 pack, 컷 하나 변경 및 양쪽 halo, 나머지 cache warm | 필요 멤버/halo만 해시 검증하여 읽음; 실제 요청 범위·전송/재사용 bytes·amplification 보고; 불필요 멤버 재decode 없음 |
 | `PACK-TAMPER` | pinned index의 offset/length/순서/hash 및 pack 한 멤버 변조 | index hash/bounds/coverage/member hash의 정확한 단계에서 거부; 부분검증을 full-pack 검증으로 표기하지 않음 |
 | `PACK-HTTP` | 206 정확 범위, Range에 200 전체, 잘못된 total/짧은 payload/416 | 정상 범위만 수용; 명시적 whole-pack 분기는 사전 cap 허용+full hash; mismatch와 미지원 분리 |
 | `PACK-EXPANSION` | 작은 encoded PNG가 cap 밖 차원/decoded bytes를 선언 | decoder 초과 allocation 전에 거부; RAM/디스크 peak 상한 유지 |
 | `PACK-INTERRUPT` | 멤버 중간 read·restore 중단, 한 검증된 멤버 cache 유지 | 같은 identity 재개; 검증된 멤버 재사용; incomplete bytes/coverage로 완료 공개 없음 |
 | `RESTORE-BOUNDARY` | 파일명/path/symlink 공격·기존 승인 output·공간 부족 | 앱 생성 basename+허용 root만 사용; 승인 output/원본 유지; offline 완료 오표시 없음 |
-| `FACETS-NO-RUNTIME` | fake worker PASS와 merged 개발 delivery, 실제 remote 접근 없음 | host 근거 있으면 개발 DONE 가능; qualification UNQUALIFIED, 수용 PENDING, release NOT_AUTHORIZED 유지 |
-| `FACETS-REAL-SCOPE` | 실제 한 허용 route의 고정 통합 fixture와 실패 주입 | 검사한 scope만 QUALIFIED; 실제 수용 evidence로 해당 gate ACCEPTED; 예술적 승인·release 자동승격 없음 |
+| `FACETS-NO-RUNTIME` | 013~017의 fake worker PASS와 merged code-only delivery, 실제 remote 접근 없음 | 이전 개발 delivery DONE은 해당 scope에만 가능; 018은 User 실제 qualification 전 WAITING/merge·DONE0; qualification UNQUALIFIED, 수용 PENDING, release NOT_AUTHORIZED 유지 |
+| `FACETS-REAL-SCOPE` | 실제 한 허용 route의 고정 통합 fixture와 실패 주입 | 검사한 scope만 QUALIFIED; 018 exact evidence/User merge 승인 전 merge/DONE0; 실제 수용 evidence로 해당 gate ACCEPTED; 예술적 승인·release 자동승격 없음 |
 | `UI-LATE-ADAPTER` | 011이 010보다 먼저 비활성 연결로 병합된 뒤 두 결과를 012에서 통합 | [개발 안내의 ANIM-012 수용](FRAME_ANIMATION_V1_DEVELOPMENT_KO.md)의 UI-B-READY/INPUT-QUOTE/UNKNOWN/CANCEL-RACE를 실행; fake로 늦은 활성 연결·오류·fence를 검증하고 실제 provider 호출 0 |
 
 성능 수용은 동일 input/quality·cold/warm·실제 network/device 조건에서 edge별 바이트와 요청수, stage/전체 완료 시간, peak PC/worker disk/RAM/VRAM·spool·검증 읽기, 중단 후 복구를 보고한다. 반복 측정의 변동과 수동 동작 시간을 포함한다. 구현/실측 없는 배수·최소 용량·완료 시간을 약속하지 않는다.
@@ -164,9 +198,9 @@ ANIM-018의 원격 수용 완료는 **실제로 허용된 한 경로**에서 240
 | ANIM-013 | seekable pack 작성/읽기·index/member/full hash 구분·미지원 fallback·bounded restore·PACK/RESTORE fixtures |
 | ANIM-014 | 실제 기본 relay edge·비밀 없는 receipt·resource reservation·backpressure·ROUTE fixtures. 기존 UNKNOWN/cancel fence 유지 |
 | ANIM-017 | relay의 실제 이동과 경합까지 critical path에 포함; sparse 재컴파일의 request/bytes/decode amplification 실측 |
-| ANIM-018 | 실제 허용된 route의 통합 수용 evidence와 네 facets 보고. 개발 merged와 실제 qualification/작품 approval/release 구분 |
+| ANIM-018 | User-only merge 전 실제 허용된 route의240초 통합·archive/replay/restore·verification evidence 필수. 부재면 WAITING; 작품 approval/release는 계속 별도 |
 
-node ID·DAG·audit floor·milestone·LOCK·사용자 별도 결정은 유지한다. 이 후보 명세는 실행 증거가 아니므로 PENDING을 제거하거나 release/서비스 자격을 만들어내지 않는다.
+node ID·DAG·audit floor·milestone·LOCK·사용자 별도 결정은 유지한다. 018의 merge executor 위임만 회수해 실제 qualification evidence의 User-only 병합 조건을 강제한다. 이 후보 명세는 실행 증거가 아니므로 PENDING을 제거하거나 release/서비스 자격을 만들어내지 않는다.
 
 중앙 bootstrap의 현 채택 검토 후보는 #44/#45를 통합·보완한 [#46](https://github.com/BeautifulMind-JT/ai-ops-control-plane/pull/46)이다. 기존 #44 감사의 DECISION_REQUIRED를 통과한 것으로 간주하지 않는다. PA-1 권한 예외는 PENDING이며, 보호된 reconcile과 실제 host qualification 전에는 전체 실행 NOT_READY다. 기존 중앙 포인터는 이전 체크포인트 기록이고 최종 승인 registration에는 실제 채택·qualification commit을 pin해야 한다.
 
