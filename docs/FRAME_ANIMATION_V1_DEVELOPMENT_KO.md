@@ -22,8 +22,9 @@
 3. [실행·저장 성능 설계](FRAME_ANIMATION_V1_EXECUTION_STORAGE_KO.md) 1~9절: Drive archive·workspace·FrameStream·worker·encoder·구독·scheduler·seal.
 4. 상세 설계 9~13·15~18절 및 실행·저장 설계 10~11절: LOCK·검수·비용·모듈·티켓·수용 테스트.
 5. [공유 정책 포인터](CONTROL_PLANE_POINTER.md)와 실제 착수 시 사용할 [TASKS/TEMPLATE.md](../TASKS/TEMPLATE.md).
+6. [전송·pack·완료 근거 고도화 후보](FRAME_ANIMATION_V1_EVOLUTION_KO.md): transfer edge·seekable pack·bounded restore·독립 완료 facets. 선행 #19/#20 위의 DESIGN_ONLY 후보이며 채택 후 승인 plan commit에 pin한다.
 
-ANIM-001~018은 개발 항목 이름이다. 중앙 control-plane의 TASK_ID, 실행 소유자 또는 dispatch 상태를 자동 생성한 것이 아니다. 실제 구현 작업의 canonical GitHub task는 이 명세의 해당 절을 링크하고, mutable 실행 상태는 issue/PR/control record에 둔다.
+ANIM-001~018은 기존 개발 항목이며 이번 후속 후보는 ANIM-019~023을 추가한다. 중앙 control-plane의 TASK_ID, 실행 소유자 또는 dispatch 상태를 자동 생성한 것이 아니다. 실제 구현 작업의 canonical GitHub task는 이 명세의 해당 절을 링크하고, mutable 실행 상태는 issue/PR/control record에 둔다. 기존 18개 ID·범위·선행 관계는 유지하며 기존 bootstrap의 완료 기록에 새 수용 범위를 소급하지 않는다. 새 승인 plan commit의 개발 완료 분모는 23이고, 전체 개발 closeout은 023이 001~022 전부의 delivery를 확인한다.
 
 ## ANIM-001: 계약 ADR/명세
 
@@ -43,6 +44,8 @@ ANIM-001~018은 개발 항목 이름이다. 중앙 control-plane의 TASK_ID, 실
 | 빌드·replay | Build 2 archive·frame_map·PNG·encode receipt; LOCAL_FULL offline / DRIVE_BOUNDED online·restore; Build 1 호환 |
 | 저장·작업 공간 | browser OAuth·object/member hash·immutable revision·PC/worker disk·RAM·VRAM·bounded cache |
 | 실행·인코더 | ExecutionPlan·FrameStream·capability·job identity/UNKNOWN·복수 driver·mux·독립 verifier·품질·entitlement·예산 |
+| 전송·pack 후보 | coordinator relay의 실제 위치/edge·resource reservation, seekable pack offset/length/member hash·range/full 검증·fallback·restore |
+| 완료 증거 후보 | host-pinned merged 개발 node와 qualification/acceptance/release의 독립 facets·필요 scope·현재 evidence binding |
 
 ### 지켜야 할 조건
 
@@ -64,6 +67,7 @@ ANIM-001~018은 개발 항목 이름이다. 중앙 control-plane의 TASK_ID, 실
 3. 240초·24fps 작품에서 원본 사용 합계−전환 overlap 합계=5,760을 만족하도록 예시를 제시한다. 60×96프레임에 overlap 144를 추가하면 5,616프레임이므로 원본 길이/여유분을 다시 계획해야 한다.
 4. 빈 노출·부족한 소스·미검수 시퀀스·stale 승인·세 컷 중첩을 차단할 수용 조건과 legacy 보존 조건이 있다.
 5. 아키텍처/승인 의미를 변경하는 계약은 저장소의 A3·non-author 검토와 User 결정 근거에 연결한다. 문서 작성자의 자체 검증을 독립 감사 PASS로 기록하지 않는다.
+6. 고도화 후보를 채택한 task는 고도화 설계 1~5절의 schema/소비자·경로 eligibility·index bounds·검증/확정 순서·실제 완료 근거를 ADR에 고정한다. worker 직접 Drive 인증은 별도 ADR/사용자 결정/qualification 전에는 기본 후보에서 제외한다. 설계 채택이 중앙 구현·host qualification이나 제품 자격을 대신하지 않는다.
 
 ## 구현 묶음과 의존성
 
@@ -79,16 +83,36 @@ ANIM-001~018은 개발 항목 이름이다. 중앙 control-plane의 TASK_ID, 실
 | ANIM-008 | 007 | native C 계층·pivot·대체 그림·mask | 피사체 동작과 카메라 이동을 별도로 재생 |
 | ANIM-009 | 007 | A 제어 이미지·packet·수동 hand-off | 역할·시점·참조를 확인한 draft import |
 | ANIM-010 | 008, 009 | capability·구간·quote·UNKNOWN·PTS adapter | fake provider로 필수 입력·중복 제출 차단 |
-| ANIM-011 | 007, 008, 009 | 기존 UI 연결, 010 기능은 adapter 구현 후 연결 | 한 컷 준비→검토→수정→출력·승인 |
-| ANIM-012 | 010, 011 | 240초 통합 회귀·desktop packaging·문서 | 두 모드 회귀와 각 OS의 패키지 검사 |
+| ANIM-011 | 007, 008, 009 | 기존 UI 연결, 010 미병합 기능은 비활성으로 둠 | 한 컷 준비→검토→수정→출력·승인; 늦은 adapter 연결은 012 책임 |
+| ANIM-012 | 010, 011 | 240초 통합 회귀·늦은 B adapter UI 연결·desktop packaging·문서 | 두 모드 회귀·fake adapter UI 수용·각 OS 패키지 검사 |
 | ANIM-013 | 001, 003, 006 | browser Drive OAuth·archive·bounded cache·restore | 멤버/원본 보존·공간 상한·접근/끊김·복원 |
 | ANIM-014 | 001, 004, 007, 013 | FrameStream·ExecutionPlan·worker·receipt·UNKNOWN | 같은 frame 계약의 실제 remote·stale/중복 fence |
 | ANIM-015 | 001, 004, 006 | encode/mux/verify 분리·복수 driver | FFmpeg와 독립 native encode의 실제 품질·PTS·원음 |
 | ANIM-016 | 009, 014, 015 | 구독 probe·사용권·packet/notebook·import | 실제 서비스의 도구·한도·결과·자동/수동 구분 |
 | ANIM-017 | 005, 013~016 | 부분 재컴파일·parallel·prefetch·zero-copy 후보 | 같은 품질 end-to-end cold/warm·공간·전송·복구 |
-| ANIM-018 | 008, 012~017 | 240초·1080p·Drive→worker→archive·UI | 실제 실행·restore·실패 주입·성능 보고 |
+| ANIM-018 | 008, 012~017 | User-only actual240초·1080p·Drive→worker→archive·UI qualification | 실제 허용 route/source/artifact의 실행·verification·restore·실패/성능 evidence와 User 승인 전 merge/DONE 금지; 부재면 WAITING |
+| ANIM-019 | 001, 013~016 | capability evidence registry·scope eligibility·갱신/측정 | session/계정/도구/사용권 변경 차단·현재 scope만 허용 |
+| ANIM-020 | 003~006, 017, 019 | canonical render manifest·invalidate closure·부분 재현 | cold/warm 동일 범위·비영향 보존·clean/subbed/encode 승인 분리 |
+| ANIM-021 | 013~015, 019 | durable worker journal·업로드 checkpoint·archive commit/seal | submit/publication 응답 손실·crash·취소 경합·중복/UNKNOWN fence |
+| ANIM-022 | 007, 010~012, 019~021 | W00 경로 판단·전체 재생 검토 UI/기록 | 본편 내 어려운 컷·KEEP/CHANGE/MIX·current 실제 파일 승인 |
+| ANIM-023 | 001~022 전부 | 전체 개발 delivery 및 목표 qualification/acceptance closeout | 분모·증거 누락/변경·실제 환경/작품/릴리스 미완료를 정확히 표시 |
 
 모듈·UI·선택 CLI 후보는 상세 설계 14~15절과 실행·저장 설계 10절을 따른다. 한 티켓의 acceptance criteria는 상세 설계 16~17절과 실행·저장 설계 10~11절의 해당 범위를 참조한다. 의존성은 계약을 고정하기 위한 권장 순서이며, 여러 writer를 자동으로 dispatch하는 지시가 아니다.
+
+## ANIM-012: 늦게 병합된 B adapter의 UI 통합 수용
+
+ANIM-011은 ANIM-010보다 먼저 병합될 수 있다. 이때 adapter 연결 지점을 비활성으로 둔 것은 011의 허용된 중간 결과이며, 이후 adapter가 생겨도 비활성 상태를 최종 통합 완료로 남기지 않는다. **ANIM-012가 010과 011의 병합 결과를 같은 source HEAD에서 연결하고 검사한다.** 기존 DAG와 18개 node ID는 유지한다.
+
+012의 산출물은 기존 앱에서 B 경로의 제어 입력·capability·quote/예약·요청·상태·결과 검증·draft import를 adapter에 연결하는 구현과 UI 수용 증거다. 실제 provider 호출이나 유료 생성은 하지 않으며, 명시적인 개발/시험용 fake adapter와 합성 입력을 사용한다. fixture에서 구성한 LOCK·quote·승인·예약은 엔진 경계 검사이며 실제 작품·지출·provider qualification 승인으로 기록하지 않는다.
+
+| fixture | 앱에서 수행할 동작 | 필요한 증거 |
+|---|---|---|
+| `UI-B-READY` | 고정 입력과 scope에 맞는 fake capability/quote로 요청하고 반환 시퀀스를 draft로 가져옴 | 연결 지점이 활성화되고 job/attempt·입력 hash·quote binding이 유지됨; 반환 bytes/시점 검증 후 draft import; 외부 provider 요청 0 |
+| `UI-B-INPUT-QUOTE` | 필수 ref/pose/end 입력을 누락하거나 quote 후 입력/가격/권한 binding을 변경함 | 원인을 UI에 표시하고 제출 전에 차단; fake submit 횟수 0; 참조를 무단으로 자르거나 새 quote를 승인으로 간주하지 않음 |
+| `UI-B-UNKNOWN` | fake가 접수 뒤 응답을 잃게 하고 동일 입력으로 다시 실행하려 함 | 기존 identity의 UNKNOWN을 표시하고 새 job/attempt·대체 제출·예약 해제를 차단; 명시적 동일 작업 확인만 수행하고 자동 polling/retry 없음 |
+| `UI-B-CANCEL-RACE` | fake에서 취소 요청 후 완료/취소 확인 순서를 각각 바꿈 | 요청과 확인을 구분; 완료가 먼저 확정되면 같은 identity 결과를 검증하고 draft로 취급; 종료 불명 중 예약·대체 제출을 fence하고 취소를 환불로 표시하지 않음 |
+
+해당 증거는 source HEAD·fixture/input digest·fake adapter version·동작과 관측 결과·실제 실행 명령에 연결한다. 늦은 연결을 기존 011의 완료 기록에 덧씌우지 않고 012 delivery의 변경/수용 범위로 기록한다. 이 UI 통합과 기존 240초/두 모드/세 OS 패키지 조건을 함께 충족해야 012의 개발 수용을 완료할 수 있다. 실제 B provider의 사용 가능 여부·작품 채택·예술적 승인·release는 별도 근거를 요구한다.
 
 ## 첫 기능 묶음의 검증
 
@@ -109,6 +133,28 @@ ANIM-003~007은 실제 원본 그림과 파일을 사용하는 기능 단위로 
 ANIM-013~018은 실행·저장 설계 11절을 따른다. 실제 Drive/member hash·cache/spool 상한·PC/worker 공간, job UNKNOWN/stale/중복·seal crash, 독립 native encode·frame/PTS/원음/품질, 실제 구독의 검증된 범위, 고정 archive online replay/offline restore를 확인한다. 권한·GPU·도구가 없으면 fake 성공과 실제 qualification 미완료를 분리한다.
 
 성능 보고는 동일 input/quality의 cold/warm end-to-end 시간, stage timeline, peak PC/worker disk·RAM·VRAM, 전송·cache hit·사용량/비용·중단 후 복구를 포함한다. CLI를 사용하지 않는 browser/app/notebook 사용자 흐름을 실제 검증한다.
+
+고도화 후보의 ANIM-013/014/017/018은 고도화 설계 6~7절의 ROUTE/PACK/RESTORE/FACETS fixture를 해당 범위에 구현한다. 기본 relay의 PC WAN 이동·공유 링크 경합까지 보고하고, 한 컷 sparse 변경은 필요 member/halo의 실제 read/request/decode 증폭을 확인한다. Range 미지원은 명시적으로 사전 예약한 whole-pack fallback 또는 차단으로 처리한다. 부분 멤버 검증으로 full-pack 검증/완료를 기록하지 않는다.
+
+개발 결과의 `node_state=DONE`은 중앙의 host-pinned merged delivery 근거를 요구한다. `qualification_state=NOT_REQUIRED/UNQUALIFIED/PARTIAL/QUALIFIED`, `acceptance_state=NOT_REQUIRED/PENDING/ACCEPTED/REJECTED`, `release_state=NOT_AUTHORIZED/NOT_RELEASED/RELEASED`는 별도 현재 scope 근거로 보고한다. 필요한 실제 환경이 없으면 UNQUALIFIED/PENDING으로 남기며 NOT_REQUIRED로 면제하지 않는다. ANIM-018은 user_merge=true/astra_auto_merge=false인 실제 qualification milestone이다. 실제 허용된 한 경로의240초 통합·archive/replay/restore·UI·실패 및 고도화 RELAY-AUTH/TRANSPORT-RETRY/ARCHIVE-LEVEL evidence를 exact implementation/source HEAD·input/recipe/profile·device/toolchain·route/epoch·artifact hashes·시각에 pin하고, User의 exact evidence 승인 뒤에만018 merge/DONE을 허용한다. code/fake PASS나 이전 개발 merge는 대신하지 못하며 환경/권한/evidence 부재면018 WAITING이다. 작품 사람 승인과 release는 계속 별도다.
+
+## ANIM-019~023: 후속 개발 범위와 수용
+
+기존 항목은 renderer/worker/transport의 첫 동작을 제공하고, 아래 후속 항목은 그 결과를 현재 자격·재현·중단 복구·작품 검수와 전체 집계로 연결한다. 같은 구현을 두 번 완료로 집계하지 않는다. 각 항목은 현재 predecessor delivery HEAD·새 task scope·실제 검사 명령을 별도로 기록한다. A3 항목은 capability/권한 또는 외부 side effect 경계 변경이고, A2 항목도 current-head 독립 검토를 요구한다.
+
+| 항목/감사 | 산출물·소유자 | 필수 수용 fixture |
+|---|---|---|
+| 019 / A3 | registry·preflight/scheduler/UI 상태; builder 단일 writer, Fable 독립 설계·코드 감사; 실제 권한/자원은 User/배포 책임자 | `CAP-SCOPE`: CPU≠encode·CUDA≠NVENC·LLM구독≠compute·Drive connector≠network; `CAP-STALE`: session/driver/계정/권한/한도 변경; `CAP-MEASURE`: cold/warm·수동 시간·edge 경합 누락 표시 |
+| 020 / A3 · User merge | schema/canonicalizer·dependency graph·manifest·selective rebuild; renderer/toolchain 검증은 독립 MediaVerifier | `REBUILD-CLOSURE`: 그림/전환/font/cue/encoder/locator/미채택 후보 변경; `REBUILD-COLD-WARM`: 동일 입력/품질·실측 범위·비영향 hash·원곡/가사 보존; `MANIFEST-CYCLE`: 자기 digest/approval·NaN/중복 key 거부 |
+| 021 / A3 | journal·submit/attach·transfer checkpoint·commit/seal 복구; coordinator 단일 상태 writer, provider callback은 관측만 | `JOB-CRASH`: intent/응답/검증 사이 crash; `JOB-CANCEL`: 늦은 완료·취소 불명; `UPLOAD-RESUME`: server offset≠archive verification; `SEAL-CRASH`: 객체/manifest 공개 전후 응답 손실·다중 후보·손상; 새 compute 제출 0·원본/과거 seal 보존 |
+| 022 / A2 MILESTONE | W00·wave/전체 재생/issue/승인 UI·기록; 실제 작품 판단은 박준태 또는 명시적 위임자 | `W00-ROUTE`: 본편 컷 KEEP/CHANGE/MIX 후 closure/quote/UNKNOWN 적용; `ART-STALE`: 컷/전환/자막/encode 변경 뒤 stale 범위; 실제 작품 검토 부재 fixture는 PENDING 유지, 합성 검사로 사람 승인 자동 생성 0 |
+| 023 / A2 MILESTONE | 전체 23-node closeout view·근거 표·문서, source/plan digest별 read binding; host completion facets 구현 전에는 draft 표 | `CLOSEOUT-ALL`: 22개 중 하나라도 missing/stale면 전체 개발 delivery 미완료; `CLOSEOUT-SCOPE`: 018 통합 이후 새 계약/환경 변경이 기존 qualification 승계 못함; `CLOSEOUT-ART`: 실제 runtime/W00/작품 승인·release 부재 상태 정확히 유지 |
+
+019~022의 fake fixture는 개발 수용을 검증한다. 실제 Drive/remote/native/subscription probe, 실제 W00 채택본·최종 음악영상 전체 재생은 해당 환경·사용권·작품 승인 범위가 있을 때만 검증한다. 개발 코드가 merged되어도 필요한 실제 qualification/acceptance가 없으면 제품 목표 READY/FINAL_APPROVED를 선언하지 않는다. 023은 개발 delivery complete와 product-qualified/작품 accepted/release authorized를 별도 보고하며, 보고 도구의 개발 DONE이 missing facet를 해제하지 않는다. 실제 환경을 기다리는 일을 명시적 WAITING/UNQUALIFIED/PENDING으로 남기며 NOT_REQUIRED로 면제하거나 User 승인을 builder가 대리 기록하지 않는다.
+
+018 실제 qualification이 없으면023의 전체 delivery closeout도 WAITING이며 missing018을 분모에서 빼거나 code-only018 DONE으로 바꾸지 않는다. 앞선013~017의 허용된 code-only 개발 delivery는 별도 qualification 미완료를 표시하며 계속 준비할 수 있다.
+
+분모 23은 승인된 이 plan revision의 작업 노드 수이며018은 실제 qualification을 요구한다. qualification과 작품 검수·release는 단순 완료 node 수로 합산하지 않으며, 018 baseline 수용만으로 019~022의 새 scope나 최종 023을 닫지 않는다. 기존 plan 실행 중이라면 중앙의 보호된 plan 개정/승인 절차로 새 revision을 채택하기 전 이 JSON을 live registration에 덮어쓰지 않는다.
 
 ## 이번 설계의 실행 경계
 

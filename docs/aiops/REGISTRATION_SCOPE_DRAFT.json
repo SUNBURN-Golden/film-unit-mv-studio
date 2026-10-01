@@ -1,0 +1,154 @@
+{
+  "schema_version": 1,
+  "state": "PENDING_FULL_SCOPE_ADOPTION",
+  "repository": "BeautifulMind-JT/film-unit-mv-studio",
+  "program": "film",
+  "encoding": "UTF8_JSON_SORTED_KEYS_COMPACT_ENSURE_ASCII_FALSE",
+  "plan_definition": {
+    "path": "docs/aiops/FRAME_ANIMATION_V1_PROGRAM_DRAFT.json",
+    "excluded_root_fields": [
+      "approval_pointer",
+      "registration_scope"
+    ],
+    "definition_sha256": "7d6d8310de21b72ad176faa7443808169e976b6e132d5f2b861c47703ca68100",
+    "node_count": 23
+  },
+  "pending_catalogues": [],
+  "finance_subset": null,
+  "candidate_node_count": 23,
+  "user_only_nodes": [
+    "anim-001",
+    "anim-003",
+    "anim-005",
+    "anim-006",
+    "anim-010",
+    "anim-013",
+    "anim-014",
+    "anim-015",
+    "anim-016",
+    "anim-018",
+    "anim-019",
+    "anim-020",
+    "anim-021"
+  ],
+  "node_definitions": [
+    {
+      "id": "anim-001",
+      "definition_sha256": "f18f289dab88cbfd1eada4afd633244cc84533b41608cce77123768c663a6085"
+    },
+    {
+      "id": "anim-002",
+      "definition_sha256": "7f74e159daf7b4b92ce242e3a6dc39c8fec6d0929181a60a368961d38bb57b26"
+    },
+    {
+      "id": "anim-003",
+      "definition_sha256": "2fba66649e6b9a8ca46ee92bdf85e66dd2821aa11f10bbd8e882c33422b5b06f"
+    },
+    {
+      "id": "anim-004",
+      "definition_sha256": "378cc63b03a016c92180935610f00ce31918a2956661b0dd05759fff1ae94458"
+    },
+    {
+      "id": "anim-005",
+      "definition_sha256": "600bee250b55ce15c7226e4eb49d38f5d49edea938fcd11ccf5478a6f9d33f6d"
+    },
+    {
+      "id": "anim-006",
+      "definition_sha256": "912da2ad821855783ae09d8a2aa490204013d2bf3656458b294ac2544b109864"
+    },
+    {
+      "id": "anim-007",
+      "definition_sha256": "a1528d3e6016ccf71f3611e4689c6d3323e7b925bdabcac65a88d1298957afa6"
+    },
+    {
+      "id": "anim-008",
+      "definition_sha256": "cccee4ab322d890295bf2cf9289090b0307d8f7c127dbbc0e763efcfaa4c2040"
+    },
+    {
+      "id": "anim-009",
+      "definition_sha256": "f205956dc0f75e6af56dc70e0306a1877a492555883985d6c4dc079524c95674"
+    },
+    {
+      "id": "anim-010",
+      "definition_sha256": "5128c87ff1bd88b818b35b7b53e3e3c97e7ce25cf26ea382e507150365f4d3b6"
+    },
+    {
+      "id": "anim-011",
+      "definition_sha256": "72b551a5d98114bc98f80add2a26138684fc1edf3c5608af58e01caec8fd4efa"
+    },
+    {
+      "id": "anim-012",
+      "definition_sha256": "7d8981007d711994bc72aaa4b6c8742a3147dc7634a02001af8408f02a3dcbdf"
+    },
+    {
+      "id": "anim-013",
+      "definition_sha256": "c21ba5e479cd7c83487237f41086461e807c3530061c2a0ef6f094fd3bc02150"
+    },
+    {
+      "id": "anim-014",
+      "definition_sha256": "b964bef2fd770e157861ee9237df60b4859a3467057835123ecc7c47cc95a46f"
+    },
+    {
+      "id": "anim-015",
+      "definition_sha256": "d9d1139ba4047b88b7bb9ed5388a50fa92e454944369c24b1c6ff54c818ed570"
+    },
+    {
+      "id": "anim-016",
+      "definition_sha256": "a0dd3b04262076f4115cbba69770b13f73d70bd86fa71caff4b9fda403fdb920"
+    },
+    {
+      "id": "anim-017",
+      "definition_sha256": "22172483d12caaacfc3ffa4566d72eb2722582b209ab7676a6a94d12610286e3"
+    },
+    {
+      "id": "anim-018",
+      "definition_sha256": "d09d09cdb4e490f8b714bcc152bf390d7a939c8018c9427f7e0057aff3140625"
+    },
+    {
+      "id": "anim-019",
+      "definition_sha256": "e1d81b6caf07bc4e605ba989e25b1c7d0b32bc6598799ba72be9002719f76bf1"
+    },
+    {
+      "id": "anim-020",
+      "definition_sha256": "17889949b42572c065204b1d3f2188dffeb8b066e68645d72a727dc038d87eb4"
+    },
+    {
+      "id": "anim-021",
+      "definition_sha256": "2e98d06f3eba95b1303a9a714994d89f6b1684d16e635a0ef46bbf582e783ca8"
+    },
+    {
+      "id": "anim-022",
+      "definition_sha256": "660fa4eed36368598941454f6316c1ff953ba71e85db1a154cf3652c1cad7861"
+    },
+    {
+      "id": "anim-023",
+      "definition_sha256": "58286c84f9670cafbded9c30ed0db8afbfecd571a3f97336e137e3caef92d140"
+    }
+  ],
+  "definition_document_sha256": {
+    "docs/FRAME_ANIMATION_V1_EXECUTION_STORAGE_KO.md": "c5658d4e262979c5f390a8f6800b66f56680682f4bd5ba61500873ae87289f5b",
+    "docs/FRAME_ANIMATION_V1_DEVELOPMENT_KO.md": "9d21f52969b3735df1caa8704f4df51268d8543463f56056851ef7f32c51d5cc",
+    "docs/FRAME_ANIMATION_V1_EVOLUTION_KO.md": "a2ff470797087610e23e66b2070ab731cb8b38519e2a11db6a8a9b7ed3116381",
+    "docs/aiops/REGISTRATION_SCOPE_APPROVAL_KO.md": "27a7bc960282f7c25b5e9551847c6e881329e1a8a01facf823b67627765d2cea",
+    "docs/aiops/PROGRAM_ASTRA_DELEGATION.md": "ba682dc597f66e0b31a8ce822f13b1a13158b2acfa1c0388c30521305a5bd14a",
+    "AGENTS.md": "c8c5a87a572cb93d286947ec93ab9ff1fbb22a7de41e586c776243fd35cc02c9",
+    "ARCHITECTURE.md": "c8726c76ec600b17c78307b2a5b286915efb4d68971fee09ef286995e6f7b62b",
+    "PROJECT_SPEC.md": "0b64e2bce3367b5dcf0cc078a03e960d0b5a85858dc883198382bf578cf7f809",
+    "README.md": "fea59e49a0661eed580e61f0c15356a9d3b53737a577c634fc5baa12e51b67c5",
+    "TASKS/TEMPLATE.md": "45d6ab0efe37ce4fff823c4215fdd16c15226782886cbd6cac1a7fcf32296c23",
+    "docs/CONTROL_PLANE_POINTER.md": "89528389d9a6f6af18e5feac52eb6a0033a76c74da7fb08de6886621a11e8a36",
+    "docs/FRAME_ANIMATION_V1_DESIGN_KO.md": "0f07d03b41965ebb00b0806ef9a53df4549fe6e1dfb33ce213759c82987607e9",
+    "docs/decisions/FRAME_ANIMATION_V1_ADOPTION_20260930.md": "df61ffa1a73220ad1f2a41e1ce12707af158faeda870dd97ab5e9537010620a7"
+  },
+  "approval_evidence": {
+    "scope_decision_pointer": "PENDING_EXACT_WHOLE_SCOPE_USER_DECISION",
+    "audit_pointer": "PENDING_NON_AUTHOR_EXACT_HEAD_A3",
+    "registration_revision_pointer": "PENDING_APPROVED_FULL_SCOPE_READER_AND_REVISION"
+  },
+  "central_source_candidate": {
+    "pr": "BeautifulMind-JT/ai-ops-control-plane#47",
+    "head": "09e161caa652d75e9617caf632b3b9899be35740",
+    "authority": "SOURCE_ONLY_NOT_ADOPTED_INSTALLED_QUALIFIED_OR_ACTIVATED"
+  },
+  "rule": "Any changed definition needs a new manifest and exact-head review. Finance aliases are counted once. No inherited approval, edited status, partial selection, ordinary comment or source CI grants execution. The manifest digest and approval target commit are recorded externally to avoid hash self-reference."
+}

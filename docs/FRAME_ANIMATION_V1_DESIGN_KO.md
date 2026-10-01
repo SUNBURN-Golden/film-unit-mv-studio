@@ -10,6 +10,8 @@
 
 설계 revision 3 (2026-09-30): 옵션 A 채택 경로의 결정 기록과 ARCHITECTURE.md·PROJECT_SPEC.md의 새 모드 예외를 추가했다. main 41e4047의 AGENTS·공유 정책 변경을 이 브랜치에 함께 통합해 감사 입력에 포함한다. remote worker에는 사용자 OAuth token을 전달하지 않는 중개 전송을 기본으로 고정하고, cancel/UNKNOWN 및 명시적 bounded retry를 보완했다. 최초 문서의 외부 CI·중앙 host 상태는 작성자가 제공한 탐색 포인터이며 이번 감사의 로컬 입력만으로 입증된 실적으로 취급하지 않는다.
 
+설계 revision 4 후보 (2026-09-30): [전송·pack·완료 근거 고도화](FRAME_ANIMATION_V1_EVOLUTION_KO.md)는 기본 coordinator relay의 실제 transfer edge/위치·seekable pack의 구간/member 검증·bounded restore·개발/qualification/수용/release 독립 facets를 제안한다. 선행 감사 HEAD를 보존한 후속 DESIGN_ONLY 후보이며 채택 전 운영 정본 변경·제품 구현·실제 qualification·작품 승인·release를 뜻하지 않는다.
+
 ## 1. 판단
 
 **적용 가능하다. 기존 Film Unit의 프로젝트·프레임 계약을 유지하며, 제작 계층과 저장·실행·인코더 선택 계층을 추가한다. 새 모드의 실행 위치를 PC에 고정하지 않는다.**
@@ -496,6 +498,14 @@ compile-final은 새 모드에서 FINAL_CANDIDATE_READY까지 만든다. build�
 
 기존 가사 원문 보존·cue 검토·font coverage를 유지한다. 현재 Final의 instrumental/no-lyrics 예외는 구현돼 있지 않으므로 이 작업에서 빈 가사를 자동 면제하지 않는다. 무가사 작품 지원이 필요하면 별도 계약 변경으로 결정한다.
 
+### 10.5. W00 경로 판단과 실제 전체 재생 기록
+
+ANIM-022는 본편에서 가장 어려운 동작/접촉/가림/전환 유형을 가진 컷과 연결 컷을 W00 범위로 먼저 제작하고, 그 컷들이 실제 채택본이 된 시점에 `KEEP / CHANGE / MIX` 경로 결정을 받는다. 별도 작품·고정 길이 pilot을 새로 요구하지 않는다. W00 컷 ID/범위, 어려움의 이유, 실제 source/sequence/artifact hash, 검토한 조건과 경로 결정자를 기록한다. 뒤쪽에 나오는 어려운 컷도 본편 순서를 변경하지 않고 제작 순서만 앞당길 수 있다. 합성 회귀 fixture·모델 추천·한 장의 좋아 보이는 frame이 이 판단을 대신하지 않는다.
+
+CHANGE/MIX는 새 PLAN/WAVE revision과 실제 영향 closure, 사용권·quote·남은 allowance·UNKNOWN fence를 검증한다. 기존 채택 컷·유료 결과를 버리거나 무조건 전부 재생성하지 않고 관련 binding을 유지할 수 있는 범위를 설명한다. 새 generation이나 지출이 요구되면 해당 범위의 별도 승인을 받는다. W00 결정 전 다음 production wave 실행을 열지 않으며, 외부 접근이 없어 실제 W00이 없으면 PENDING으로 표시한다.
+
+전체 검토는 10.1~10.4절의 cut/transition/whole film/최종 전달 파일 binding을 소비한다. UI는 실제 선택한 build의 정상속도 전체 재생, 문제 구간·처분, clean/subbed 출력의 기술 결과와 승인자를 기록한다. 재생 기록은 사람이 어떤 파일/방법으로 검토했는지에 대한 기록이며 자동 의미 QC PASS가 아니다. 편집·sequence·font/cue·encode output이 바뀌면 해당 단계와 최종 실제 파일 승인은 stale다. 박준태 또는 명시적으로 위임받은 사람의 실제 검토·current approval 없이는 FINAL_APPROVED를 만들지 않는다.
+
 ## 11. 프레임 관계·캐시·부분 수정
 
 ### 11.1. frame_map
@@ -555,6 +565,18 @@ sequence content digest에는 순서가 고정된 프레임 바이트·시점·�
 
 공통 표현 의도와 선택 자산의 digest는 명시적인 projection으로 계산한다. 새 모드에서는 미채택 후보 추가, 준비 진행 상태나 검수 메모 변경을 공유 화풍 변경으로 간주하지 않는다. legacy fingerprint는 호환성을 위해 기존 의미를 유지한다.
 
+### 11.5. canonical render manifest와 invalidate closure
+
+ANIM-020은 11.2~11.4절을 기계가 소비하는 dependency graph로 고정한다. asset bytes → exposure/motion/transform/mask → cut sequence → pairwise transition → clean output → subtitle overlay → subbed output → encode/mux artifact 관계를 기록한다. 사용하는 source revision·구간·rational PTS/weight·halo는 정수/rational 표현과 순서가 고정된 canonical UTF-8 serialization으로 hash한다. 중복 key·NaN/Infinity·지원하지 않는 타입/버전은 거부하고 의미가 없는 dict 순서/absolute filesystem path·저장 locator·job 상태·검수 표시를 pixel recipe에 섞지 않는다. schema 버전과 canonicalization 규칙은 ANIM-001 ADR에서 고정한다.
+
+서로 다른 hash 층은 분리한다. `source_digest`는 실제 입력 바이트·역할, `recipe_digest`는 시각 연산·시간/색 정책·필요 toolchain, `clean/subbed_sequence_root`는 각각 ordered frame index·pixel output hash·recipe 관계, `encode_digest`는 해당 sequence root·DeliveryProfile·encoder/mux/검사 계약을 가리킨다. archive manifest는 이 결과와 보관 bytes를 pin하고, 검수/승인은 manifest/실제 artifact를 외부에서 참조한다. renderer가 승인 정보를 입력으로 필요로 한다는 이유로 순환 digest를 만들지 않는다. clean/subbed를 같은 hash로 합치지 않는다.
+
+계산상 바이트 재현을 요구하는 범위는 exact toolchain/수치·색 recipe와 장치를 qualification한 범위뿐이다. GPU/driver 변경·native encode가 다른 bytes를 내면 새 artifact로 보관하고 독립 품질·PTS 검사를 수행한다. deterministic schema/순서가 생성 모델 또는 모든 장치의 byte-identical 실행을 보장한다는 주장은 하지 않는다. replay는 보관한 채택 자료를 사용하며 LLM/generation 재호출로 원본을 복원하지 않는다.
+
+변경 집합에서 downstream closure와 새로 필요한 source/halo 범위·검수/LOCK을 별도 계산한다. location만 이동하면 identity와 검증된 바이트가 같을 때 compose를 재사용한다. font/cue는 subbed와 전달물만 invalidate하고 clean·컷 동작 검수를 유지한다. 전환만 바꾸면 양쪽 입력/halo와 전환 출력만 다시 합성하되 전체 편집/최종 출력 검토는 stale다. 공통 색/렌더 도구 변경은 실제 참조 closure 전체, encoder/profile 변경은 encode/mux와 실제 최종 파일 검토만 바꾼다. stale approval과 cache hit는 독립 판정한다.
+
+수용 fixture는 cold full rebuild와 warm selective rebuild를 동일 고정 source/quality/qualified renderer에서 비교한다. 영향 범위 출력 hash·frame_map은 일치하고, 비영향 sequence는 유지되며, 원곡·가사 원문·cue는 허용된 수정 외에 변하지 않아야 한다. source/font/transition/driver/locator/미채택 후보 변경을 각각 검사하고 실제 읽기/재decode/compose/encode 범위와 peak 자원을 보고한다. scope 밖 output mismatch는 재현 실패이며 빠른 경로의 결과를 조용히 정본으로 택하지 않는다.
+
 ## 12. 출력·빌드·저장량
 
 ### 12.1. 정식 출력 경로
@@ -605,6 +627,8 @@ Build 2는 선택 원본·MotionPlan·노출/합성 recipe·전환·frame_map·�
 데스크톱에서는 여러 GB 시퀀스를 기존 ‘영상 500MB 업로드’에 억지로 넣지 않는다. 기본 UI는 **브라우저 Google 로그인·프로젝트 연결·필요 범위 가져오기·Drive 보관·복원**을 제공한다. 로컬 index/폴더 import도 지원하며 CLI는 개발·고급 사용의 선택 경로다. 대용량 import는 원본 파일을 이동·삭제하지 않는다.
 
 index는 허용된 이미지 형식·명시적 순서·파일 hash를 가진다. 선택한 저장 backend의 원본 보관·hash 검증과 index commit이 끝나기 전에는 선택 자산으로 공개하지 않는다. ZIP import를 추가하면 경로 탈출·절대경로·symlink·압축 폭탄·누락 멤버를 검사하고 원본 경로와 작업 코드를 실행하지 않는다.
+
+seekable pack 후보의 index는 고정 pack bounds·멤버 offset/length/hash·coverage를 포함한다. archive가 pin한 index를 먼저 확인하고 전체 멤버 hash 검증 뒤에만 decode한다. 부분 검증은 전체 pack 검증과 구분하며 Range 미지원/전체 응답은 cap·사용량·시간을 먼저 허용한 명시적 fallback만 소비한다. decode 확장·restore path·partial 상태를 포함한 수용 계약은 고도화 설계 3~4·6절이다.
 
 ## 13. 비용·노동·구독 hand-off
 
@@ -728,6 +752,8 @@ legacy는 현재 로컬 파일·project_mutex 경로를 유지한다. 새 모드
 | ANIM-018 원격 통합 | 240초·1080p·Drive/remote/encoder·UI | 실제 실행·archive/replay·실패 주입·성능 보고 |
 
 ANIM-003~007이 **외부에서 제작한 프레임을 받아 전체 작품을 컴파일하는 첫 기능 묶음**이다. ANIM-008은 native 제작 능력을 추가하고, ANIM-009~010은 프레임 제작 입력·생성 연결을 확대한다. ANIM-013~018의 의존성·수용 조건은 실행·저장 설계 10~11절을 따른다. 로컬 기준선 완료를 새 모드의 원격·성능 목표 완료로 집계하지 않는다.
+
+후속 고도화의 node 계약은 고도화 설계 7절을 함께 소비한다. 중앙 `node_state=DONE`은 host-pinned delivery가 실제 merge된 개발 결과이며, 필요한 실제 환경의 `qualification_state`와 gate의 `acceptance_state`, 별도 `release_state`는 다른 근거로 보고한다. 실제 원격 자원이 없으면 fake 회귀·개발 merge만으로 ANIM-018 목표 수용이나 실제 작품 승인을 완료로 표시하지 않는다. 예술적 완료·sealed build 승인·공개 배포 권한은 기존 독립 계약을 유지한다.
 
 이 첫 기능 묶음도 완성 애니메이션을 자동으로 만들어 주지는 않는다. 필요한 그림·레이어·동작은 실제 제작하고 채택해야 한다. W00은 소프트웨어의 합성 fixture와 별개로 작품의 경로 적합성을 검증한다.
 

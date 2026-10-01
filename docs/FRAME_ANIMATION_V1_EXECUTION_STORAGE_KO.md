@@ -1,6 +1,6 @@
 # FRAME_ANIMATION_V1 — Drive 저장·원격 실행·복수 인코더 성능 설계
 
-설계 revision: 3, 2026-09-30 KST  
+설계 revision: 4 후보(DESIGN_ONLY / PENDING_APPROVAL_DO_NOT_DISPATCH), 2026-09-30 KST  
 제품 코드 확인 main: 41e40478505cf75cf441dd4075c071a0fc462dbf  
 원래 애니메이션 코드 검토 기준: 1f5684a8f19893d8f83f487cf329bb2425eeb25b  
 선행 문서: [상세 설계](FRAME_ANIMATION_V1_DESIGN_KO.md), [개발 시작 안내](FRAME_ANIMATION_V1_DEVELOPMENT_KO.md)
@@ -8,6 +8,8 @@
 User가 요청한 브라우저 Google 로그인, Drive에서 필요한 자료를 가져오는 컴파일, FFmpeg 외 인코더, AI 구독의 실행 서비스 활용, 성능 우선 방향을 구체화한다. 기능 구현·실제 연결·원격 실행·추가 과금 승인·독립 감사 PASS의 기록은 아니다.
 
 [옵션 A 채택 결정](decisions/FRAME_ANIMATION_V1_ADOPTION_20260930.md)을 개발 범위의 근거로 삼는다. ARCHITECTURE.md·PROJECT_SPEC.md에 새 모드 예외를 연결했으며, ANIM-001에서 소비자·ADR·수용 조건을 상세 확정한다. 최초 main/CI와 중앙 운영 상태의 외부 링크는 탐색 자료이며 작성자 설명만으로 현재 감사의 검증 실적이 되지 않는다.
+
+revision 4는 [전송·pack·완료 근거 고도화](FRAME_ANIMATION_V1_EVOLUTION_KO.md)의 후속 후보를 연결한다. 선행 #19/#20의 고정 감사 HEAD는 유지한다. 이 후보 채택 전에는 변경 계약을 운영에 적용하지 않으며, 제품/중앙 코드·실제 qualification·credential·host·activation·제작/릴리스 권한은 바뀌지 않는다.
 
 ## 1. 설계 방향
 
@@ -53,6 +55,16 @@ OAuth는 system browser, PKCE, state 검증과 client 유형에 맞는 공식 re
 
 앱의 Drive 연결과 외부 worker의 접근은 별도 권한 경계다. 기본 경로는 coordinator가 drive.file로 허용된 고정 입력의 hash를 확인해 worker에 중개 전송하고, 검증한 출력만 archive에 쓰는 방식이다. 사용자 refresh token·OAuth access token·Drive 계정 권한은 worker나 LLM packet에 전달하지 않는다. 필요한 임시 전송 권한은 해당 job·허용 객체·읽기/쓰기 범위·단기 만료에 묶고 취소·회수하며, 수명과 접근 로그를 ExecutionPlan/receipt의 비밀 없는 메타데이터로 확인한다. worker의 직접 Drive 인증·서비스 계정 공유·사용자 token 위임은 이 기본 경로에 포함하지 않는다. 도입하려면 별도 ADR과 권한 범위 승인을 먼저 받는다. Drive 접근이 없는 runtime은 제한된 파일 packet 경로로 표시한다.
 
+### 3.1. 계정 세대와 relay 권한 수명
+
+브라우저 연결은 coordinator의 `connection_id`, `account_binding_digest`, `credential_epoch`에 묶는다. account binding은 검증한 계정/허용 파일 집합의 비밀 없는 로컬 식별자이며 이메일·token을 worker에 보내는 필드가 아니다. 계정 전환·로그아웃·권한 회수는 epoch를 올리고 새 read/write·submit·upload resume을 차단한다. 기존 job의 접수/종료 기록은 삭제하지 않는다. 이미 제출한 worker가 계속 실행할 수 있으므로 token 폐기만으로 CANCEL_CONFIRMED를 만들지 않으며 기존 UNKNOWN과 지출 예약은 유지한다.
+
+relay grant는 허용된 transport 구현이 제공하는 짧은 수명의 권한이다. `job_key`, `attempt_id`, `snapshot_digest`, `object/member_digest`, 정확한 read/write range, `max_bytes`, 만료, 목적 endpoint에 묶고 object 목록 밖의 browse·목적지 선택·임의 URL fetch를 허용하지 않는다. bearer URL·upload session URI·nonce 원문은 secret storage에 두며 packet의 provenance나 일반 receipt에는 digest/식별자만 남긴다. 만료 grant 갱신은 같은 job의 같은 객체 접근만 회복하며 새 compute submit이 아니다. 완료/취소 확인·credential epoch 변경 때 폐기하고, 중단 후 재연결도 계정/권한·epoch와 원래 입력을 재검증한다. transport가 이 경계를 강제하지 못하면 그 route는 UNQUALIFIED다.
+
+Drive의 partial read는 허용된 binary pack에 한정한다. Google Workspace 문서 export를 seekable PNG pack으로 취급하지 않는다. resumable upload의 서버 수신 offset은 전송 진척이며 SHA256 검증·archive 확정 증거가 아니다. 공식 protocol의 status query는 같은 upload session 확인이며 product compute 재제출과 구분한다. [Drive 다운로드](https://developers.google.com/workspace/drive/api/guides/manage-downloads), [Drive resumable upload](https://developers.google.com/workspace/drive/api/guides/manage-uploads)는 transport 근거이고 실제 Film Unit 연결 자격은 아래 probe로 증명한다.
+
+기본 연결은 [고도화2.1.1](FRAME_ANIMATION_V1_EVOLUTION_KO.md)의 coordinator→고정 worker HTTPS endpoint outbound TLS/input push/output pull이다. desktop inbound listener/NAT port forwarding은 없다. 사전 허용된 peer credential과 issuer/audience·job/attempt·object/range·bytes·epoch·만료 binding을 검증하고 cross-host redirect를 거부한다. worker 인증 credential은 Drive OAuth와 별개며 새로운 credential/배포 권한을 만들지 않는다.
+
 ## 4. Drive에서 읽으며 실행하는 저장 구조
 
 ### 4.1. Archive와 workspace
@@ -68,7 +80,7 @@ OAuth는 system browser, PKCE, state 검증과 client 유형에 맞는 공식 re
 
 DRIVE_BOUNDED도 최종 프레임의 실제 PNG 바이트를 보존한다. 5,760개 연속 논리 번호·hash를 검증하며 필요하면 F_000001.png~F_005760.png 폴더로 복원한다. MP4 재추출로 보존 요건을 대신하지 않는다. LOCAL_FULL의 폴더 검사와 DRIVE_BOUNDED의 pack/index 검사·복원 검사를 각각 구현한다.
 
-작은 파일 수천 개를 무조건 개별 요청하지 않는다. index와 독립 복원 가능한 pack으로 묶고 실제 크기·서비스 한도·변경 단위로 나눈다. PNG는 이미 압축되어 있어 archive로 묶기만 해 저장량이 크게 줄어든다고 주장하지 않는다.
+작은 파일 수천 개를 무조건 개별 요청하지 않는다. index와 독립 복원 가능한 pack으로 묶고 실제 크기·서비스 한도·변경 단위로 나눈다. PNG는 이미 압축되어 있어 archive로 묶기만 해 저장량이 크게 줄어든다고 주장하지 않는다. 후속 v1 후보의 seekable pack은 outer compression 없이 header와 PNG 원래 바이트만 고정 순서로 담는다. index는 pack 밖의 sidecar 객체이며 member offset/length/hash·pack bounds·frame coverage를 담는다. archive manifest는 pack 전체 hash/length와 sidecar index hash를 각각 pin하고 index는 pack hash 입력에 포함되지 않는다. 전체 pack hash와 부분 member 검증은 구분한다. 세부 형식·range 검증·decode 상한·fallback·restore는 고도화 설계 3~4절을 ANIM-001에서 고정한다.
 
 content-addressed object는 앱이 덮어쓰지 않는다. 수정은 새 object/revision을 만들고 빌드는 고정 목록을 참조한다. filename·최신 수정 시각·file ID만으로 일치를 판정하지 않는다. 다운로드 바이트·멤버 hash를 manifest와 대조한다. Drive revision을 쓸 경우 실제 보존 정책을 확인하며 자동 삭제되는 revision을 유일한 원본으로 사용하지 않는다.[Drive download][DOWNLOAD]
 
@@ -82,7 +94,7 @@ READ → VERIFY → DECODE → COMPOSE → ENCODE/ARCHIVE → VERIFY → EVICT �
 
 작업 단위는 출력 구간과 필요한 halo다. 전환은 양쪽 컷, 보간은 anchor, 레이어는 공통 mask·rig를 포함한다. master·hold 그림은 재다운로드하지 않고 사용 중인 cache를 pin한다. 작업 분할로 원본 길이·보간 의미·노출을 바꾸지 않는다.
 
-PC cap이 작으면 원격 worker가 Drive에서 직접 읽고 결과를 Drive에 저장하는 경로를 우선 후보로 검토한다. 원격 scratch는 해당 실행 환경에 존재하며 Drive 구독 용량과 다른 자원이다. 실제 Drive와 worker의 위치·전송 속도를 측정한다.
+PC cap이 작으면 기본 coordinator 중개의 bounded stream·작은 독립 pack·검증된 remote scratch를 계획한다. 기본 이동은 Drive→coordinator→worker→coordinator→Drive이며 coordinator 위치와 edge별 전송을 기록한다. PC disk를 적게 사용해도 PC coordinator의 WAN 바이트는 없어지지 않는다. worker 자체 권한의 DIRECT_DRIVE는 별도 ADR·사용자 권한 결정·실제 qualification 전에는 후보에서 제외한다. 원격 scratch는 해당 실행 환경에 존재하며 Drive 구독 용량과 다른 자원이다. 고도화 설계 2절의 실제 위치·공유 링크·전송/검증 비용을 측정한다.
 
 장당 평균 3MB 가정에서 4초·96장=288MB, 인접 두 컷=576MB, 전체 5,760장=17.28GB다. 입력 PNG만의 예시다. 일정한 100Mbps로 17.28GB를 읽는 이론 시간은 23.04분이며 overhead·레이어·결과 업로드는 별도다.
 
@@ -98,18 +110,16 @@ flowchart TD
     C --> R["원격 CPU/GPU worker"]
     C --> S["구독 실행 환경"]
     C --> N["로컬 native worker"]
-    D["Drive archive"] --> R
-    D --> S
-    D --> N
+    D["Drive archive"] --> C
     R --> F["고정 FrameStream"]
     S --> F
     N --> F
     F --> E["선택한 encode·mux"]
-    E --> V["독립 검사·seal"]
+    E --> V["coordinator 독립 검사·seal"]
     V --> D
 ```
 
-서비스가 FrameStream을 직접 받지 못하면 허용된 파일/무손실 chunk로 연결한다. 위 그림은 구현 계약이며 모든 구독 서비스의 지원 목록이 아니다.
+서비스가 FrameStream을 직접 받지 못하면 허용된 파일/무손실 chunk로 연결한다. 위 그림은 coordinator 중개 기본 경로의 구현 계약이며 모든 구독 서비스의 지원 목록이 아니다. 입력과 출력의 실제 바이트 이동/위치·공유 자원은 ExecutionPlan의 transfer edge로 기록한다. worker 직접 Drive 인증은 이 그림의 숨은 전제가 아니다.
 
 ### 5.1. schema
 
@@ -118,7 +128,7 @@ Project 4 / Shot 3 / Build 2는 구현 전 제안이므로 ANIM-001에서 아래
 | 데이터 | 내용 |
 |---|---|
 | StorageArchive 1 | location·object/member hash·번호·보존·검증 |
-| ExecutionPlan 1 | snapshot·operation DAG·범위·worker·연결·자원·요금·품질 |
+| ExecutionPlan 1 | snapshot·operation DAG·범위·worker·연결·transfer route/edge·coordinator 위치·자원·요금·품질 |
 | CapabilityEvidence 1 | 실제 runtime/driver probe·fixture·한도·유효 범위·시각 |
 | EncodeRecipe 1 | driver·codec engine·format·timebase·rate control·color·mux |
 | WorkerProtocol 1 | job identity·snapshot·attempt·출력·receipt·error |
@@ -206,9 +216,19 @@ UNKNOWN은 명시적 확인/reconciliation을 기다린다. CANCEL_REQUESTED는 
 
 FAILED_CONFIRMED 후 새 attempt는 사용자에게 실패·현재 예약·남은 retry allowance를 표시한 뒤 명시적인 이어하기 동작으로만 시작한다. 기존 bounded retry 상한과 quote·사용권·남은 예산을 재검증하고 새 attempt ID/submission request ID를 기록한다. 이는 자동 재제출이 아니며 allowance 소진·권한/가격 변경·불명 작업이 있으면 차단한다. engineering program의 빌더 재개와 제품 remote job 재시도는 서로 다른 계약이다.
 
+같은 attempt 안의 idempotent GET/Range·공식 upload-status retry는 [고도화4.2.1](FRAME_ANIMATION_V1_EVOLUTION_KO.md)의 edge별 명시적 횟수/시간/request/byte caps 안에서만 허용한다. 미설정은 retry0이며 신규 create/compute submit/manifest 게시 불명을 자동 재시도로 해소하지 않는다. resumable write는 status로 확인한 offset 이후만 전송하며 모든 중복 bytes를 계수한다.
+
 callback/receipt는 actor·job·attempt·snapshot·범위·request nonce에 연결하고 중복·오래된 revision을 거부한다. worker의 COMPLETE나 LLM의 완료 문장을 실제 출력 검증으로 승격하지 않는다. 상태 확인은 공식 완료 이벤트 또는 사용자의 한 번의 이어하기/가져오기 동작으로 수행한다. standing routine·주기적 status polling·소비자 UI 자동 조작을 추가하지 않는다.
 
 여러 worker는 서로 다른 고정 계산 범위에 immutable 결과만 쓴다. 한 coordinator가 선택·receipt·coverage·build seal을 직렬화한다. 제품 계산의 병렬 worker는 engineering task의 여러 writer를 허용하는 근거가 아니다.
+
+### 5.4. durable job journal과 중단 지점
+
+ANIM-021은 5.3절의 상태를 append-only journal로 구현한다. 첫 network side effect 전에 고정 snapshot·operation/range/halo·recipe·실행/toolchain 계약·quote/사용권·예약·credential epoch·job/attempt/request ID와 `SUBMIT_INTENT`를 durable하게 기록한다. response/callback은 관측 기록이며 verifier가 승인한 frame coverage·hash와 분리한다. coordinator 재시작은 last verified checkpoint와 미해결 intent를 복원하며 접수 응답이 없다는 이유로 job key나 attempt를 바꾸지 않는다. 잘린·중복·순서가 다른 journal은 UNKNOWN/RECONCILIATION_REQUIRED다.
+
+계산 checkpoint는 소비가 끝난 GPU surface나 프로세스 메모리가 아니라 검증된 immutable artifact와 receipt다. PNG/member·독립 encode fragment의 범위/출력 hash·도구 계약이 일치해야 재사용한다. 프레임을 다시 계산할 수 있다는 사실로 외부 paid submit의 UNKNOWN을 해제하지 않는다. resumable upload checkpoint는 secret session 참조·로컬 object hash·server offset·반환 object ID를 별도 기록하며, upload 완료 bytes와 member/full hash를 확인해야 archive checkpoint가 된다.
+
+원격 provider가 idempotency key를 지원한다고 문서에 쓰여 있어도 실제 probe 전에는 중복 방지가 검증됐다고 하지 않는다. 공식 접수 확인 수단이 없는 수동 packet은 사용자 import/명시적 확인을 기다리며 자동 attach/polling을 만들지 않는다. FAILED_CONFIRMED에 대한 명시적 bounded retry, cancel/완료 경합과 지출 예약은 5.3절을 그대로 유지한다. 중앙 #47의 Fable 한도 회복 후보는 engineering audit 재개이며 제품 generation/worker retry 권한을 추가하지 않는다.
 
 ## 6. FFmpeg 외 인코더와 출력 계약
 
@@ -277,6 +297,14 @@ CapabilityEvidence에는 서비스·계정 사용 경로·확인 시각·runtime
 
 subscription allowance·compute unit·API credits·USD·human hand-off 시간을 분리한다. 포함 범위가 확인되지 않으면 추가 과금이 없는 경로로 표시하지 않는다. 구독 소진·UNKNOWN 접수·자원 거절은 다른 계정이나 유료 API로 자동 우회하지 않는다.
 
+### 7.2.1. CapabilityEvidence와 실행 eligibility의 갱신 계약
+
+ANIM-019는 후보 이름 목록과 실제 실행 허용을 분리하는 registry를 제공한다. `evidence_id`, `provider/adapter/worker_digest`, service/account의 비밀 없는 binding·credential epoch, session/device/OS/driver, operation·pixel/color/codec·해상도·frame/range·입출력/scratch/시간 cap, route/transport, 검증 fixture/input/output digest와 관측 시각, 사용권 근거·통화별 allowance·만료/재검증 조건을 기록한다. qualification에 쓴 시험과 production 요청의 operation/scope·현재 환경을 비교하여 superset 추론 없이 허용한다. CPU compose 성공으로 native encode, CUDA 접근으로 NVENC, 글 모델 구독으로 GPU 실행·Drive network·상용 API 크레딧을 허용하지 않는다.
+
+eligibility는 `DOCUMENTED_ONLY / QUALIFIED_FOR_SCOPE / STALE / UNAVAILABLE` 등의 registry 상태를 이유와 함께 계산한다. 이는 프로그램의 qualification facet를 대체하는 enum이 아니다. 실제 scope 일부만 검사했으면 전체 목표 qualification은 PARTIAL이고 나머지는 UNQUALIFIED다. 새 session/device/driver/worker·사용권/계정·route·한도 변경 및 evidence 만료는 기존 probe를 적용 불가로 만들며 다시 probe하거나 사용자 확인을 기다린다. UNKNOWN 작업은 새 자격 증거로도 해제하지 않는다. probe 자체의 유료 실행·credential provisioning은 별도 허용 범위가 필요하다.
+
+AUTO_PERFORMANCE는 eligibility를 먼저 통과한 후보만 계산한다. 측정은 input/quality digest·cold/warm·start/auth/queue·각 stage와 공유 edge·peak disk/RAM/VRAM·전송량·사용량·수동 hand-off 시간을 같은 조건으로 묶는다. 표본 수·관측 구간·변동·누락을 보고하고 측정이 없으면 UNKNOWN으로 표시한다. 실제 예상 시간이 겹치면 사용자가 허용한 우선순위로 결정하고, 미검증 서비스를 빠르다는 모델 추론으로 선택하지 않는다. LLM은 이 고정 evidence를 설명/계획하는 역할이며 매 프레임 계산 권한의 근거가 아니다.
+
 ### 7.3. 사용자 흐름과 packet
 
 Film Unit에서 저장소 연결 → 실행 서비스 선택 → 자원 확인 → 품질/공간/비용/예상 시간 확인 → 컴파일 순서로 진행한다. 수동 runtime은 브라우저/notebook에서 누를 동작과 가져올 결과를 보여준다. 사용자에게 CLI 실행을 요구하는 기본 흐름을 만들지 않는다.
@@ -293,14 +321,14 @@ packet은 plan·snapshot hash·입력 index·필요 파일/권한·고정 worker
 
 AUTO_PERFORMANCE는 startup/auth/queue, Drive read, decode, 합성, encode, audio/mux, archive write, 검증·seal까지 end-to-end 시간을 예측한다. 겹쳐 실행되는 stage는 단순 합산하지 않고 DAG의 critical path·대역폭·자원 경합으로 계산한다. 같은 품질에서 전체 완료 시간, PC peak storage, 전송량, 구독 사용량, 별도 비용을 표시한다.
 
-원격 데이터 직접 처리 경로를 우선 qualification 대상에 넣는다. 사용자가 REMOTE_ONLY를 선택하면 로컬로 자동 전환하지 않는다. API 경로와 수동 packet 경로는 사람의 시작·첨부·가져오기 시간을 포함해 비교한다.
+기본 relay의 원격 계산 경로를 qualification하고 coordinator 위치·edge별 실제 이동을 포함해 비교한다. worker가 자체 Drive 권한으로 직접 처리하는 DIRECT_DRIVE는 별도 ADR·사용자 권한 결정·scope qualification 전에는 AUTO_PERFORMANCE 후보에서 제외한다. 사용자가 REMOTE_ONLY를 선택하면 로컬 계산으로 자동 전환하지 않는다. REMOTE_ONLY도 coordinator relay와 PC 네트워크 경유 여부를 숨기지 않는다. API 경로와 수동 packet 경로는 사람의 시작·첨부·가져오기 시간을 포함해 비교한다.
 
 GPU 광고 성능이나 encode fps만으로 전체 작업이 빠르다고 판정하지 않는다. 실제 GPU/runtime의 cold/warm, 입력 종류·크기·색 변환, Drive 위치·read/write throughput, scratch, codec 품질을 측정한다. Colab 공식 안내도 Drive와 runtime의 위치 차이와 많은 작은 파일 I/O의 부담을 설명한다.[Colab][COLAB]
 
 ### 8.2. 실제 최적화
 
 - 공통 자산과 채택 그림을 content digest로 재사용하고 영향 범위만 재합성.
-- remote worker의 Drive 직접 읽기·쓰기, 그 worker 내 공통 cache 유지.
+- coordinator가 검증한 고정 멤버만 remote worker에 중개 전송하고, worker 내 공통 cache 유지. DIRECT_DRIVE는 별도 권한/qualification을 갖춘 후속 범위.
 - 전송·decode·합성·encode·archive의 bounded pipeline과 제한된 prefetch.
 - 자원 예약 범위에서 독립 컷/출력 구간 병렬화, 전환·anchor halo 사전 계획.
 - 검증된 GPU decode/합성/encode와 zero-copy surface 연결; color 변환·불필요한 readback 최소화.
@@ -312,6 +340,12 @@ GPU 광고 성능이나 encode fps만으로 전체 작업이 빠르다고 판정
 LLM은 프레임마다 새 계획·token 추론을 필수로 하지 않는다. 계획과 변경 판단을 위한 모델 작업을 분리하고 프레임 반복 계산은 고정 엔진이 수행한다.
 
 cache key는 source/recipe/format/toolchain 내용과 위치·인코더 artifact 계약을 구분한다. 저장 위치만 바뀌어 같은 frame content가 다시 생성되지 않게 한다. encoder·delivery profile을 바꾸면 encoded artifact는 별도 key다. cache hit도 current approval을 별도로 확인한다.
+
+부분 수정은 seekable pack의 필요 member/halo만 요청하는 경로와 검증된 whole-pack fallback을 구분한다. member hash 검증 없이 decoder로 넘기지 않는다. request 수·실제 edge별 bytes·range/read/decode amplification을 보고하고, cap 밖 whole-pack 응답은 받지 않는다. 구체 수용 fixture는 고도화 설계 6절이다.
+
+### 8.2.1. 변경별 invalidation과 출력 provenance
+
+ANIM-020의 세부 규칙은 상세 설계 11.5절을 따른다. scheduler는 source/recipe dependency graph의 변경 closure를 구하고 실제 필요 member/halo, compose ranges, encode artifact, 기술 검사 및 stale approval을 각각 출력한다. 저장 locator만 이동한 변경, 미채택 후보 추가, 검수 메모는 pixels를 재계산하지 않는다. font/cue 변경은 clean 시퀀스와 컷 동작 검수를 재사용할 수 있지만 subbed 시퀀스·출력 검수는 stale이고, encoder/profile 변경은 PNG를 재사용해도 새 MP4/전달 승인이 필요하다. 실측 없이 cache hit ratio나 speedup을 완료 성과로 보고하지 않는다.
 
 ### 8.3. failure·비용·성능
 
@@ -330,6 +364,8 @@ Drive의 rate/전송·계정 저장 한도도 preflight와 usage guard에 넣는
 5. 모든 필요한 객체가 보관됐을 때 완료 manifest를 마지막에 공개한다.
 6. 실제 출력의 사람 검토·최종 승인은 sealed build에 별도 연결한다.
 
+required artifact별 archive verification은 [고도화4.2.2](FRAME_ANIMATION_V1_EVOLUTION_KO.md)를 따른다. 로컬 전송 hash/offset/성공 응답만의 UPLOADED_UNVERIFIED는 archive checkpoint/seal에 부족하다. 완료 seal에는 최소 UPLOAD_HASH_MATCHED(인증된 provider의 실제 고정 object SHA256·length 일치)가 필요하며, 그 강한 checksum 근거가 없으면 bounded FULL_READBACK을 요구한다. profile의 더 강한 required level을 면제하지 않고 index/member/full-pack integrity와 저장 검증 level을 별도 manifest에 기록한다. readback 비용/bytes/공간도 사전 예약한다.
+
 Drive 다중 파일 업로드를 하나의 atomic transaction으로 가정하지 않는다. 객체 생성·업로드 확인·완료 manifest 공개의 idempotent 절차와 crash reconciliation을 구현한다. 완료 공개 접수가 불명확하면 같은 build identity로 확인하며 새 COMPLETE 레코드를 임의 생성하지 않는다.
 
 ENCODED·RENDERED·UPLOADED는 COMPLETE가 아니다. 최종 PNG나 source 보관이 미완료인 빌드는 archive pending으로 표시한다. 검증 끝난 chunk를 소비한 뒤 필요 없어진 임시 cache만 정리한다. archive를 가리키는 index만 먼저 만들고 원본 없이 성공 처리하지 않는다.
@@ -337,6 +373,14 @@ ENCODED·RENDERED·UPLOADED는 COMPLETE가 아니다. 최종 PNG나 source 보�
 LOCAL_FULL은 기존 독립 복사·offline replay 계약을 유지한다. DRIVE_BOUNDED는 archive 접근을 요구하는 online replay다. offline restore를 요청하면 완전한 archive 다운로드·검증·복원 용량을 별도로 확인한다. Drive 접근이 안 되는데 offline 재현 가능하다고 표시하지 않는다.
 
 remote replay도 live project 없이 고정 archive·recipe·toolchain을 사용한다. workspace는 PC 또는 허용된 원격 worker에 있을 수 있다. 과거 승인 MP4의 바이트 보존과 새 encode의 결과를 구분한다. archive 손상·접근 취소·입력 불일치 시 대체 최신 자료로 계속하지 않는다.
+
+### 9.1. archive commit과 build seal의 재개 계약
+
+ANIM-021의 commit key는 coordinator가 선점한 build ID·snapshot·ordered required artifact 목록·recipe와 toolchain/검증 profile digest에 묶인다. 단계는 `OBJECTS_PENDING → OBJECTS_VERIFIED → MANIFEST_INTENT → SEALED`이며 unknown publication은 `SEAL_UNKNOWN`으로 fence한다. 객체는 immutable staging으로 올리고 locator/length/bytes hash를 검증한다. member 검증과 full-pack 검증은 manifest에서 각각 기록하며 검증 범위를 부풀리지 않는다. 필요한 원본·최종 전달 PNG 시퀀스·clean 재현 recipe·frame_map·원곡·cue/font·clean/subbed MP4가 모두 보관/검증되기 전에 완료 manifest를 공개하지 않는다. clean PNG 전량을 추가 보관하는 profile은 별도 선택·용량 예약 대상이며 기존 전달 PNG 보존만을 이유로 두 시퀀스를 자동 이중 적재하지 않는다.
+
+완료 manifest bytes는 순서가 고정된 artifact hash/coverage·source snapshot·render/encode/verification 계약과 journal reference를 담는다. 그 manifest의 digest는 외부 seal/approval 레코드가 참조하며 자기 digest·나중 승인/accepted 상태를 입력에 넣지 않는다. manifest network 공개 전에 `MANIFEST_INTENT`를 durable하게 기록한다. 응답을 잃으면 같은 build identity와 고정 manifest bytes의 게시 여부를 확인하며 새 manifest/COMPLETE를 중복 생성하지 않는다. 이름 검색 결과 하나만으로 일치라고 하지 않고 digest/bytes/required inventory를 검증한다. 여러 후보나 게시 여부 불명은 SEAL_UNKNOWN이며 기존 승인 빌드를 덮어쓰지 않는다.
+
+Drive는 다중 객체 atomic commit 또는 WORM을 제공한다고 가정하지 않는다. 앱의 단일 coordinator seal과 content 검증으로 유효한 완료 view를 제공하고, 외부 삭제/권한 회수는 ARCHIVE_UNAVAILABLE/INTEGRITY_FAILED로 별도 표시한다. 과거 seal 원본은 유지하며 뒤늦은 archive 손상에도 현재 replay 가능을 주장하지 않는다. 삭제는 참조·보존 정책에 따라 명시적으로 승인된 orphan staging만 처리하고, 실패한 job 결과나 채택 원본을 cache eviction으로 제거하지 않는다.
 
 ## 10. 모듈·UI·개발 항목
 
@@ -367,11 +411,13 @@ UI는 저장소/프로젝트 연결, 실행 서비스와 실제 지원 상태, �
 | ANIM-015 복수 인코더 | 001, 004, 006 | encode/mux/verify 분리·native driver | FFmpeg와 독립 native 경로가 같은 전달 profile·frame/PTS/audio 조건 충족 |
 | ANIM-016 구독 실행 | 009, 014, 015 | entitlement·probe·packet/notebook·import | 실제 한 서비스의 입출력·한도·도구·결과 검사; 자동/수동 표기 |
 | ANIM-017 성능 scheduler | 005, 013~016 | 부분 재컴파일·parallel·prefetch·zero-copy 후보 | 동일 품질 end-to-end cold/warm·공간·전송·복구 비교 |
-| ANIM-018 원격 통합 | 008, 012~017 | 240초·1080p·Drive→worker→archive·desktop UI | 실제 허용 실행·복원·성능 보고와 실패 주입, 두 모드 회귀 |
+| ANIM-018 원격 통합 | 008, 012~017 | User-only 실제240초·1080p·Drive→worker→archive·desktop UI qualification | exact source/route/artifact 실제 실행·검증 보관·복원·실패/성능 evidence를 User가 승인하기 전 merge/DONE 금지; 환경 부재면 WAITING |
 
 ANIM-001에 storage/execution/encoder 계약을 먼저 넣는다. ANIM-013~015는 각 기반 기능이 생기는 시점부터 세로 기능으로 구현하고 ANIM-012가 끝날 때까지 모든 원격 설계를 미루지 않는다. 로컬 기준선은 parity·회귀 비교용이며 최종 성능 모드를 PC 전용으로 고정하는 완료 조건이 아니다.
 
 실제 서비스 권한·자원이 아직 없으면 fake worker로 protocol을 검사하고 runtime qualification은 미완료로 남긴다. fake 성공을 실제 구독 원격 실행이나 성능 완료로 집계하지 않는다. AIOPS 착수 task는 해당 명세를 pin하고 실행 소유자·reviewer·현재 HEAD를 기존 규칙에 연결한다. 이 항목명은 dispatch/control record가 아니다.
+
+고도화 설계 5절의 `node_state`, `qualification_state`, `acceptance_state`, `release_state`를 독립 근거로 보고한다. 개발 DONE은 host-pinned delivery의 실제 merge 근거만 뜻한다. 필요한 qualification/acceptance를 자원 부재 때문에 NOT_REQUIRED로 면제하지 않는다. ANIM-018은 user_merge=true/astra_auto_merge=false인 actual qualification task다. 실제 허용된 한 경로의240초 통합·archive/replay/restore·UI·실패/verification fixture evidence와 User의 exact-set 승인이 merge 선행 조건이며, 부재면 WAITING이고 code/fake PASS만으로018 merge/DONE을 허용하지 않는다. 앞선 개발 delivery와 실제 작품 승인/공개 release는 별도다. 해당 중앙 집계 기능을 채택/구현하기 전에는 draft 증거 표로 미완료를 유지한다.
 
 ## 11. 수용 테스트와 성능 보고
 
@@ -390,6 +436,9 @@ ANIM-001에 storage/execution/encoder 계약을 먼저 넣는다. ANIM-013~015�
 | 요금 | 구독/API 분리·견적 변경·예약·추가 과금 거절·대체 provider 무단 제출 차단 |
 | archive | upload 불명·검증 실패·완료 manifest crash·pack restore·Drive 해제 시 미완료 표시 |
 | replay | live project 없이 online replay; offline restore의 추가 공간·접근 조건 |
+| relay topology | coordinator 위치와 edge별 실제 이동·공유 링크·spool 상한; 미승인 DIRECT_DRIVE 후보 제외 |
+| seekable pack | sparse member/halo read·offset/length/index hash·member/full-pack 검증 구분·206/200/mismatch·decode cap·bounded restore |
+| 완료 facets | merged 개발 delivery·실제 qualification·수용 gate·작품 승인·release의 독립 근거; fake/접근 부재의 readiness 오표시 차단 |
 | regression | 원곡/가사/검수 binding·Build 1·기존 Preview/Final·desktop 유지 |
 
 성능 fixture는 240초·24fps·5,760프레임·1920×1080에 실제 위치·그림 교체·가림·레이어·전환·자막이 변하는 합성 자료를 사용한다. 작은 CI correctness fixture와 실제 품질/성능 자격 시험은 분리한다. 실제 W00과 작품 승인도 별도다.
@@ -427,4 +476,3 @@ source 및 service 문서는 2026-09-30에 확인했다. 코드 baseline 이후 
 [NVENC]: https://developer.nvidia.com/video-codec-sdk
 [VT]: https://developer.apple.com/documentation/videotoolbox/vtcompressionsession
 [GST]: https://gstreamer.freedesktop.org/documentation/applib/gstappsrc.html
-
