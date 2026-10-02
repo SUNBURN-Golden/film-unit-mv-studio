@@ -1,0 +1,142 @@
+{
+  "schema_version": 1,
+  "program": "film",
+  "repository": "BeautifulMind-JT/film-unit-mv-studio",
+  "status": "PENDING_NOT_EXECUTABLE",
+  "rule": "Candidate definitions only. Promotion requires separately reviewed and approved plan revision; cross-repository dependencies are not supported by active schema v1.",
+  "nodes": [
+    {
+      "id": "film-direction-assistant",
+      "title": "기획·연출·컷 설계 보조 에이전트",
+      "spec": "목표: 곡과 감독 의도에서 검토 가능한 연출안·컷안을 제안한다.\n\n작업 묶음: 창작·제작 장기 확장\n\n설계 근거: PROJECT_SPEC.md; ARCHITECTURE.md; docs/FRAME_ANIMATION_V1_DESIGN_KO.md; docs/FRAME_ANIMATION_V1_EXECUTION_STORAGE_KO.md; docs/FRAME_ANIMATION_V1_EVOLUTION_KO.md\n\n구현 범위:\n1. 구조화 brief·금지사항·원문 가사·타이밍 근거를 입력으로 묶는다\n2. 다른 연출안의 차이와 각 컷의 역할을 설명한다\n3. 감독 채택 전 project 정본과 LOCK을 변경하지 않는다\n\n필수 산출물:\n- 연출 제안 adapter/packet/비교 UI\n- 원문 변조·근거 없는 타이밍·예산 초과 거절 fixture\n\n완료 판정/실패 검증:\n1. LLM 제안이 감독 승인으로 기록되지 않는다\n2. 근거 없는 가사 재작성·저작권 허가 주장이 없다\n3. 사용자가 변경한 의도를 다음 제안이 보존한다\n\n공통 경계: 원곡·가사 원문·검토 cue·기존 LOCK을 보존한다. 신규 결과에 기존 검수/LOCK을 승계하지 않는다. 240초/24fps 기준과 legacy 모드를 유지한다. Preview/fake/source delivery는 실제 작품 Final·서비스 qualification이 아니다. 유료 생성·계정 동의·작품 승인·외부 배포는 기존 범위별 권한을 따른다.\n\n증거/인계: 실제 변경 파일·실행 명령·성공 및 실패 사례·정확한 소스 SHA를 PR에 남긴다. 기존 충분한 coverage는 재사용하고 새 gap만 검증한다. UI 변경은 실제 브라우저의 정상/빈 값/오류/진행 중 화면과 키보드 동작을 확인한다. 실환경 부재는 미검증으로 남긴다. 독립 검토 지적과 CI 실패는 같은 소유자가 수정하고 변경 HEAD를 다시 검토한다. 일반 구현 선택은 자율 결정하며 계정·중요 계약·실사용 승인만 구체적인 결정을 요청한다.\n\n승격 조건: 상세 계약 채택·정확한 소스의 독립 검토·범위별 실제 환경 자격 확인 뒤 계획 개정으로 승격한다. 이 항목은 pending catalogue이며 현재 schema-v1 dispatch 대상이 아니다. depends_on_external을 spec 문장으로 바꾸거나 삭제하여 우회하지 않는다.",
+      "depends_on": [
+        "film-brief-board",
+        "anim-007"
+      ],
+      "audit_floor": "A3",
+      "astra_gate": "ARCHITECTURE",
+      "deliverable_mode": "PR",
+      "astra_auto_merge": false,
+      "user_merge": true,
+      "depends_on_external": [],
+      "promotion_requirements": "상세 계약 채택·정확한 소스의 독립 검토·범위별 실제 환경 자격 확인 뒤 계획 개정으로 승격한다."
+    },
+    {
+      "id": "film-character-continuity",
+      "title": "인물·배경·소품의 장면 간 일관성 관리",
+      "spec": "목표: 여러 컷에 걸친 캐릭터와 미술 방향을 검토 가능한 기준으로 유지한다.\n\n작업 묶음: 창작·제작 장기 확장\n\n설계 근거: PROJECT_SPEC.md; ARCHITECTURE.md; docs/FRAME_ANIMATION_V1_DESIGN_KO.md; docs/FRAME_ANIMATION_V1_EXECUTION_STORAGE_KO.md; docs/FRAME_ANIMATION_V1_EVOLUTION_KO.md\n\n구현 범위:\n1. approved reference sheet와 장면별 허용 변화를 버전 관리한다\n2. 얼굴/의상/비율/색/소품의 비교 후보를 만든다\n3. 오류 finding을 정확한 자산·컷 수정으로 연결한다\n\n필수 산출물:\n- 연속성 기준 sheet·비교 도구\n- 동일/변형/불일치 shot fixture와 검토 UI\n\n완료 판정/실패 검증:\n1. 자동 유사도 점수가 채택 판정을 대체하지 않는다\n2. 스타일 기준 변경의 영향 컷이 모두 나타난다\n3. 소수 레퍼런스의 성공을 전체 작품 일관성으로 일반화하지 않는다\n\n공통 경계: 원곡·가사 원문·검토 cue·기존 LOCK을 보존한다. 신규 결과에 기존 검수/LOCK을 승계하지 않는다. 240초/24fps 기준과 legacy 모드를 유지한다. Preview/fake/source delivery는 실제 작품 Final·서비스 qualification이 아니다. 유료 생성·계정 동의·작품 승인·외부 배포는 기존 범위별 권한을 따른다.\n\n증거/인계: 실제 변경 파일·실행 명령·성공 및 실패 사례·정확한 소스 SHA를 PR에 남긴다. 기존 충분한 coverage는 재사용하고 새 gap만 검증한다. UI 변경은 실제 브라우저의 정상/빈 값/오류/진행 중 화면과 키보드 동작을 확인한다. 실환경 부재는 미검증으로 남긴다. 독립 검토 지적과 CI 실패는 같은 소유자가 수정하고 변경 HEAD를 다시 검토한다. 일반 구현 선택은 자율 결정하며 계정·중요 계약·실사용 승인만 구체적인 결정을 요청한다.\n\n승격 조건: 상세 계약 채택·정확한 소스의 독립 검토·범위별 실제 환경 자격 확인 뒤 계획 개정으로 승격한다. 이 항목은 pending catalogue이며 현재 schema-v1 dispatch 대상이 아니다. depends_on_external을 spec 문장으로 바꾸거나 삭제하여 우회하지 않는다.",
+      "depends_on": [
+        "film-direction-assistant",
+        "film-asset-library"
+      ],
+      "audit_floor": "A3",
+      "astra_gate": "ARCHITECTURE",
+      "deliverable_mode": "PR",
+      "astra_auto_merge": false,
+      "user_merge": true,
+      "depends_on_external": [],
+      "promotion_requirements": "상세 계약 채택·정확한 소스의 독립 검토·범위별 실제 환경 자격 확인 뒤 계획 개정으로 승격한다."
+    },
+    {
+      "id": "film-assisted-editing",
+      "title": "음악·서사 기반 컷 대안과 비파괴 편집",
+      "spec": "목표: 리듬과 이야기 흐름을 바꾸는 편집안을 원본 보존 상태로 비교한다.\n\n작업 묶음: 창작·제작 장기 확장\n\n설계 근거: PROJECT_SPEC.md; ARCHITECTURE.md; docs/FRAME_ANIMATION_V1_DESIGN_KO.md; docs/FRAME_ANIMATION_V1_EXECUTION_STORAGE_KO.md; docs/FRAME_ANIMATION_V1_EVOLUTION_KO.md\n\n구현 범위:\n1. source timeline과 대안 timeline을 분리한다\n2. 음악 분석 관측·서사 의도·컷 추천 근거를 표시한다\n3. cue·frame ownership·transition 재검증 뒤 채택한다\n\n필수 산출물:\n- 비파괴 편집 대안과 비교 재생\n- 타임라인 migration/undo/invalid cue fixture\n\n완료 판정/실패 검증:\n1. beat 검출을 보컬 cue 정본으로 쓰지 않는다\n2. 채택 전 원본 timeline을 덮어쓰지 않는다\n3. 총 frame coverage와 모든 최종 artifact provenance가 새 revision에 묶인다\n\n공통 경계: 원곡·가사 원문·검토 cue·기존 LOCK을 보존한다. 신규 결과에 기존 검수/LOCK을 승계하지 않는다. 240초/24fps 기준과 legacy 모드를 유지한다. Preview/fake/source delivery는 실제 작품 Final·서비스 qualification이 아니다. 유료 생성·계정 동의·작품 승인·외부 배포는 기존 범위별 권한을 따른다.\n\n증거/인계: 실제 변경 파일·실행 명령·성공 및 실패 사례·정확한 소스 SHA를 PR에 남긴다. 기존 충분한 coverage는 재사용하고 새 gap만 검증한다. UI 변경은 실제 브라우저의 정상/빈 값/오류/진행 중 화면과 키보드 동작을 확인한다. 실환경 부재는 미검증으로 남긴다. 독립 검토 지적과 CI 실패는 같은 소유자가 수정하고 변경 HEAD를 다시 검토한다. 일반 구현 선택은 자율 결정하며 계정·중요 계약·실사용 승인만 구체적인 결정을 요청한다.\n\n승격 조건: 상세 계약 채택·정확한 소스의 독립 검토·범위별 실제 환경 자격 확인 뒤 계획 개정으로 승격한다. 이 항목은 pending catalogue이며 현재 schema-v1 dispatch 대상이 아니다. depends_on_external을 spec 문장으로 바꾸거나 삭제하여 우회하지 않는다.",
+      "depends_on": [
+        "film-direction-assistant",
+        "film-shot-board"
+      ],
+      "audit_floor": "A3",
+      "astra_gate": "ARCHITECTURE",
+      "deliverable_mode": "PR",
+      "astra_auto_merge": false,
+      "user_merge": true,
+      "depends_on_external": [],
+      "promotion_requirements": "상세 계약 채택·정확한 소스의 독립 검토·범위별 실제 환경 자격 확인 뒤 계획 개정으로 승격한다."
+    },
+    {
+      "id": "film-qualified-generation",
+      "title": "실제 구독·공식 생성 경로별 연결 자격",
+      "spec": "목표: 사용 가능한 이미지/구간 생성 서비스를 실제 능력과 권한에 맞춰 연결한다.\n\n작업 묶음: 창작·제작 장기 확장\n\n설계 근거: PROJECT_SPEC.md; ARCHITECTURE.md; docs/FRAME_ANIMATION_V1_DESIGN_KO.md; docs/FRAME_ANIMATION_V1_EXECUTION_STORAGE_KO.md; docs/FRAME_ANIMATION_V1_EVOLUTION_KO.md\n\n구현 범위:\n1. provider별 모델·입출력·기간·가격·entitlement·재사용 권리를 확인한다\n2. official API/수동 packet/정상 지원 UI 경로를 구분한다\n3. 지급/응답 유실·부분 생성·사용량 소진을 대사한다\n\n필수 산출물:\n- 실제 provider qualification packet\n- 비용 quote·사용량 journal·결과 import evidence\n\n완료 판정/실패 검증:\n1. 가입 플랜 이름만으로 기능·무료·상업 권리를 추정하지 않는다\n2. UNKNOWN 재전송과 묵시적 유료 경로 전환을 차단한다\n3. 실제 계정·작업 범위에서 확인한 결과만 QUALIFIED로 기록한다\n\n공통 경계: 원곡·가사 원문·검토 cue·기존 LOCK을 보존한다. 신규 결과에 기존 검수/LOCK을 승계하지 않는다. 240초/24fps 기준과 legacy 모드를 유지한다. Preview/fake/source delivery는 실제 작품 Final·서비스 qualification이 아니다. 유료 생성·계정 동의·작품 승인·외부 배포는 기존 범위별 권한을 따른다.\n\n증거/인계: 실제 변경 파일·실행 명령·성공 및 실패 사례·정확한 소스 SHA를 PR에 남긴다. 기존 충분한 coverage는 재사용하고 새 gap만 검증한다. UI 변경은 실제 브라우저의 정상/빈 값/오류/진행 중 화면과 키보드 동작을 확인한다. 실환경 부재는 미검증으로 남긴다. 독립 검토 지적과 CI 실패는 같은 소유자가 수정하고 변경 HEAD를 다시 검토한다. 일반 구현 선택은 자율 결정하며 계정·중요 계약·실사용 승인만 구체적인 결정을 요청한다.\n\n승격 조건: 상세 계약 채택·정확한 소스의 독립 검토·범위별 실제 환경 자격 확인 뒤 계획 개정으로 승격한다. 이 항목은 pending catalogue이며 현재 schema-v1 dispatch 대상이 아니다. depends_on_external을 spec 문장으로 바꾸거나 삭제하여 우회하지 않는다.",
+      "depends_on": [
+        "anim-016",
+        "anim-019",
+        "film-character-continuity"
+      ],
+      "audit_floor": "A3",
+      "astra_gate": "ARCHITECTURE",
+      "deliverable_mode": "PR",
+      "astra_auto_merge": false,
+      "user_merge": true,
+      "depends_on_external": [],
+      "promotion_requirements": "상세 계약 채택·정확한 소스의 독립 검토·범위별 실제 환경 자격 확인 뒤 계획 개정으로 승격한다."
+    },
+    {
+      "id": "film-multiformat-profile",
+      "title": "4K·세로형·고프레임 출력 프로파일",
+      "spec": "목표: 기준 작품을 보존하면서 매체별 출력 요구를 별도 프로파일로 지원한다.\n\n작업 묶음: 창작·제작 장기 확장\n\n설계 근거: PROJECT_SPEC.md; ARCHITECTURE.md; docs/FRAME_ANIMATION_V1_DESIGN_KO.md; docs/FRAME_ANIMATION_V1_EXECUTION_STORAGE_KO.md; docs/FRAME_ANIMATION_V1_EVOLUTION_KO.md\n\n구현 범위:\n1. 해상도/aspect/FPS/color/audio/subtitle safe area를 versioned profile로 정의한다\n2. crop/reframe/retime과 단순 encode 차이를 구분한다\n3. profile별 필요한 자원·기기·검수 범위를 측정한다\n\n필수 산출물:\n- 출력 profile ADR·encoder 적합성 fixture\n- 세로/4K 등 실제 표본 및 QC 보고서\n\n완료 판정/실패 검증:\n1. 24fps 프레임을 고프레임으로 반복한 것을 새 동작 정보로 주장하지 않는다\n2. crop이 자막·얼굴·필수 소품을 자르면 검수 대상이 된다\n3. 기존 240초 기준 자격이 새 profile에 자동 승계되지 않는다\n\n공통 경계: 원곡·가사 원문·검토 cue·기존 LOCK을 보존한다. 신규 결과에 기존 검수/LOCK을 승계하지 않는다. 240초/24fps 기준과 legacy 모드를 유지한다. Preview/fake/source delivery는 실제 작품 Final·서비스 qualification이 아니다. 유료 생성·계정 동의·작품 승인·외부 배포는 기존 범위별 권한을 따른다.\n\n증거/인계: 실제 변경 파일·실행 명령·성공 및 실패 사례·정확한 소스 SHA를 PR에 남긴다. 기존 충분한 coverage는 재사용하고 새 gap만 검증한다. UI 변경은 실제 브라우저의 정상/빈 값/오류/진행 중 화면과 키보드 동작을 확인한다. 실환경 부재는 미검증으로 남긴다. 독립 검토 지적과 CI 실패는 같은 소유자가 수정하고 변경 HEAD를 다시 검토한다. 일반 구현 선택은 자율 결정하며 계정·중요 계약·실사용 승인만 구체적인 결정을 요청한다.\n\n승격 조건: 상세 계약 채택·정확한 소스의 독립 검토·범위별 실제 환경 자격 확인 뒤 계획 개정으로 승격한다. 이 항목은 pending catalogue이며 현재 schema-v1 dispatch 대상이 아니다. depends_on_external을 spec 문장으로 바꾸거나 삭제하여 우회하지 않는다.",
+      "depends_on": [
+        "film-delivery-package",
+        "anim-015",
+        "film-assisted-editing"
+      ],
+      "audit_floor": "A3",
+      "astra_gate": "ARCHITECTURE",
+      "deliverable_mode": "PR",
+      "astra_auto_merge": false,
+      "user_merge": true,
+      "depends_on_external": [],
+      "promotion_requirements": "상세 계약 채택·정확한 소스의 독립 검토·범위별 실제 환경 자격 확인 뒤 계획 개정으로 승격한다."
+    },
+    {
+      "id": "film-team-review",
+      "title": "감독·편집자·작화 담당 협업과 접근권",
+      "spec": "목표: 작업 분담과 검토를 지원하되 최종 소스와 승인 주체를 명확히 한다.\n\n작업 묶음: 창작·제작 장기 확장\n\n설계 근거: PROJECT_SPEC.md; ARCHITECTURE.md; docs/FRAME_ANIMATION_V1_DESIGN_KO.md; docs/FRAME_ANIMATION_V1_EXECUTION_STORAGE_KO.md; docs/FRAME_ANIMATION_V1_EVOLUTION_KO.md\n\n구현 범위:\n1. 역할별 수정/제안/검수/출력 권한과 optimistic conflict를 정의한다\n2. asset/shot branch와 승인된 merge를 설계한다\n3. 외부 공유 만료·삭제·파일 접근·개인정보 흐름을 정한다\n\n필수 산출물:\n- 협업 ADR·권한/충돌 UI\n- stale approval/동시 수정/접근 철회 tests\n\n완료 판정/실패 검증:\n1. 여러 편집자가 같은 정본을 무단 덮어쓰지 않는다\n2. 댓글·파일 다운로드가 작품 승인으로 변환되지 않는다\n3. credential을 worker·리뷰어에게 무차별 배포하지 않는다\n\n공통 경계: 원곡·가사 원문·검토 cue·기존 LOCK을 보존한다. 신규 결과에 기존 검수/LOCK을 승계하지 않는다. 240초/24fps 기준과 legacy 모드를 유지한다. Preview/fake/source delivery는 실제 작품 Final·서비스 qualification이 아니다. 유료 생성·계정 동의·작품 승인·외부 배포는 기존 범위별 권한을 따른다.\n\n증거/인계: 실제 변경 파일·실행 명령·성공 및 실패 사례·정확한 소스 SHA를 PR에 남긴다. 기존 충분한 coverage는 재사용하고 새 gap만 검증한다. UI 변경은 실제 브라우저의 정상/빈 값/오류/진행 중 화면과 키보드 동작을 확인한다. 실환경 부재는 미검증으로 남긴다. 독립 검토 지적과 CI 실패는 같은 소유자가 수정하고 변경 HEAD를 다시 검토한다. 일반 구현 선택은 자율 결정하며 계정·중요 계약·실사용 승인만 구체적인 결정을 요청한다.\n\n승격 조건: 상세 계약 채택·정확한 소스의 독립 검토·범위별 실제 환경 자격 확인 뒤 계획 개정으로 승격한다. 이 항목은 pending catalogue이며 현재 schema-v1 dispatch 대상이 아니다. depends_on_external을 spec 문장으로 바꾸거나 삭제하여 우회하지 않는다.",
+      "depends_on": [
+        "film-review-diff",
+        "film-delivery-package"
+      ],
+      "audit_floor": "A3",
+      "astra_gate": "ARCHITECTURE",
+      "deliverable_mode": "PR",
+      "astra_auto_merge": false,
+      "user_merge": true,
+      "depends_on_external": [],
+      "promotion_requirements": "상세 계약 채택·정확한 소스의 독립 검토·범위별 실제 환경 자격 확인 뒤 계획 개정으로 승격한다."
+    },
+    {
+      "id": "film-series-library",
+      "title": "여러 작품·시리즈의 재사용과 예산 관리",
+      "spec": "목표: 시리즈의 세계관·자산·실측 자원 정보를 안전하게 재사용한다.\n\n작업 묶음: 창작·제작 장기 확장\n\n설계 근거: PROJECT_SPEC.md; ARCHITECTURE.md; docs/FRAME_ANIMATION_V1_DESIGN_KO.md; docs/FRAME_ANIMATION_V1_EXECUTION_STORAGE_KO.md; docs/FRAME_ANIMATION_V1_EVOLUTION_KO.md\n\n구현 범위:\n1. 작품별 권리·스타일 revision·등장인물과 재사용 허가를 연결한다\n2. 공통 자산 변경이 과거 build를 덮어쓰지 않게 한다\n3. 프로젝트별 quote·확정 사용량·예산을 분리한다\n\n필수 산출물:\n- series workspace와 asset reuse manifest\n- 작품 간 오염/권리 만료/예산 attribution fixture\n\n완료 판정/실패 검증:\n1. A 작품 승인과 라이선스가 B 작품으로 자동 승계되지 않는다\n2. 중복 저장·전송 절감은 실제 측정과 함께 보고한다\n3. 실제 작업이 없는 예정 사용량은 청구액으로 표시되지 않는다\n\n공통 경계: 원곡·가사 원문·검토 cue·기존 LOCK을 보존한다. 신규 결과에 기존 검수/LOCK을 승계하지 않는다. 240초/24fps 기준과 legacy 모드를 유지한다. Preview/fake/source delivery는 실제 작품 Final·서비스 qualification이 아니다. 유료 생성·계정 동의·작품 승인·외부 배포는 기존 범위별 권한을 따른다.\n\n증거/인계: 실제 변경 파일·실행 명령·성공 및 실패 사례·정확한 소스 SHA를 PR에 남긴다. 기존 충분한 coverage는 재사용하고 새 gap만 검증한다. UI 변경은 실제 브라우저의 정상/빈 값/오류/진행 중 화면과 키보드 동작을 확인한다. 실환경 부재는 미검증으로 남긴다. 독립 검토 지적과 CI 실패는 같은 소유자가 수정하고 변경 HEAD를 다시 검토한다. 일반 구현 선택은 자율 결정하며 계정·중요 계약·실사용 승인만 구체적인 결정을 요청한다.\n\n승격 조건: 상세 계약 채택·정확한 소스의 독립 검토·범위별 실제 환경 자격 확인 뒤 계획 개정으로 승격한다. 이 항목은 pending catalogue이며 현재 schema-v1 dispatch 대상이 아니다. depends_on_external을 spec 문장으로 바꾸거나 삭제하여 우회하지 않는다.",
+      "depends_on": [
+        "film-team-review",
+        "film-character-continuity",
+        "film-resource-forecast"
+      ],
+      "audit_floor": "A3",
+      "astra_gate": "ARCHITECTURE",
+      "deliverable_mode": "PR",
+      "astra_auto_merge": false,
+      "user_merge": true,
+      "depends_on_external": [],
+      "promotion_requirements": "상세 계약 채택·정확한 소스의 독립 검토·범위별 실제 환경 자격 확인 뒤 계획 개정으로 승격한다."
+    },
+    {
+      "id": "film-expanded-release",
+      "title": "확장 제작 플랫폼 릴리스 검수",
+      "spec": "목표: 실제 작품과 설치 가능한 도구를 구분해 확장 출시 범위를 검수한다.\n\n작업 묶음: 출시와 운영\n\n설계 근거: PROJECT_SPEC.md; ARCHITECTURE.md; docs/FRAME_ANIMATION_V1_DESIGN_KO.md; docs/FRAME_ANIMATION_V1_EXECUTION_STORAGE_KO.md; docs/FRAME_ANIMATION_V1_EVOLUTION_KO.md\n\n구현 범위:\n1. provider/장치/profile/작품별 qualification을 집계한다\n2. 재현/비용/접근성/권리/데이터 인계의 미해결 항목을 닫는다\n3. 운영 지원과 업데이트·호환 정책을 전달한다\n\n필수 산출물:\n- 현재 소스의 release candidate 및 범위별 검수 자료\n- 사용자 최종 수용/연기 항목\n\n완료 판정/실패 검증:\n1. 시험 작품 하나의 성공을 모든 모델·기기로 확대하지 않는다\n2. 생산물 공개와 도구 출시 권한을 구분한다\n3. 실제 승인 전 공개 배포·유료 실행을 시작하지 않는다\n\n공통 경계: 원곡·가사 원문·검토 cue·기존 LOCK을 보존한다. 신규 결과에 기존 검수/LOCK을 승계하지 않는다. 240초/24fps 기준과 legacy 모드를 유지한다. Preview/fake/source delivery는 실제 작품 Final·서비스 qualification이 아니다. 유료 생성·계정 동의·작품 승인·외부 배포는 기존 범위별 권한을 따른다.\n\n증거/인계: 실제 변경 파일·실행 명령·성공 및 실패 사례·정확한 소스 SHA를 PR에 남긴다. 기존 충분한 coverage는 재사용하고 새 gap만 검증한다. UI 변경은 실제 브라우저의 정상/빈 값/오류/진행 중 화면과 키보드 동작을 확인한다. 실환경 부재는 미검증으로 남긴다. 독립 검토 지적과 CI 실패는 같은 소유자가 수정하고 변경 HEAD를 다시 검토한다. 일반 구현 선택은 자율 결정하며 계정·중요 계약·실사용 승인만 구체적인 결정을 요청한다.\n\n승격 조건: 상세 계약 채택·정확한 소스의 독립 검토·범위별 실제 환경 자격 확인 뒤 계획 개정으로 승격한다. 이 항목은 pending catalogue이며 현재 schema-v1 dispatch 대상이 아니다. depends_on_external을 spec 문장으로 바꾸거나 삭제하여 우회하지 않는다.",
+      "depends_on": [
+        "film-studio-qualification",
+        "film-qualified-generation",
+        "film-multiformat-profile",
+        "film-series-library"
+      ],
+      "audit_floor": "A3",
+      "astra_gate": "RELEASE",
+      "deliverable_mode": "PR",
+      "astra_auto_merge": false,
+      "user_merge": true,
+      "depends_on_external": [],
+      "promotion_requirements": "상세 계약 채택·정확한 소스의 독립 검토·범위별 실제 환경 자격 확인 뒤 계획 개정으로 승격한다."
+    }
+  ]
+}

@@ -3,8 +3,8 @@
   "program": "film",
   "repository": "BeautifulMind-JT/film-unit-mv-studio",
   "project": "FILM_UNIT",
-  "approval_pointer": "PENDING_APPROVAL_DO_NOT_DISPATCH",
-  "authoritative_doc_pointers": "AGENTS.md ; README.md ; ARCHITECTURE.md ; PROJECT_SPEC.md ; docs/decisions/FRAME_ANIMATION_V1_ADOPTION_20260930.md ; docs/FRAME_ANIMATION_V1_DESIGN_KO.md ; docs/FRAME_ANIMATION_V1_EXECUTION_STORAGE_KO.md ; docs/FRAME_ANIMATION_V1_DEVELOPMENT_KO.md ; docs/CONTROL_PLANE_POINTER.md ; TASKS/TEMPLATE.md (read at the plan commit) ; docs/aiops/PROGRAM_ASTRA_DELEGATION.md (immutable plan commit) ; docs/FRAME_ANIMATION_V1_EVOLUTION_KO.md (candidate; consume only at adopted plan commit) ; central engineering/docs/PROGRAM_EXECUTION_EVOLUTION_DESIGN_KO.md (prospective design at central #47 source 09e161caa652d75e9617caf632b3b9899be35740; pin actual adopted commit before operational use) ; docs/aiops/REGISTRATION_SCOPE_APPROVAL_KO.md (full candidate scope; pending adoption) ; NON_EXECUTABLE_DRAFT: docs/aiops/FRAME_ANIMATION_V1_PROGRAM_DRAFT.json",
+  "approval_pointer": "PENDING_EXPANDED_SCOPE_REVIEW_DO_NOT_DISPATCH",
+  "authoritative_doc_pointers": "AGENTS.md ; README.md ; ARCHITECTURE.md ; PROJECT_SPEC.md ; docs/decisions/FRAME_ANIMATION_V1_ADOPTION_20260930.md ; docs/FRAME_ANIMATION_V1_DESIGN_KO.md ; docs/FRAME_ANIMATION_V1_EXECUTION_STORAGE_KO.md ; docs/FRAME_ANIMATION_V1_DEVELOPMENT_KO.md ; docs/CONTROL_PLANE_POINTER.md ; TASKS/TEMPLATE.md (read at the plan commit) ; docs/aiops/PROGRAM_ASTRA_DELEGATION.md (immutable plan commit) ; docs/FRAME_ANIMATION_V1_EVOLUTION_KO.md (candidate; consume only at adopted plan commit) ; central engineering/docs/PROGRAM_EXECUTION_EVOLUTION_DESIGN_KO.md (prospective design at central #47 source 09e161caa652d75e9617caf632b3b9899be35740; pin actual adopted commit before operational use) ; docs/aiops/REGISTRATION_SCOPE_APPROVAL_KO.md (full candidate scope; pending adoption) ; NON_EXECUTABLE_DRAFT: docs/aiops/FRAME_ANIMATION_V1_PROGRAM_DRAFT.json ; docs/aiops/PROGRAM_EXPANSION_20261002_KO.md (expanded candidate; source and acceptance scope, not execution approval) ; docs/aiops/PENDING_NODES.json (NON_EXECUTABLE pending catalogue; do not erase cross-repository prerequisites)",
   "nodes": [
     {
       "id": "anim-001",
@@ -325,6 +325,179 @@
       "astra_gate": "MILESTONE",
       "astra_auto_merge": true,
       "spec": "목표: 새 승인 plan revision의 기존18+후속5 전체 개발 및 실제 목표 수용을 빠짐없이 보고한다. 정본: 개발 안내 ANIM-019~023, 고도화 설계5/8, 상세설계10, 실행·저장11.\n산출물: immutable plan/revision/hash·current delivery HEAD별 23-node inventory/증거/read binding·개발 delivery complete/goal qualification/acceptance/release 분리·blocking reason/다음 확인 항목·문서. 중앙 completion query/외부 evidence 미구현 또는 미qualification이면 draft 표로 보고하며 host record를 직접 만들지 않는다.\n수용: CLOSEOUT-ALL/CLOSEOUT-SCOPE/CLOSEOUT-ART. 001~022 하나라도 missing/stale면 전체 개발 complete 주장 0. 018 이후 registry/manifest/journal/환경 scope의 old qualification 자동승계 0. 실제 route의 input→worker→verified PNG/MP4→archive→restore, W00/전체 재생·release 권한을 독립 facet로 보고한다. closeout 도구의 개발 DONE은 실제 missing facet를 해제하지 않는다. 필요한 UNQUALIFIED/PENDING/NOT_AUTHORIZED는 NOT_REQUIRED로 면제하지 않으며 분모23이 qualification/작품 승인 수가 아니다. 기존 실행의 분모를 새 plan 승인 전에 바꾸지 않는다.\n공통: DESIGN_ONLY 후보를 exact-head 독립 감사·적용되는 User/병합/plan 승인 경계로 채택한 뒤 task를 생성한다. canonical issue/branch의 단일 writer·builder/reviewer/User/Fable authority 분리를 지킨다. 기존 전체 pytest·Build 1·LEGACY_MV·Preview/Final·원곡/원문/cue·budget/quote/UNKNOWN/cancel/bounded retry를 보존한다. 유료 생성·credential/Cloud project·자원 구매·추가 과금·release·host 활성화 권한은 없다. 환경 부재는 fake 개발 수용과 실제 자격/작품 PENDING을 분리한다. 현재 HEAD CI·실행 명령/fixture를 기록하고 기능 없는 틀을 완료로 세지 않는다.\n추가 closeout 조건:018 actual qualification/User-only delivery가 없으면 전체23-node closeout도WAITING이다. missing018을 삭제하거나 code/fake PASS를018 DONE/goal acceptance로 대체하지 않는다. 앞선 개발-only delivery·실제qualification·작품승인/release의 독립 근거는 보존한다."
+    },
+    {
+      "id": "film-brief-board",
+      "title": "기획·음원·가사·레퍼런스의 제작 시작 화면",
+      "spec": "목표: 처음 작업을 맡겼을 때 필요한 자료와 미확정 사항을 한곳에서 정리한다.\n\n작업 묶음: 직관적인 제작 작업실\n\n설계 근거: PROJECT_SPEC.md; ARCHITECTURE.md; docs/FRAME_ANIMATION_V1_DESIGN_KO.md; docs/FRAME_ANIMATION_V1_EXECUTION_STORAGE_KO.md; docs/FRAME_ANIMATION_V1_EVOLUTION_KO.md\n\n구현 범위:\n1. 곡·brief·원문 가사·레퍼런스·원하는 감정을 기존 project 입력에 연결한다\n2. 임시 자료와 채택 입력을 구분한다\n3. 원문 변경의 영향과 재검수 필요를 설명한다\n\n필수 산출물:\n- 프로젝트 준비 화면과 입력 검증\n- 누락/잘못된 음원/중복 import 브라우저 시나리오\n\n완료 판정/실패 검증:\n1. 가사 길이로 보컬 타이밍을 추정하지 않는다\n2. 새 project 생성이 기존 package를 덮어쓰지 않는다\n3. 지원 길이·format·임시 slate 상태가 사용자에게 드러난다\n\n공통 경계: 원곡·가사 원문·검토 cue·기존 LOCK을 보존한다. 신규 결과에 기존 검수/LOCK을 승계하지 않는다. 240초/24fps 기준과 legacy 모드를 유지한다. Preview/fake/source delivery는 실제 작품 Final·서비스 qualification이 아니다. 유료 생성·계정 동의·작품 승인·외부 배포는 기존 범위별 권한을 따른다.\n\n증거/인계: 실제 변경 파일·실행 명령·성공 및 실패 사례·정확한 소스 SHA를 PR에 남긴다. 기존 충분한 coverage는 재사용하고 새 gap만 검증한다. UI 변경은 실제 브라우저의 정상/빈 값/오류/진행 중 화면과 키보드 동작을 확인한다. 실환경 부재는 미검증으로 남긴다. 독립 검토 지적과 CI 실패는 같은 소유자가 수정하고 변경 HEAD를 다시 검토한다. 일반 구현 선택은 자율 결정하며 계정·중요 계약·실사용 승인만 구체적인 결정을 요청한다.",
+      "depends_on": [
+        "anim-011"
+      ],
+      "audit_floor": "A2",
+      "astra_gate": "NONE",
+      "deliverable_mode": "PR",
+      "astra_auto_merge": true,
+      "user_merge": false
+    },
+    {
+      "id": "film-asset-library",
+      "title": "캐릭터·배경·소품·프레임의 자산 탐색",
+      "spec": "목표: 어떤 이미지가 어느 컷과 현재 결과에 쓰였는지 찾는다.\n\n작업 묶음: 직관적인 제작 작업실\n\n설계 근거: PROJECT_SPEC.md; ARCHITECTURE.md; docs/FRAME_ANIMATION_V1_DESIGN_KO.md; docs/FRAME_ANIMATION_V1_EXECUTION_STORAGE_KO.md; docs/FRAME_ANIMATION_V1_EVOLUTION_KO.md\n\n구현 범위:\n1. 종류/버전/출처/권리 확인/사용 컷으로 자산을 탐색한다\n2. 실제 원본·proxy·thumbnail·승인 상태를 구분한다\n3. 교체·분리·미사용 자산 정리를 현재 manifest에 연결한다\n\n필수 산출물:\n- 자산 library UI와 사용처 read model\n- 누락/손상/같은 이름 다른 hash fixture\n\n완료 판정/실패 검증:\n1. 파일명만 같다고 같은 자산으로 취급하지 않는다\n2. 현재/역사 build가 참조한 자산을 임의 삭제하지 않는다\n3. hash 검증이 저작권 허가처럼 표시되지 않는다\n\n공통 경계: 원곡·가사 원문·검토 cue·기존 LOCK을 보존한다. 신규 결과에 기존 검수/LOCK을 승계하지 않는다. 240초/24fps 기준과 legacy 모드를 유지한다. Preview/fake/source delivery는 실제 작품 Final·서비스 qualification이 아니다. 유료 생성·계정 동의·작품 승인·외부 배포는 기존 범위별 권한을 따른다.\n\n증거/인계: 실제 변경 파일·실행 명령·성공 및 실패 사례·정확한 소스 SHA를 PR에 남긴다. 기존 충분한 coverage는 재사용하고 새 gap만 검증한다. UI 변경은 실제 브라우저의 정상/빈 값/오류/진행 중 화면과 키보드 동작을 확인한다. 실환경 부재는 미검증으로 남긴다. 독립 검토 지적과 CI 실패는 같은 소유자가 수정하고 변경 HEAD를 다시 검토한다. 일반 구현 선택은 자율 결정하며 계정·중요 계약·실사용 승인만 구체적인 결정을 요청한다.",
+      "depends_on": [
+        "anim-003",
+        "anim-008",
+        "anim-020"
+      ],
+      "audit_floor": "A2",
+      "astra_gate": "NONE",
+      "deliverable_mode": "PR",
+      "astra_auto_merge": true,
+      "user_merge": false
+    },
+    {
+      "id": "film-shot-board",
+      "title": "콘티·타임라인·프레임·전환의 통합 탐색",
+      "spec": "목표: 컷을 고르면 시간축·프레임·검수·자산 사용처가 함께 움직인다.\n\n작업 묶음: 직관적인 제작 작업실\n\n설계 근거: PROJECT_SPEC.md; ARCHITECTURE.md; docs/FRAME_ANIMATION_V1_DESIGN_KO.md; docs/FRAME_ANIMATION_V1_EXECUTION_STORAGE_KO.md; docs/FRAME_ANIMATION_V1_EVOLUTION_KO.md\n\n구현 범위:\n1. storyboard와 timeline의 stable shot ID 선택을 연동한다\n2. 노출·컷 경계·pairwise transition·공백/겹침을 표시한다\n3. 변경 draft와 기존 채택 컷을 비교한다\n\n필수 산출물:\n- 컷 작업대와 키보드/숫자 편집\n- 경계 프레임·전환 소유권 UI fixture\n\n완료 판정/실패 검증:\n1. 정수 frame clock과 실제 표시가 일치한다\n2. 컷 편집이 가사 cue를 이동시키지 않는다\n3. 선택한 컷이 재정렬·reload 후 다른 컷으로 바뀌지 않는다\n\n공통 경계: 원곡·가사 원문·검토 cue·기존 LOCK을 보존한다. 신규 결과에 기존 검수/LOCK을 승계하지 않는다. 240초/24fps 기준과 legacy 모드를 유지한다. Preview/fake/source delivery는 실제 작품 Final·서비스 qualification이 아니다. 유료 생성·계정 동의·작품 승인·외부 배포는 기존 범위별 권한을 따른다.\n\n증거/인계: 실제 변경 파일·실행 명령·성공 및 실패 사례·정확한 소스 SHA를 PR에 남긴다. 기존 충분한 coverage는 재사용하고 새 gap만 검증한다. UI 변경은 실제 브라우저의 정상/빈 값/오류/진행 중 화면과 키보드 동작을 확인한다. 실환경 부재는 미검증으로 남긴다. 독립 검토 지적과 CI 실패는 같은 소유자가 수정하고 변경 HEAD를 다시 검토한다. 일반 구현 선택은 자율 결정하며 계정·중요 계약·실사용 승인만 구체적인 결정을 요청한다.",
+      "depends_on": [
+        "anim-005",
+        "anim-011",
+        "film-asset-library"
+      ],
+      "audit_floor": "A2",
+      "astra_gate": "NONE",
+      "deliverable_mode": "PR",
+      "astra_auto_merge": true,
+      "user_merge": false
+    },
+    {
+      "id": "film-lyrics-review",
+      "title": "실제 청취와 연결된 가사·한글 자막 검토",
+      "spec": "목표: 가사 원문을 보존하면서 실제 보컬 타이밍과 읽기 품질을 검토한다.\n\n작업 묶음: 검토와 수정\n\n설계 근거: PROJECT_SPEC.md; ARCHITECTURE.md; docs/FRAME_ANIMATION_V1_DESIGN_KO.md; docs/FRAME_ANIMATION_V1_EXECUTION_STORAGE_KO.md; docs/FRAME_ANIMATION_V1_EVOLUTION_KO.md\n\n구현 범위:\n1. 반복 구절·동시 cue·누락·긴 줄·폰트 coverage를 설명한다\n2. 청취 위치와 현재 cue 선택을 연결한다\n3. 자막 변경에 필요한 부분 검수·LOCK invalidation을 표시한다\n\n필수 산출물:\n- 가사/cue 검토 UI와 원문 diff\n- 한글/긴 줄/폰트 누락/타이밍 경계 fixture\n\n완료 판정/실패 검증:\n1. ASR/import 후보를 사람 검토 완료로 취급하지 않는다\n2. clean master와 subbed master의 해시·재검수 범위가 구분된다\n3. 폰트 검사 실패가 Final에 들어가지 않는다\n\n공통 경계: 원곡·가사 원문·검토 cue·기존 LOCK을 보존한다. 신규 결과에 기존 검수/LOCK을 승계하지 않는다. 240초/24fps 기준과 legacy 모드를 유지한다. Preview/fake/source delivery는 실제 작품 Final·서비스 qualification이 아니다. 유료 생성·계정 동의·작품 승인·외부 배포는 기존 범위별 권한을 따른다.\n\n증거/인계: 실제 변경 파일·실행 명령·성공 및 실패 사례·정확한 소스 SHA를 PR에 남긴다. 기존 충분한 coverage는 재사용하고 새 gap만 검증한다. UI 변경은 실제 브라우저의 정상/빈 값/오류/진행 중 화면과 키보드 동작을 확인한다. 실환경 부재는 미검증으로 남긴다. 독립 검토 지적과 CI 실패는 같은 소유자가 수정하고 변경 HEAD를 다시 검토한다. 일반 구현 선택은 자율 결정하며 계정·중요 계약·실사용 승인만 구체적인 결정을 요청한다.",
+      "depends_on": [
+        "anim-006",
+        "film-shot-board"
+      ],
+      "audit_floor": "A2",
+      "astra_gate": "NONE",
+      "deliverable_mode": "PR",
+      "astra_auto_merge": true,
+      "user_merge": false
+    },
+    {
+      "id": "film-review-diff",
+      "title": "검수 지적에서 해당 프레임 수정까지",
+      "spec": "목표: 결과를 보고 지적한 문제를 정확한 컷·프레임·자산에 되돌린다.\n\n작업 묶음: 검토와 수정\n\n설계 근거: PROJECT_SPEC.md; ARCHITECTURE.md; docs/FRAME_ANIMATION_V1_DESIGN_KO.md; docs/FRAME_ANIMATION_V1_EXECUTION_STORAGE_KO.md; docs/FRAME_ANIMATION_V1_EVOLUTION_KO.md\n\n구현 범위:\n1. finding에 shot/frame range/artifact hash와 문제 유형을 결합한다\n2. 수정 전후 비교와 영향 closure를 보여준다\n3. 수정 후 해당 지적의 해소와 전체 재생 필요를 구분한다\n\n필수 산출물:\n- 검토 finding/수정 대조 화면\n- stale approval/다른 cut revision 거절 시나리오\n\n완료 판정/실패 검증:\n1. 옛 render에 대한 PASS가 새 render로 승계되지 않는다\n2. unrelated 컷 검토를 불필요하게 폐기하지 않는다\n3. 작성자 자기 확인과 독립 검토/감독 승인이 구분된다\n\n공통 경계: 원곡·가사 원문·검토 cue·기존 LOCK을 보존한다. 신규 결과에 기존 검수/LOCK을 승계하지 않는다. 240초/24fps 기준과 legacy 모드를 유지한다. Preview/fake/source delivery는 실제 작품 Final·서비스 qualification이 아니다. 유료 생성·계정 동의·작품 승인·외부 배포는 기존 범위별 권한을 따른다.\n\n증거/인계: 실제 변경 파일·실행 명령·성공 및 실패 사례·정확한 소스 SHA를 PR에 남긴다. 기존 충분한 coverage는 재사용하고 새 gap만 검증한다. UI 변경은 실제 브라우저의 정상/빈 값/오류/진행 중 화면과 키보드 동작을 확인한다. 실환경 부재는 미검증으로 남긴다. 독립 검토 지적과 CI 실패는 같은 소유자가 수정하고 변경 HEAD를 다시 검토한다. 일반 구현 선택은 자율 결정하며 계정·중요 계약·실사용 승인만 구체적인 결정을 요청한다.",
+      "depends_on": [
+        "anim-020",
+        "film-shot-board",
+        "film-lyrics-review"
+      ],
+      "audit_floor": "A2",
+      "astra_gate": "NONE",
+      "deliverable_mode": "PR",
+      "astra_auto_merge": true,
+      "user_merge": false
+    },
+    {
+      "id": "film-quality-diagnostics",
+      "title": "검은 프레임·오디오·시간축·자막 자동 진단",
+      "spec": "목표: 기술적 결함을 자동으로 찾되 미학적 검수와 혼동하지 않는다.\n\n작업 묶음: 검토와 수정\n\n설계 근거: PROJECT_SPEC.md; ARCHITECTURE.md; docs/FRAME_ANIMATION_V1_DESIGN_KO.md; docs/FRAME_ANIMATION_V1_EXECUTION_STORAGE_KO.md; docs/FRAME_ANIMATION_V1_EVOLUTION_KO.md\n\n구현 범위:\n1. decode/PTS/duration/audio channel/clipping/silence/font coverage를 검사한다\n2. 의도된 정지·암전·무음과 후보 finding을 구분한다\n3. 검출 위치와 재현 명령을 render provenance에 연결한다\n\n필수 산출물:\n- QC 진단 모듈과 결과 화면\n- 정상/손상/의도된 정지/PTS discontinuity fixtures\n\n완료 판정/실패 검증:\n1. 진단이 Final 승인이나 미학 점수로 쓰이지 않는다\n2. frame 수와 duration이 240초/24fps 기준에 맞는다\n3. 후보 경고를 사용자가 근거와 함께 분류할 수 있다\n\n공통 경계: 원곡·가사 원문·검토 cue·기존 LOCK을 보존한다. 신규 결과에 기존 검수/LOCK을 승계하지 않는다. 240초/24fps 기준과 legacy 모드를 유지한다. Preview/fake/source delivery는 실제 작품 Final·서비스 qualification이 아니다. 유료 생성·계정 동의·작품 승인·외부 배포는 기존 범위별 권한을 따른다.\n\n증거/인계: 실제 변경 파일·실행 명령·성공 및 실패 사례·정확한 소스 SHA를 PR에 남긴다. 기존 충분한 coverage는 재사용하고 새 gap만 검증한다. UI 변경은 실제 브라우저의 정상/빈 값/오류/진행 중 화면과 키보드 동작을 확인한다. 실환경 부재는 미검증으로 남긴다. 독립 검토 지적과 CI 실패는 같은 소유자가 수정하고 변경 HEAD를 다시 검토한다. 일반 구현 선택은 자율 결정하며 계정·중요 계약·실사용 승인만 구체적인 결정을 요청한다.",
+      "depends_on": [
+        "anim-015",
+        "anim-020"
+      ],
+      "audit_floor": "A2",
+      "astra_gate": "NONE",
+      "deliverable_mode": "PR",
+      "astra_auto_merge": true,
+      "user_merge": false
+    },
+    {
+      "id": "film-resource-forecast",
+      "title": "실행 전 시간·디스크·전송·구독 사용량 예상",
+      "spec": "목표: 작업을 시작하기 전에 필요한 자원과 불확실성을 이해한다.\n\n작업 묶음: 성능과 지속 실행\n\n설계 근거: PROJECT_SPEC.md; ARCHITECTURE.md; docs/FRAME_ANIMATION_V1_DESIGN_KO.md; docs/FRAME_ANIMATION_V1_EXECUTION_STORAGE_KO.md; docs/FRAME_ANIMATION_V1_EVOLUTION_KO.md\n\n구현 범위:\n1. 실측 profile에서 예상 CPU/GPU·메모리·cache·전송·출력을 계산한다\n2. quote/구독 자격/추가 비용 가능성을 구분한다\n3. 자원 부족 시 chunk·quality·route 선택안을 제시한다\n\n필수 산출물:\n- 실행 계획 미리보기와 자원 breakdown\n- 만료 capability·디스크 부족·quote 변경 fixture\n\n완료 판정/실패 검증:\n1. 과거 측정과 현재 장치를 혼동하지 않는다\n2. 예상치에 측정 환경과 범위를 표시한다\n3. 선택되지 않은 유료 fallback을 자동 실행하지 않는다\n\n공통 경계: 원곡·가사 원문·검토 cue·기존 LOCK을 보존한다. 신규 결과에 기존 검수/LOCK을 승계하지 않는다. 240초/24fps 기준과 legacy 모드를 유지한다. Preview/fake/source delivery는 실제 작품 Final·서비스 qualification이 아니다. 유료 생성·계정 동의·작품 승인·외부 배포는 기존 범위별 권한을 따른다.\n\n증거/인계: 실제 변경 파일·실행 명령·성공 및 실패 사례·정확한 소스 SHA를 PR에 남긴다. 기존 충분한 coverage는 재사용하고 새 gap만 검증한다. UI 변경은 실제 브라우저의 정상/빈 값/오류/진행 중 화면과 키보드 동작을 확인한다. 실환경 부재는 미검증으로 남긴다. 독립 검토 지적과 CI 실패는 같은 소유자가 수정하고 변경 HEAD를 다시 검토한다. 일반 구현 선택은 자율 결정하며 계정·중요 계약·실사용 승인만 구체적인 결정을 요청한다.",
+      "depends_on": [
+        "anim-017",
+        "anim-019"
+      ],
+      "audit_floor": "A2",
+      "astra_gate": "NONE",
+      "deliverable_mode": "PR",
+      "astra_auto_merge": true,
+      "user_merge": false
+    },
+    {
+      "id": "film-execution-console",
+      "title": "실행·취소·업로드·UNKNOWN 상태 작업실",
+      "spec": "목표: 긴 작업의 실제 상태를 보고 안전하게 멈추거나 이어간다.\n\n작업 묶음: 성능과 지속 실행\n\n설계 근거: PROJECT_SPEC.md; ARCHITECTURE.md; docs/FRAME_ANIMATION_V1_DESIGN_KO.md; docs/FRAME_ANIMATION_V1_EXECUTION_STORAGE_KO.md; docs/FRAME_ANIMATION_V1_EVOLUTION_KO.md\n\n구현 범위:\n1. compose/encode/mux/verify/upload/seal을 구별한다\n2. 중단 위치·재사용 가능한 artifact·새 attempt 필요를 설명한다\n3. network loss·remote running·upload verify를 독립 표시한다\n\n필수 산출물:\n- 실행 queue/status UI와 오류별 복귀 흐름\n- cancel-complete race·disconnect·partial upload 재현\n\n완료 판정/실패 검증:\n1. CANCEL_REQUESTED를 종료 확정으로 표시하지 않는다\n2. UNKNOWN에 새 원격 작업을 중복 제출하지 않는다\n3. 업로드 완료와 readback/hash 검증 완료가 구분된다\n\n공통 경계: 원곡·가사 원문·검토 cue·기존 LOCK을 보존한다. 신규 결과에 기존 검수/LOCK을 승계하지 않는다. 240초/24fps 기준과 legacy 모드를 유지한다. Preview/fake/source delivery는 실제 작품 Final·서비스 qualification이 아니다. 유료 생성·계정 동의·작품 승인·외부 배포는 기존 범위별 권한을 따른다.\n\n증거/인계: 실제 변경 파일·실행 명령·성공 및 실패 사례·정확한 소스 SHA를 PR에 남긴다. 기존 충분한 coverage는 재사용하고 새 gap만 검증한다. UI 변경은 실제 브라우저의 정상/빈 값/오류/진행 중 화면과 키보드 동작을 확인한다. 실환경 부재는 미검증으로 남긴다. 독립 검토 지적과 CI 실패는 같은 소유자가 수정하고 변경 HEAD를 다시 검토한다. 일반 구현 선택은 자율 결정하며 계정·중요 계약·실사용 승인만 구체적인 결정을 요청한다.",
+      "depends_on": [
+        "anim-021",
+        "film-resource-forecast"
+      ],
+      "audit_floor": "A2",
+      "astra_gate": "NONE",
+      "deliverable_mode": "PR",
+      "astra_auto_merge": true,
+      "user_merge": false
+    },
+    {
+      "id": "film-replay-doctor",
+      "title": "재현·누락 자산·이전 버전 진단",
+      "spec": "목표: 과거 build를 재생하거나 재구축할 수 없는 원인을 정확히 찾는다.\n\n작업 묶음: 성능과 지속 실행\n\n설계 근거: PROJECT_SPEC.md; ARCHITECTURE.md; docs/FRAME_ANIMATION_V1_DESIGN_KO.md; docs/FRAME_ANIMATION_V1_EXECUTION_STORAGE_KO.md; docs/FRAME_ANIMATION_V1_EVOLUTION_KO.md\n\n구현 범위:\n1. source/recipe/clean/subbed/encode manifest 연결을 검사한다\n2. 자산 누락·hash 차이·도구 버전 차이·unsupported profile을 분류한다\n3. 가능한 동일 재현과 새 결과 생성 분기를 구분한다\n\n필수 산출물:\n- build doctor와 재현 packet\n- corrupt pack/잘못된 index/range/schema fixture\n\n완료 판정/실패 검증:\n1. 재구축으로 달라진 hash를 기존 build라고 부르지 않는다\n2. bounded restore가 전체 원본 다운로드로 몰래 바뀌지 않는다\n3. credential/토큰이 재현 packet에 포함되지 않는다\n\n공통 경계: 원곡·가사 원문·검토 cue·기존 LOCK을 보존한다. 신규 결과에 기존 검수/LOCK을 승계하지 않는다. 240초/24fps 기준과 legacy 모드를 유지한다. Preview/fake/source delivery는 실제 작품 Final·서비스 qualification이 아니다. 유료 생성·계정 동의·작품 승인·외부 배포는 기존 범위별 권한을 따른다.\n\n증거/인계: 실제 변경 파일·실행 명령·성공 및 실패 사례·정확한 소스 SHA를 PR에 남긴다. 기존 충분한 coverage는 재사용하고 새 gap만 검증한다. UI 변경은 실제 브라우저의 정상/빈 값/오류/진행 중 화면과 키보드 동작을 확인한다. 실환경 부재는 미검증으로 남긴다. 독립 검토 지적과 CI 실패는 같은 소유자가 수정하고 변경 HEAD를 다시 검토한다. 일반 구현 선택은 자율 결정하며 계정·중요 계약·실사용 승인만 구체적인 결정을 요청한다.",
+      "depends_on": [
+        "anim-020",
+        "anim-021",
+        "film-asset-library"
+      ],
+      "audit_floor": "A2",
+      "astra_gate": "NONE",
+      "deliverable_mode": "PR",
+      "astra_auto_merge": true,
+      "user_merge": false
+    },
+    {
+      "id": "film-workspace-accessibility",
+      "title": "제작 작업실의 키보드·작은 화면·오류 UX",
+      "spec": "목표: 실무 제작 흐름을 전문 용어를 몰라도 따라갈 수 있게 한다.\n\n작업 묶음: 품질과 인계\n\n설계 근거: PROJECT_SPEC.md; ARCHITECTURE.md; docs/FRAME_ANIMATION_V1_DESIGN_KO.md; docs/FRAME_ANIMATION_V1_EXECUTION_STORAGE_KO.md; docs/FRAME_ANIMATION_V1_EVOLUTION_KO.md\n\n구현 범위:\n1. 준비→동작→검토→수정→출력 단계의 다음 행동을 명확히 한다\n2. 긴 타임라인의 keyboard focus·숫자 이동·확대·reduced motion을 제공한다\n3. 빈 project·missing credential·오류·재시작 상태를 다듬는다\n\n필수 산출물:\n- 일관된 제작 화면과 문맥 도움말\n- 전체 keyboard journey/desktop 반응형 evidence\n\n완료 판정/실패 검증:\n1. 사용자가 raw JSON을 편집해야만 핵심 작업을 끝내지 않게 한다\n2. 색상만으로 검수·실패·진행 상태를 구분하지 않는다\n3. 실패 후 입력과 선택한 frame이 보존된다\n\n공통 경계: 원곡·가사 원문·검토 cue·기존 LOCK을 보존한다. 신규 결과에 기존 검수/LOCK을 승계하지 않는다. 240초/24fps 기준과 legacy 모드를 유지한다. Preview/fake/source delivery는 실제 작품 Final·서비스 qualification이 아니다. 유료 생성·계정 동의·작품 승인·외부 배포는 기존 범위별 권한을 따른다.\n\n증거/인계: 실제 변경 파일·실행 명령·성공 및 실패 사례·정확한 소스 SHA를 PR에 남긴다. 기존 충분한 coverage는 재사용하고 새 gap만 검증한다. UI 변경은 실제 브라우저의 정상/빈 값/오류/진행 중 화면과 키보드 동작을 확인한다. 실환경 부재는 미검증으로 남긴다. 독립 검토 지적과 CI 실패는 같은 소유자가 수정하고 변경 HEAD를 다시 검토한다. 일반 구현 선택은 자율 결정하며 계정·중요 계약·실사용 승인만 구체적인 결정을 요청한다.",
+      "depends_on": [
+        "film-brief-board",
+        "film-review-diff",
+        "film-execution-console"
+      ],
+      "audit_floor": "A2",
+      "astra_gate": "NONE",
+      "deliverable_mode": "PR",
+      "astra_auto_merge": true,
+      "user_merge": false
+    },
+    {
+      "id": "film-delivery-package",
+      "title": "작품 출력·소스·검수·재현 자료 인계",
+      "spec": "목표: 영상 파일 하나와 함께 그 파일이 무엇인지 증명할 자료를 전달한다.\n\n작업 묶음: 품질과 인계\n\n설계 근거: PROJECT_SPEC.md; ARCHITECTURE.md; docs/FRAME_ANIMATION_V1_DESIGN_KO.md; docs/FRAME_ANIMATION_V1_EXECUTION_STORAGE_KO.md; docs/FRAME_ANIMATION_V1_EVOLUTION_KO.md\n\n구현 범위:\n1. clean/subbed master·thumbnail·자막·manifest·QC·검수 범위를 묶는다\n2. 전달 profile·원본 보존·다운로드 무결성을 확인한다\n3. Preview/Final 후보/감독 채택/외부 공개 상태를 표시한다\n\n필수 산출물:\n- 재현 가능한 delivery bundle\n- 첫 설치부터 bundle까지 사용 안내\n\n완료 판정/실패 검증:\n1. 파일명 Final만으로 승인 상태가 바뀌지 않는다\n2. 포함 artifact의 hash와 current 승인 scope가 일치한다\n3. 비밀정보와 원치 않는 개인 자료가 bundle에 들어가지 않는다\n\n공통 경계: 원곡·가사 원문·검토 cue·기존 LOCK을 보존한다. 신규 결과에 기존 검수/LOCK을 승계하지 않는다. 240초/24fps 기준과 legacy 모드를 유지한다. Preview/fake/source delivery는 실제 작품 Final·서비스 qualification이 아니다. 유료 생성·계정 동의·작품 승인·외부 배포는 기존 범위별 권한을 따른다.\n\n증거/인계: 실제 변경 파일·실행 명령·성공 및 실패 사례·정확한 소스 SHA를 PR에 남긴다. 기존 충분한 coverage는 재사용하고 새 gap만 검증한다. UI 변경은 실제 브라우저의 정상/빈 값/오류/진행 중 화면과 키보드 동작을 확인한다. 실환경 부재는 미검증으로 남긴다. 독립 검토 지적과 CI 실패는 같은 소유자가 수정하고 변경 HEAD를 다시 검토한다. 일반 구현 선택은 자율 결정하며 계정·중요 계약·실사용 승인만 구체적인 결정을 요청한다.",
+      "depends_on": [
+        "film-quality-diagnostics",
+        "film-replay-doctor",
+        "film-workspace-accessibility"
+      ],
+      "audit_floor": "A2",
+      "astra_gate": "NONE",
+      "deliverable_mode": "PR",
+      "astra_auto_merge": true,
+      "user_merge": false
+    },
+    {
+      "id": "film-studio-qualification",
+      "title": "4분 제작 작업실 전체 qualification",
+      "spec": "목표: 240초 이미지 애니메이션을 준비부터 검수 인계까지 실제로 완주한다.\n\n작업 묶음: 품질과 인계\n\n설계 근거: PROJECT_SPEC.md; ARCHITECTURE.md; docs/FRAME_ANIMATION_V1_DESIGN_KO.md; docs/FRAME_ANIMATION_V1_EXECUTION_STORAGE_KO.md; docs/FRAME_ANIMATION_V1_EVOLUTION_KO.md\n\n구현 범위:\n1. 어려운 W00 컷을 먼저 포함하고 경로 유지/변경 판단을 기록한다\n2. 5760 프레임·ones/twos·transitions·한글 cue·Drive/worker route를 검증한다\n3. source/실환경/작품 수용/릴리스의 네 분모를 유지한다\n\n필수 산출물:\n- 240초 시나리오와 경로별 실제 증거\n- 현재 소스의 제품 인계/미완료 표\n\n완료 판정/실패 검증:\n1. fake provider 성공을 구독/원격 실행 qualification으로 세지 않는다\n2. 실제 정상속도 전체 재생 검토가 필요한 범위를 명시한다\n3. 선택된 route의 시작/취소/재개/완료와 replay가 모두 확인된다\n\n공통 경계: 원곡·가사 원문·검토 cue·기존 LOCK을 보존한다. 신규 결과에 기존 검수/LOCK을 승계하지 않는다. 240초/24fps 기준과 legacy 모드를 유지한다. Preview/fake/source delivery는 실제 작품 Final·서비스 qualification이 아니다. 유료 생성·계정 동의·작품 승인·외부 배포는 기존 범위별 권한을 따른다.\n\n증거/인계: 실제 변경 파일·실행 명령·성공 및 실패 사례·정확한 소스 SHA를 PR에 남긴다. 기존 충분한 coverage는 재사용하고 새 gap만 검증한다. UI 변경은 실제 브라우저의 정상/빈 값/오류/진행 중 화면과 키보드 동작을 확인한다. 실환경 부재는 미검증으로 남긴다. 독립 검토 지적과 CI 실패는 같은 소유자가 수정하고 변경 HEAD를 다시 검토한다. 일반 구현 선택은 자율 결정하며 계정·중요 계약·실사용 승인만 구체적인 결정을 요청한다.",
+      "depends_on": [
+        "anim-023",
+        "film-delivery-package"
+      ],
+      "audit_floor": "A2",
+      "astra_gate": "NONE",
+      "deliverable_mode": "PR",
+      "astra_auto_merge": true,
+      "user_merge": false
     }
   ]
 }

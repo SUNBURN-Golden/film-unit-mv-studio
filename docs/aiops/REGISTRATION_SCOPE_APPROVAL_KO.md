@@ -35,3 +35,11 @@ manifest 경로는 `docs/aiops/REGISTRATION_SCOPE_DRAFT.json`이다. plan 정의
 | `754fae0` | 과거 기록, 채택 대상 아님 |
 
 대표님 정책 C 원문(2026-10-01): [#47 결정 기록](https://github.com/BeautifulMind-JT/ai-ops-control-plane/pull/47#issuecomment-5927605393). 계약 변경 YES·RELEASE·user_merge는 대표님 병합이다. 노드별 판정은 [PROGRAM_ASTRA_DELEGATION.md](PROGRAM_ASTRA_DELEGATION.md)에 남겼다. 기존 금융/chain/과금/외부 전송/실사용/화면/작품/release 잠금과 UNKNOWN fencing을 유지한다.
+
+## 2026-10-02 상세 확장 개정 후보
+
+후속 사용자 지시 “원대하고 자세히”에 따른 새 계획 범위는 [PROGRAM_EXPANSION_20261002_KO.md](PROGRAM_EXPANSION_20261002_KO.md)를 따른다. 기존 23개 로컬 정의와 0개 pending 정의를 그대로 보존하며, 전체 후보 분모는 로컬 35 + pending 8 = **43개**로 확장한다. 위의 이전 개수·시작 PR 설명은 이전 범위의 기록이다. 새 manifest는 이번 확대 정의를 가리킨다.
+
+사용자가 `.aiops/program.json` 작성을 명시했으므로 이번 별도 draft에는 **PENDING mirror**를 함께 제공한다. 이것은 이전의 승인 전 실행 경로 부재 방식을 이 후보의 PENDING reader 차단으로 대체하는 파일 배치 예외다. 실행·병합·호스트 활성화 예외가 아니다. 기존 시작 PR은 수정하지 않으며, 그 시작 승인/감사를 새 범위에 재사용하지 않는다. 승인되지 않은 mirror를 활성 기본 브랜치에 병합하지 않는다.
+
+확대 원본의 독립 정확한 HEAD 검토와 범위 채택 후, 시작 개정에서는 승인된 원본을 복사하고 승인 pointer 하나만 변경한다. pending은 별도 승격 조건을 모두 확인하기 전까지 실행 nodes로 옮기지 않는다. manifest의 현재 정의·문서·pending 해시 전체를 승인 기록에 묶으며, 보호된 영수증/실환경 증거를 이 문서에서 생성하지 않는다.

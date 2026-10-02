@@ -10,12 +10,18 @@
       "approval_pointer",
       "registration_scope"
     ],
-    "definition_sha256": "7d6d8310de21b72ad176faa7443808169e976b6e132d5f2b861c47703ca68100",
-    "node_count": 23
+    "definition_sha256": "f0214d06c602247f0187ced20d8751b5336b70f5dcd30d0c84842eeeade8f377",
+    "node_count": 35
   },
-  "pending_catalogues": [],
+  "pending_catalogues": [
+    {
+      "path": "docs/aiops/PENDING_NODES.json",
+      "definition_sha256": "1b53020f63a8a7058a5df70b812dfc5256b6756f4917cd30e15c5f5f1e367cf4",
+      "node_count": 8
+    }
+  ],
   "finance_subset": null,
-  "candidate_node_count": 23,
+  "candidate_node_count": 43,
   "user_only_nodes": [
     "anim-001",
     "anim-003",
@@ -29,7 +35,15 @@
     "anim-018",
     "anim-019",
     "anim-020",
-    "anim-021"
+    "anim-021",
+    "film-direction-assistant",
+    "film-character-continuity",
+    "film-assisted-editing",
+    "film-qualified-generation",
+    "film-multiformat-profile",
+    "film-team-review",
+    "film-series-library",
+    "film-expanded-release"
   ],
   "node_definitions": [
     {
@@ -123,13 +137,93 @@
     {
       "id": "anim-023",
       "definition_sha256": "58286c84f9670cafbded9c30ed0db8afbfecd571a3f97336e137e3caef92d140"
+    },
+    {
+      "id": "film-brief-board",
+      "definition_sha256": "1418e42bd70b12d18e8663a72d5f6edd2f1b86f5f711ff08f1ed327b31f315b1"
+    },
+    {
+      "id": "film-asset-library",
+      "definition_sha256": "58a7cd280814dbf40c645cd04d5ee3dca87f436dcea6498c7510d373a5afd236"
+    },
+    {
+      "id": "film-shot-board",
+      "definition_sha256": "15cd5ac1fe80735fb99389b570639a5cb6ab4d7594dee86ea758e2060c2a37bd"
+    },
+    {
+      "id": "film-lyrics-review",
+      "definition_sha256": "a8b98a563704cfbafdcb193b0c470a2727c7e0431b2483e698e8004e077766b8"
+    },
+    {
+      "id": "film-review-diff",
+      "definition_sha256": "3027f12262f741e7454c9e88fdbb5f71fb85becd11fc50c412912e8defcf5bff"
+    },
+    {
+      "id": "film-quality-diagnostics",
+      "definition_sha256": "e146b28d777434a73755ed545e530a8e467696f54974e7a3f43b1d548ce9fd8b"
+    },
+    {
+      "id": "film-resource-forecast",
+      "definition_sha256": "d4517ebca06bfa18a07220be46d5e63a1ef37daef14be82c8c40f3ed11fc25ba"
+    },
+    {
+      "id": "film-execution-console",
+      "definition_sha256": "9a8c1c130819e80041cc72bf7e98531facf39de35c3795d6781a73650482fc95"
+    },
+    {
+      "id": "film-replay-doctor",
+      "definition_sha256": "4cdc2b3921e256be7326afd5fc9d05939446006a0ec2868f8e40a05a345bd209"
+    },
+    {
+      "id": "film-workspace-accessibility",
+      "definition_sha256": "e372dc2dfd8a38d1395a19848e72d02b4a17def843d5922d7f4b11b8185c9ecf"
+    },
+    {
+      "id": "film-delivery-package",
+      "definition_sha256": "aa0155250f9e661ec5276b048768c478432138e4352917b06fab00adf617103b"
+    },
+    {
+      "id": "film-studio-qualification",
+      "definition_sha256": "a52e8ff883440b1876e2dd82e5b9ea95420b6c31ed42c415332de83f18d85e7b"
+    },
+    {
+      "id": "film-direction-assistant",
+      "definition_sha256": "d60c9363149e694e36b9f8b7775e68a261fca6006550f3e9bd88684c038c1b1c"
+    },
+    {
+      "id": "film-character-continuity",
+      "definition_sha256": "9e0c603284ed60989b597427f3cd121f42cd642b491ce875e2b958b825b2e94b"
+    },
+    {
+      "id": "film-assisted-editing",
+      "definition_sha256": "8b4f7f9c42390664ffc745da9874570f774dae723949b6d1ef6e045535dbfba3"
+    },
+    {
+      "id": "film-qualified-generation",
+      "definition_sha256": "a3ae238971c760a4ea40a5ca8117f61519a8f8973fa0710eb47ba13df2b0b4a9"
+    },
+    {
+      "id": "film-multiformat-profile",
+      "definition_sha256": "e8a4c13e086f7a676a6ffcbf5dc5fc5c124a2de78a9ce94b1605eed86a77849d"
+    },
+    {
+      "id": "film-team-review",
+      "definition_sha256": "cbab0e7b0e44600a599578ef40c47eb38587da1ce9de768714d935141c336251"
+    },
+    {
+      "id": "film-series-library",
+      "definition_sha256": "4ef3ec3abdd23b0281c423c1cfb6b08058c2d597d60853bd40e855f19c591699"
+    },
+    {
+      "id": "film-expanded-release",
+      "definition_sha256": "45f6e9236e9dce44c802192fff92162d6e1cc6692e3e5300da5d61dc7b8ec9f5"
     }
   ],
   "definition_document_sha256": {
     "docs/FRAME_ANIMATION_V1_EXECUTION_STORAGE_KO.md": "c5658d4e262979c5f390a8f6800b66f56680682f4bd5ba61500873ae87289f5b",
     "docs/FRAME_ANIMATION_V1_DEVELOPMENT_KO.md": "9d21f52969b3735df1caa8704f4df51268d8543463f56056851ef7f32c51d5cc",
     "docs/FRAME_ANIMATION_V1_EVOLUTION_KO.md": "a2ff470797087610e23e66b2070ab731cb8b38519e2a11db6a8a9b7ed3116381",
-    "docs/aiops/REGISTRATION_SCOPE_APPROVAL_KO.md": "27a7bc960282f7c25b5e9551847c6e881329e1a8a01facf823b67627765d2cea",
+    "docs/aiops/REGISTRATION_SCOPE_APPROVAL_KO.md": "d8c1dd8991dd20c8f91c7069633d16d9ebdcbcb75553307eac2c84152e3e8d5e",
     "docs/aiops/PROGRAM_ASTRA_DELEGATION.md": "ba682dc597f66e0b31a8ce822f13b1a13158b2acfa1c0388c30521305a5bd14a",
     "AGENTS.md": "c8c5a87a572cb93d286947ec93ab9ff1fbb22a7de41e586c776243fd35cc02c9",
     "ARCHITECTURE.md": "c8726c76ec600b17c78307b2a5b286915efb4d68971fee09ef286995e6f7b62b",
@@ -138,7 +232,8 @@
     "TASKS/TEMPLATE.md": "45d6ab0efe37ce4fff823c4215fdd16c15226782886cbd6cac1a7fcf32296c23",
     "docs/CONTROL_PLANE_POINTER.md": "89528389d9a6f6af18e5feac52eb6a0033a76c74da7fb08de6886621a11e8a36",
     "docs/FRAME_ANIMATION_V1_DESIGN_KO.md": "0f07d03b41965ebb00b0806ef9a53df4549fe6e1dfb33ce213759c82987607e9",
-    "docs/decisions/FRAME_ANIMATION_V1_ADOPTION_20260930.md": "df61ffa1a73220ad1f2a41e1ce12707af158faeda870dd97ab5e9537010620a7"
+    "docs/decisions/FRAME_ANIMATION_V1_ADOPTION_20260930.md": "df61ffa1a73220ad1f2a41e1ce12707af158faeda870dd97ab5e9537010620a7",
+    "docs/aiops/PROGRAM_EXPANSION_20261002_KO.md": "7dffec04415bb028b4a3b883283690f7655b4fc8e653a9b654e2fbbe649fb9af"
   },
   "approval_evidence": {
     "scope_decision_pointer": "PENDING_EXACT_WHOLE_SCOPE_USER_DECISION",
@@ -150,5 +245,20 @@
     "head": "09e161caa652d75e9617caf632b3b9899be35740",
     "authority": "SOURCE_ONLY_NOT_ADOPTED_INSTALLED_QUALIFIED_OR_ACTIVATED"
   },
-  "rule": "Any changed definition needs a new manifest and exact-head review. Finance aliases are counted once. No inherited approval, edited status, partial selection, ordinary comment or source CI grants execution. The manifest digest and approval target commit are recorded externally to avoid hash self-reference."
+  "rule": "Any changed definition needs a new manifest and exact-head review. Finance aliases are counted once. No inherited approval, edited status, partial selection, ordinary comment or source CI grants execution. The manifest digest and approval target commit are recorded externally to avoid hash self-reference.",
+  "authoring_request": {
+    "date_kst": "2026-10-02",
+    "instruction": "네 제품의 .aiops/program.json을 원대하고 자세히 작성",
+    "prior_start_decision": "https://github.com/BeautifulMind-JT/ai-ops-control-plane/issues/57",
+    "existing_start_pr": "https://github.com/BeautifulMind-JT/film-unit-mv-studio/pull/22",
+    "existing_start_head": "8cc3185dcb195b50046ef523e64eed14ebcfb88d",
+    "observed_main": "7090af381c8f7796e6ea01f8ea64b4546051f163",
+    "authority": "PLAN_AUTHORING_ONLY_NOT_EXPANDED_START_OR_RELEASE_APPROVAL"
+  },
+  "validation_reader": {
+    "repository": "BeautifulMind-JT/ai-ops-control-plane",
+    "source_sha": "a34a38b73f096c9f6597b38a111d95ca12ecd159",
+    "path": "engineering/scripts/control_plane_program.py",
+    "authority": "SOURCE_FORMAT_CHECK_ONLY"
+  }
 }
