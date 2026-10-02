@@ -3,7 +3,7 @@
   "program": "film",
   "repository": "BeautifulMind-JT/film-unit-mv-studio",
   "project": "FILM_UNIT",
-  "approval_pointer": "PENDING_EXPANDED_SCOPE_REVIEW_DO_NOT_DISPATCH",
+  "approval_pointer": "https://github.com/BeautifulMind-JT/ai-ops-control-plane/issues/58",
   "authoritative_doc_pointers": "AGENTS.md ; README.md ; ARCHITECTURE.md ; PROJECT_SPEC.md ; docs/decisions/FRAME_ANIMATION_V1_ADOPTION_20260930.md ; docs/FRAME_ANIMATION_V1_DESIGN_KO.md ; docs/FRAME_ANIMATION_V1_EXECUTION_STORAGE_KO.md ; docs/FRAME_ANIMATION_V1_DEVELOPMENT_KO.md ; docs/CONTROL_PLANE_POINTER.md ; TASKS/TEMPLATE.md (read at the plan commit) ; docs/aiops/PROGRAM_ASTRA_DELEGATION.md (immutable plan commit) ; docs/FRAME_ANIMATION_V1_EVOLUTION_KO.md (candidate; consume only at adopted plan commit) ; central engineering/docs/PROGRAM_EXECUTION_EVOLUTION_DESIGN_KO.md (prospective design at central #47 source 09e161caa652d75e9617caf632b3b9899be35740; pin actual adopted commit before operational use) ; docs/aiops/REGISTRATION_SCOPE_APPROVAL_KO.md (full candidate scope; pending adoption) ; NON_EXECUTABLE_DRAFT: docs/aiops/FRAME_ANIMATION_V1_PROGRAM_DRAFT.json ; docs/aiops/PROGRAM_EXPANSION_20261002_KO.md (expanded candidate; source and acceptance scope, not execution approval) ; docs/aiops/PENDING_NODES.json (NON_EXECUTABLE pending catalogue; do not erase cross-repository prerequisites)",
   "nodes": [
     {
