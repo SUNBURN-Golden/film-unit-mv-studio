@@ -17,7 +17,7 @@ from urllib.parse import urlsplit
 
 from PIL import Image
 
-from .core import FilmError, digest, now, probe, project_mutex, read, safe_path, write
+from .core import FilmError, digest, now, probe, project_mutex, read, require_legacy_profile, safe_path, write
 from . import director
 from .packets import aspect_ratio, compact_prompt, frame_prompt, frame_references, reference_prompt
 from .renderers import build_prompt
@@ -111,6 +111,7 @@ def world_request(project, notes="", language="English"):
 def submit_world(project, answer, service_id="custom", notes="", language="English", replace=False):
     p = Path(project)
     with project_mutex(p):
+        require_legacy_profile(p)
         existing = director.pending(p)
         if existing and existing["shots"] and not replace:
             raise FilmError("이미 만든 샷 연출이 있는 초안이 있습니다. 먼저 '초안 버리기'를 누르세요.")
@@ -139,6 +140,7 @@ def submit_shots(project, answer):
     """Validate the pasted answer for exactly the next batch and add it to the draft."""
     p = Path(project)
     with project_mutex(p):
+        require_legacy_profile(p)
         state = storyboard_state(p)
         if state["step"] != "shots":
             raise FilmError("지금은 샷 연출을 받을 차례가 아닙니다. 이야기와 인물을 먼저 붙여넣으세요.")

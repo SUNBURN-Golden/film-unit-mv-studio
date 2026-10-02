@@ -8,7 +8,8 @@ from PIL import Image, ImageDraw
 
 from .core import (FilmError, atomic_text, digest, ffmpeg, frame_at, now, object_hash,
                    probe, production_fingerprint, project_mutex, read, require_lock,
-                   safe_path, validate_manifest, visual_context_fingerprint, write)
+                   require_legacy_profile, safe_path, validate_manifest,
+                   visual_context_fingerprint, write)
 from .builds import allocate_build, capture, seal_build
 from .resolver import candidates, checked_source, register_asset, shot_hash
 
@@ -165,6 +166,7 @@ def _compile(project, strict, quality, progress):
     from .lyrics import export_subtitles, burn_subtitles, validate_lyrics, lyrics_review_fingerprint
     p = Path(project).resolve()
     with project_mutex(p):
+        require_legacy_profile(p)
         config, audio = read(p / "project.yaml"), read(p / "analysis/audio.json")
         shots = read(p / "manifest/shots.json")
         fmt = copy.deepcopy(config["format"])

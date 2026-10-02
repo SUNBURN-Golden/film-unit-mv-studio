@@ -10,7 +10,7 @@ from pathlib import Path
 
 from PIL import Image
 
-from .core import FilmError, atomic_text, digest, now, object_hash, project_mutex, read, safe_path, write
+from .core import FilmError, atomic_text, digest, now, object_hash, project_mutex, read, require_legacy_profile, safe_path, write
 from .packets import aspect_ratio, compact_prompt, frame_prompt, frame_references, reference_prompt
 from .renderers import RenderBlocked
 from . import budget
@@ -131,6 +131,7 @@ def estimate(project, kind, provider, shot_ids=None):
     if kind not in KINDS:
         raise FilmError("kind must be references or frames")
     p = Path(project)
+    require_legacy_profile(p)
     provider.preflight(p)
     config = read(p / "project.yaml")
     retry, cap = config["budget"]["max_retry_per_shot"], config["budget"].get("max_usd", 0)
@@ -161,6 +162,7 @@ def estimate(project, kind, provider, shot_ids=None):
 
 def approve(project, kind, estimate_id):
     p = Path(project)
+    require_legacy_profile(p)
     current = read(p / f"render/images_{kind}_estimate.json", {})
     if not current or current.get("estimate_id") != estimate_id:
         raise FilmError("Estimate ID does not match the current image estimate")
@@ -211,6 +213,7 @@ def _import(p, kind, item, image):
 def import_reference(project, folder, key, image):
     """Attach a hand-made reference image to a character (folder 'characters') or location ('locations')."""
     p = Path(project)
+    require_legacy_profile(p)
     if folder not in {"characters", "locations"}:
         raise FilmError("folder must be characters or locations")
     name = "characters.yaml" if folder == "characters" else "locations.yaml"
@@ -224,6 +227,7 @@ def import_reference(project, folder, key, image):
 def generate(project, kind, provider):
     """Make every approved image once each; import the results."""
     p = Path(project)
+    require_legacy_profile(p)
     provider.preflight(p)
     plan = approved(p, kind, provider)
     if plan is None:

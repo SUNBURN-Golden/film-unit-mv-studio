@@ -52,6 +52,9 @@ def main(argv=None):
         if name == "snap-cut":
             p.add_argument("--to", choices=["beat", "onset"], default="beat")
             p.add_argument("--around-ms", type=int)
+    anim_init = sub.add_parser("animation-init", help="Explicitly convert a LEGACY_MV project to FRAME_ANIMATION_V1 with metadata backup; never runs implicitly")
+    anim_init.add_argument("project")
+    anim_init.add_argument("--profile", choices=["frame-animation-v1"], default="frame-animation-v1")
     packets = sub.add_parser("packets", help="Write per-shot prompts and import commands for making media by hand in subscription apps; no provider calls")
     packets.add_argument("project")
     packets.add_argument("--shots", help="Comma-separated shot IDs; default all shots")
@@ -132,6 +135,9 @@ def main(argv=None):
         elif a.command == "migrate":
             from .schema import migrate_project
             result = migrate_project(a.project)
+        elif a.command == "animation-init":
+            from .animation_migrate import animation_init
+            result = animation_init(a.project, profile=a.profile)
         elif a.command == "builds":
             from .builds import list_builds
             result = list_builds(a.project)

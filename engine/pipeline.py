@@ -1,7 +1,7 @@
 from pathlib import Path
 import copy
 import math
-from .core import FilmError, digest, frame_at, now, object_hash, probe, project_mutex, read, require_lock, validate_manifest, write
+from .core import FilmError, digest, frame_at, now, object_hash, probe, project_mutex, read, require_lock, require_legacy_profile, validate_manifest, write
 from .renderers import AwaitingRender, RenderBlocked, RenderResult, MockRenderer, get_renderer, normalize
 from . import budget, takes
 from .qc import inspect_clip
@@ -11,6 +11,7 @@ from .resolver import register_asset
 
 def prepare(project, duration_seconds=None, mode="mock", quality="final"):
     p = Path(project)
+    require_legacy_profile(p)
     config, audio = read(p / "project.yaml"), read(p / "analysis/audio.json")
     threshold = config.get("qc", {}).get("threshold")
     if type(threshold) not in {int, float} or not math.isfinite(threshold) or not 0 <= threshold <= 100:

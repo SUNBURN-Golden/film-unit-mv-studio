@@ -10,7 +10,7 @@ import json
 from pathlib import Path
 import re
 
-from .core import FilmError, atomic_text, now, object_hash, project_mutex, read, safe_path, timecode, write
+from .core import FilmError, atomic_text, now, object_hash, project_mutex, read, require_legacy_profile, safe_path, timecode, write
 
 RENDER_MODES = {"STATIC", "LIMITED_MOTION", "FULL_GENERATIVE"}
 COMPLEXITY = {"low", "medium", "high"}
@@ -219,6 +219,7 @@ def closing_warnings(shots):
 def draft(project, provider, notes="", language="English", resume=False, progress=None):
     """Ask the text provider for a proposal and save it for review. Returns the proposal."""
     p = Path(project)
+    require_legacy_profile(p)
     shots = read(p / "manifest/shots.json")
     if not shots:
         raise FilmError("먼저 제작 패키지를 만들어 샷 목록을 준비하세요")
@@ -264,6 +265,7 @@ def accept(project, reviewer):
         raise FilmError("검토자 이름을 입력하세요")
     p = Path(project)
     with project_mutex(p):
+        require_legacy_profile(p)
         proposal = pending(p)
         shots = read(p / "manifest/shots.json")
         if not proposal or set(proposal["shots"]) != {s["id"] for s in shots}:

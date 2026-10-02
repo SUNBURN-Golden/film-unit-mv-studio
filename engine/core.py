@@ -189,6 +189,24 @@ def validate_manifest(shots, duration_ms, fps=24):
         raise FilmError("Manifest must cover the full measured audio duration")
 
 
+def production_profile(config):
+    """Absent or LEGACY_MV keeps the current ms path; anything else is not legacy."""
+    return config.get("production_profile") or "LEGACY_MV"
+
+
+def require_legacy_profile(p):
+    """Block legacy mutating paths on projects converted to FRAME_ANIMATION_V1.
+
+    Reading preserved files and replaying saved Build 1 directories stays
+    available; new legacy builds, edits, takes, reviews, locks and paid
+    generation require a legacy-profile project.
+    """
+    config = read(Path(p) / "project.yaml")
+    if production_profile(config) != "LEGACY_MV":
+        raise FilmError("This project uses FRAME_ANIMATION_V1; the legacy ms production path does not apply")
+    return config
+
+
 def visual_context_fingerprint(p):
     """Shared visual intent; no cut positions, shot images or subtitle timing.
 
@@ -232,6 +250,7 @@ def production_fingerprint(p):
 
 def lock_production(p, reviewer, mock_only=False):
     p = Path(p)
+    require_legacy_profile(p)
     shots = read(p / "manifest/shots.json")
     audio = read(p / "analysis/audio.json")
     validate_manifest(shots, audio["duration_ms"], read(p / "project.yaml")["format"]["fps"])

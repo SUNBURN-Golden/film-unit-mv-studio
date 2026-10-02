@@ -30,6 +30,7 @@ legacy contracts; mode and approval migration is explicit.
 | `manifest/shots.json` | Visual order, absolute cut boundaries and direction |
 | `lyrics/lyrics_timed.json` | Independent, source-bound cue timing and review |
 | `builds/B####/build.json` | Captured selection, hashes, format, warnings and build identity |
+| `timeline/edit.json` | FRAME_ANIMATION_V1 canonical source timeline (converted projects only) |
 
 Audio analysis yields measured duration, estimated tempo/beats/onsets and feature-change candidates. It does not identify sung words or invent verse labels. Absolute milliseconds map to frames with `frame_at(ms) = floor((ms * fps + 500) / 1000)`. Each clip receives the difference between mapped global boundaries. The source audio remains on its original timeline; its file hash is checked around compilation. AAC export is lossy even though source bytes remain unchanged.
 
@@ -40,6 +41,7 @@ Audio analysis yields measured duration, estimated tempo/beats/onsets and featur
 | `core.py`, `audio.py` | Atomic metadata, bounded paths, master hashes, production LOCK, frame clock, measured audio analysis |
 | `production.py`, `presets/` | Neutral editable package, explicit water_please preset, beat-snapped draft cuts and technical storyboard slates |
 | `schema.py` | Separate data versions; explicit, backed-up legacy metadata migration |
+| `animation_schema.py`, `animation_migrate.py` | CANON_JSON_V1 documents, animation_timeline validation, explicit `animation-init` conversion |
 | `lyrics.py` | Exact source mapping, explicit repeats, reviewed cues, ASS/SRT, font coverage and burn-in |
 | `timeline.py` | Split, merge, move and snap cuts without moving lyric cues |
 | `resolver.py` | Hash-bound existing take selection and Final review binding |
@@ -82,6 +84,8 @@ A complete build records output and input SHA-256 inventory, shot-level source/c
 Split preserves the left ID and allocates a new right ID. Merge accepts adjacent shots in the same sequence and retains the left direction/reference. Moving/snapping a cut preserves full-duration coverage and rejects sub-frame shots. Affected selections and QC state become stale; the production fingerprint requires renewed review. Timeline operations never rewrite lyrics or prior builds.
 
 New projects declare project schema 3, shot schema 2, lyrics schema 1, build schema 1 and audio schema 1 separately from package 0.3.0. Explicit `migrate_project()` backs up original project metadata and updates version declarations. Legacy shot fields are compatible and remain byte-for-byte unchanged; missing optional fields use consumer defaults. Master files, storyboards, paid takes and LOCK records are preserved. Migration neither fabricates review nor authorizes changed production content. Unsupported future versions are rejected.
+
+`production_profile` selects the editing contract: absent or `LEGACY_MV` keeps the millisecond path, and `FRAME_ANIMATION_V1` is set only by the explicit `animation-init` command — never by opening, reading or `migrate_project()`. `animation-init` backs up `project.yaml`, `manifest/`, `analysis/` and `lyrics/` under `migrations/animation-init-<sha>/` with exclusive creation, maps each ms boundary once through `frame_at` (reporting off-grid remainders and refusing sub-one-frame shots), and writes `timeline/edit.json` as CANON_JSON_V1 with `sequence_revision` null, zero handles and HARD_CUT/overlap-0 transitions so the preserved edit changes nothing visually. `timeline/derived.json` is a recalculated view, never a truth source. Twos, crossfades, motion intent and production routes are never inferred. No legacy review or LOCK becomes a new-mode approval; the conversion itself creates none. On a converted project the legacy mutating paths (compile, timeline edits, LOCK, asset/frame/reference import, package, storyboard generation, audio re-analysis, prepare, director draft/accept and handoff proposal submissions, image generation, budget approval, takes, economy, QC review) fail fast via `require_legacy_profile`, while preserved files, legacy manifests, shared lyric documents and Build 1 verify/replay keep reading normally.
 
 ## Generation and QC retained
 

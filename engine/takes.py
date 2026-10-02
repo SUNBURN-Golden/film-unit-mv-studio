@@ -2,7 +2,7 @@
 from pathlib import Path
 import math
 import shutil
-from .core import FilmError, digest, object_hash, probe, read, safe_path, write
+from .core import FilmError, digest, object_hash, probe, read, require_legacy_profile, safe_path, write
 from .renderers import RenderBlocked, build_prompt
 
 
@@ -57,6 +57,7 @@ def edit_start(project, job_id, raw):
 def select_window(project, shot_id, source_in_ms, notes):
     """Select a later clean window, bound to the current take. No retiming/freeze."""
     p = Path(project)
+    require_legacy_profile(p)
     if type(source_in_ms) is not int or source_in_ms < 0 or not notes.strip():
         raise FilmError("Supply a nonnegative integer source-in and concrete edit notes")
     report = read(p / "qc/report.json")

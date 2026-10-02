@@ -20,6 +20,20 @@ SCHEMA_VERSIONS = {
     "audio": AUDIO_SCHEMA,
 }
 
+# FRAME_ANIMATION_V1 declarations (ADR 0001): produced only by the explicit
+# animation-init conversion. The legacy readers above keep rejecting version 4.
+ANIMATION_PROFILE = "FRAME_ANIMATION_V1"
+ANIMATION_PROJECT_SCHEMA = 4
+ANIMATION_SHOT_SCHEMA = 3
+ANIMATION_BUILD_SCHEMA = 2
+ANIMATION_SCHEMA_VERSIONS = {
+    "project": ANIMATION_PROJECT_SCHEMA,
+    "shot": ANIMATION_SHOT_SCHEMA,
+    "lyrics": LYRICS_SCHEMA,
+    "audio": AUDIO_SCHEMA,
+    "build": ANIMATION_BUILD_SCHEMA,
+}
+
 
 def schema_metadata():
     """Use a fresh mapping for every project; package versions are unrelated."""
