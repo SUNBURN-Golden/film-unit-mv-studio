@@ -6,6 +6,7 @@ All remote execution is the explicit fake — no network, no credentials.
 Fake receipts are labelled FAKE_REMOTE and the route stays UNQUALIFIED.
 """
 import hashlib
+import itertools
 import threading
 
 import pytest
@@ -22,6 +23,7 @@ from engine.execution_workers import (Coordinator, TRANSITIONS,
                                       make_receipt)
 from engine.execution_workers.fake_remote import FakeRemoteWorker
 from engine.execution_workers.local import LocalWorker
+from engine.storage_backends import ConnectionDropped
 
 
 def remote(tmp_path, **kwargs):
@@ -364,21 +366,244 @@ def test_reconcile_not_found_keeps_pending_verify_coverage(tmp_path):
     assert c.verify_outputs(keys[0]) == "VERIFIED"
 
 
-def test_resume_never_discards_pending_verify_coverage(tmp_path):
-    """A failure confirmed after the completion was confirmed leaves the
-    stored coverage pending verification — resume_failed refuses rather
-    than clearing it."""
-    c, worker, plan, keys = remote(tmp_path)
-    worker.auto_complete = True
-    drive(c, worker, keys[0], plan, verify=False)
-    job = c.jobs[keys[0]]
+# -- completion confirmed first: no later worker answer ends it --------------
+
+class ScriptedWorker(FakeRemoteWorker):
+    """Fake remote whose status/cancel answers are scripted per call.
+
+    `answer` is None (normal fake behaviour) or one of COMPLETE (replay
+    the original COMPLETE receipts), CANCELLED (with a CANCEL_CONFIRMED
+    receipt), NOT_FOUND, FAILED (with a FAILED_CONFIRMED receipt) or DROP
+    (ConnectionDropped). Receipts stay bound to the real attempt even
+    after the worker lost the job.
+    """
+
+    def __init__(self, **kwargs):
+        super().__init__(auto_complete=True, **kwargs)
+        self.answer = None
+        self._packets = {}
+        self._completes = {}
+
+    def submit(self, packet, now_ms=0):
+        accepted = super().submit(packet, now_ms=now_ms)
+        rid = packet["request_id"]
+        self._packets[rid] = packet
+        self._completes[rid] = [r for r in self._jobs[rid]["receipts"]
+                                if r["kind"] == "COMPLETE"]
+        return accepted
+
+    def _scripted(self, request_id):
+        packet = self._packets[request_id]
+        if self.answer == "DROP":
+            raise ConnectionDropped("scripted: worker unreachable")
+        if self.answer == "COMPLETE":
+            return "COMPLETE", [dict(r) for r in self._completes[request_id]]
+        if self.answer == "CANCELLED":
+            return "CANCELLED", [self._receipt(
+                packet, "CANCEL_CONFIRMED", packet["output_range"])]
+        if self.answer == "FAILED":
+            return "FAILED", [self._receipt(
+                packet, "FAILED_CONFIRMED", packet["output_range"])]
+        assert self.answer == "NOT_FOUND"
+        return "NOT_FOUND", []
+
+    def status(self, request_id):
+        if self.answer is None:
+            return super().status(request_id)
+        state, receipts = self._scripted(request_id)
+        return {"state": state, "receipts": receipts}
+
+    def cancel(self, request_id):
+        if self.answer is None:
+            return super().cancel(request_id)
+        state, receipts = self._scripted(request_id)
+        outcome = "COMPLETED_FIRST" if state == "COMPLETE" else state
+        return {"outcome": outcome, "receipts": receipts}
+
+
+def confirmed(tmp_path):
+    """A remote job holding its full, collected receipt set."""
+    c = coordinator(tmp_path)
+    worker = ScriptedWorker()
+    plan = remote_plan()
+    key = c.plan_jobs(plan)[0]
+    drive(c, worker, key, plan, verify=False)
+    job = c.jobs[key]
+    assert job["state"] == "OUTPUT_PENDING_VERIFY"
+    return c, worker, plan, key, job
+
+
+def assert_completion_kept(job, covered, members):
+    assert job["state"] != "CANCEL_CONFIRMED"
+    assert job["state"] != "FAILED_CONFIRMED" or job.get("verify_failed")
+    assert job["covered"] == covered and job["members"] == members
+
+
+def seal_verified(c, key):
+    assert c.verify_outputs(key) == "VERIFIED"
+    c.seal(key)
+    assert c.jobs[key]["state"] == "ARCHIVED"
+
+
+def test_lost_worker_cancel_not_found_keeps_completion(tmp_path):
+    """Receipts collected -> worker lost -> cancel answered NOT_FOUND:
+    the confirmed completion returns to OUTPUT_PENDING_VERIFY."""
+    c, worker, plan, key, job = confirmed(tmp_path)
+    worker.lose(job["request_id"])
+    assert c.request_cancel(worker, key) == "OUTPUT_PENDING_VERIFY"
+    assert job["covered"] == [job["output_range"]]
+    assert job["worker_observations"][-1]["answer"] == "NOT_FOUND"
+    seal_verified(c, key)
+
+
+def test_cancel_answered_cancelled_keeps_completion(tmp_path):
+    c, worker, plan, key, job = confirmed(tmp_path)
+    worker.answer = "CANCELLED"
+    assert c.request_cancel(worker, key) == "OUTPUT_PENDING_VERIFY"
+    assert job["covered"] == [job["output_range"]]
+    seal_verified(c, key)
+
+
+@pytest.mark.parametrize("answer", ["NOT_FOUND", "CANCELLED"])
+def test_reconcile_cancel_requested_keeps_completion(tmp_path, answer):
+    """The coordinator died while its cancel was in flight: the reloaded
+    CANCEL_REQUESTED job holds full coverage, so a CANCELLED/NOT_FOUND
+    status returns it to OUTPUT_PENDING_VERIFY, never CANCEL_CONFIRMED."""
+    c, worker, plan, key, job = confirmed(tmp_path)
+
+    def crash(request_id):
+        raise FilmError("coordinator died mid-cancel")
+
+    worker.cancel = crash
+    with pytest.raises(FilmError, match="mid-cancel"):
+        c.request_cancel(worker, key)
+    del worker.cancel
+    c2 = Coordinator(tmp_path / "state")
+    assert c2.jobs[key]["state"] == "CANCEL_REQUESTED"
+    if answer == "NOT_FOUND":
+        worker.lose(job["request_id"])
+    else:
+        worker.answer = answer
+    assert c2.reconcile(worker, key) == "OUTPUT_PENDING_VERIFY"
+    assert c2.jobs[key]["covered"] == [job["output_range"]]
+    seal_verified(c2, key)
+
+
+def test_failed_receipt_after_completion_stays_pending_verify(tmp_path):
+    """A FAILED_CONFIRMED receipt after confirmed completion is an
+    observation; the coordinator's verification decides."""
+    c, worker, plan, key, job = confirmed(tmp_path)
     worker.fail(job["request_id"])
-    c.collect(worker, keys[0])
-    assert job["state"] == "FAILED_CONFIRMED"
+    assert c.collect(worker, key) == "OUTPUT_PENDING_VERIFY"
     assert job["covered"] == [job["output_range"]]
-    with pytest.raises(FilmError, match="RESUME_REFUSED"):
-        c.resume_failed(worker, keys[0], user_continued=True, plan=plan)
+    assert job["worker_observations"][-1]["answer"] == "FAILED_CONFIRMED"
+    seal_verified(c, key)
+
+
+def test_failed_status_after_completion_stays_pending_verify(tmp_path):
+    c, worker, plan, key, job = confirmed(tmp_path)
+    worker.answer = "FAILED"
+    assert c.reconcile(worker, key) == "OUTPUT_PENDING_VERIFY"
+    seal_verified(c, key)
+
+
+def test_corrupt_full_coverage_fails_verify_then_resumes(tmp_path):
+    """Full coverage with corrupt members: only verify_outputs fails it,
+    with verify_failed set, and resume_failed starts a new attempt."""
+    c, worker, plan, keys = remote(tmp_path)
+    key = keys[0]
+    job = c.jobs[key]
+    c.reserve(key)
+    c.submit(worker, key, frame_contract=dict(CONTRACT))
+    bad = [{"frame_index": i, "sha256": RECIPE}
+           for i in range(*job["output_range"])]
+    c.receive_receipt(receipt_for(job, "COMPLETE", job["output_range"],
+                                  members=bad), worker)
+    worker.fail(job["request_id"])
+    assert c.collect(worker, key) == "OUTPUT_PENDING_VERIFY"
+    assert c.verify_outputs(key) == "FAILED_CONFIRMED"
+    assert job["verify_failed"] is True
+    attempt = job["attempt_id"]
+    assert c.resume_failed(worker, key, user_continued=True,
+                           plan=plan) == "RUNNING"
+    assert job["attempt_id"] == attempt + 1
+    assert job["covered"] == [] and "verify_failed" not in job
+
+
+def test_complete_while_submitting_promotes_to_pending_verify(tmp_path):
+    """A COMPLETE receipt that completes coverage while SUBMITTING walks
+    SUBMITTING -> RUNNING -> OUTPUT_PENDING_VERIFY via _set_state."""
+    c = coordinator(tmp_path)
+    worker = FakeRemoteWorker()
+    plan = remote_plan(transfer_route="MANUAL_PACKET", edges=[])
+    key = c.plan_jobs(plan)[0]
+    c.reserve(key)
+    c.waiting_user(key)
+    c.attach_resume(key, frame_contract=dict(CONTRACT))
+    job = c.jobs[key]
+    seen = []
+    real = c._set_state
+
+    def spy(j, target, why):
+        seen.append((j["state"], target))
+        real(j, target, why)
+
+    c._set_state = spy
+    c.receive_receipt(receipt_for(
+        job, "COMPLETE", job["output_range"],
+        members=members_for(c, job, job["output_range"])), worker)
+    assert seen == [("SUBMITTING", "RUNNING"),
+                    ("RUNNING", "OUTPUT_PENDING_VERIFY")]
+    assert job["state"] == "OUTPUT_PENDING_VERIFY"
+    seal_verified(c, key)
+
+
+def test_failure_confirmation_with_confirmed_completion_is_refused(
+        tmp_path):
+    """Backstop: no code path can put confirmed, unverified coverage in
+    FAILED_CONFIRMED or CANCEL_CONFIRMED — the resume dead end cannot
+    form."""
+    c, worker, plan, key, job = confirmed(tmp_path)
+    with pytest.raises(FilmError, match="COMPLETION_CONFIRMED_FIRST"):
+        c._set_state(job, "FAILED_CONFIRMED", "test")
+    c._set_state(job, "CANCEL_REQUESTED", "test")
+    with pytest.raises(FilmError, match="COMPLETION_CONFIRMED_FIRST"):
+        c._set_state(job, "CANCEL_CONFIRMED", "test")
+    assert job["state"] == "CANCEL_REQUESTED"
     assert job["covered"] == [job["output_range"]]
+
+
+WORKER_ANSWERS = ["COMPLETE", "CANCELLED", "NOT_FOUND", "FAILED", "DROP"]
+ANSWER_SEQUENCES = [seq for n in (1, 2, 3)
+                    for seq in itertools.product(WORKER_ANSWERS, repeat=n)]
+
+
+@pytest.mark.parametrize("first", ["cancel", "reconcile"])
+@pytest.mark.parametrize("sequence", ANSWER_SEQUENCES,
+                         ids=["-".join(s) for s in ANSWER_SEQUENCES])
+def test_no_worker_answer_ends_confirmed_completion(tmp_path, sequence,
+                                                    first):
+    """Property: after full coverage, any sequence of worker answers via
+    cancel or reconcile never yields CANCEL_CONFIRMED, never
+    FAILED_CONFIRMED without verify_failed, and never loses coverage; a
+    healthy reconcile then verifies and seals."""
+    c, worker, plan, key, job = confirmed(tmp_path)
+    covered, members = [list(r) for r in job["covered"]], dict(job["members"])
+    for index, answer in enumerate(sequence):
+        worker.answer = answer
+        cancel = job["state"] == "OUTPUT_PENDING_VERIFY" and (
+            (index % 2 == 0) == (first == "cancel"))
+        if cancel:
+            c.request_cancel(worker, key)
+        else:
+            c.reconcile(worker, key)
+        assert_completion_kept(job, covered, members)
+        assert job["state"] in {"OUTPUT_PENDING_VERIFY", "UNKNOWN"}
+    worker.answer = "COMPLETE"
+    assert c.reconcile(worker, key) == "OUTPUT_PENDING_VERIFY"
+    c2 = Coordinator(tmp_path / "state")
+    assert_completion_kept(c2.jobs[key], covered, members)
+    seal_verified(c2, key)
 
 
 def test_verify_failed_attempt_resume_clears_coverage(tmp_path):

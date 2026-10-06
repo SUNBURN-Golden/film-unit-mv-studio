@@ -27,7 +27,10 @@ State machine is exactly schema §13 — only the listed transitions exist:
 
 UNKNOWN fences reservation release, substitute workers and new attempts.
 A completion confirmed before a cancel lands in OUTPUT_PENDING_VERIFY —
-cancel is never a reason to drop output or reservations. A worker's
+cancel is never a reason to drop output or reservations. More generally,
+once a complete receipt set is held no later worker answer (cancel,
+NOT_FOUND, failure) confirms a cancel or failure or discards coverage;
+only the coordinator's verify_outputs ends it. A worker's
 COMPLETE statement is never promoted to VERIFIED without the
 coordinator's independent verification. A new attempt after
 FAILED_CONFIRMED starts only through an explicit user resume inside the
@@ -48,6 +51,7 @@ reconciliation — never by resubmitting.
 from pathlib import Path
 import hashlib
 import json
+import logging
 import threading
 import time
 import uuid
@@ -107,6 +111,13 @@ FORBIDDEN_PACKET_KEYS = {"oauth_token", "refresh_token", "access_token",
 
 UNKNOWN_FENCED = {"submit", "release_reservation", "substitute",
                   "new_attempt"}
+
+# Worker answers that would cancel or fail a job. Once the completion is
+# confirmed first they are observations only — never a state change.
+ADVERSE_ANSWERS = {"CANCELLED", "NOT_FOUND", "FAILED", "FAILED_CONFIRMED",
+                   "CANCEL_CONFIRMED"}
+
+log = logging.getLogger(__name__)
 
 
 def _sha(value, what):
@@ -521,6 +532,15 @@ class Coordinator:
             raise FilmError(
                 f"Illegal job transition {job['state']} -> {target} "
                 f"({why})")
+        if target in {"CANCEL_CONFIRMED", "FAILED_CONFIRMED"} \
+                and self._completion_confirmed(job):
+            # Backstop for the completion-confirmed-first rule: only the
+            # coordinator's own failed verification (verify_failed) ends
+            # confirmed coverage, so FAILED_CONFIRMED never wedges.
+            raise FilmError(
+                f"COMPLETION_CONFIRMED_FIRST: {job['state']} -> {target} "
+                f"refused ({why}); the confirmed completion goes to "
+                f"OUTPUT_PENDING_VERIFY")
         job["state"] = target
         # Completion confirmation (exec/storage §3.1, evolution
         # §2.1.1), termination and failure confirmations void the
@@ -530,6 +550,38 @@ class Coordinator:
                       "FAILED_CONFIRMED"} and job.get("grant_digest"):
             self.revoked_grants.add(job["grant_digest"])
             self._nonces.pop(job["job_key"], None)
+
+    def _completion_confirmed(self, job):
+        """A complete, valid receipt set for this attempt is held and the
+        coordinator's own verification has not rejected it."""
+        return self._complete(job) and not job.get("verify_failed")
+
+    def _hold_confirmed_completion(self, job, answer):
+        """The completion-confirmed-first rule, for every worker answer.
+
+        Returns False when no completion is confirmed — the caller applies
+        the answer normally. Otherwise the job goes to (or stays in)
+        OUTPUT_PENDING_VERIFY through the listed transitions, coverage is
+        kept, a cancel/failure answer is recorded only as an observation,
+        and True tells the caller to apply nothing else: only
+        verify_outputs decides VERIFIED or FAILED_CONFIRMED.
+        """
+        if not self._completion_confirmed(job):
+            return False
+        why = f"completion confirmed first; worker answered {answer}"
+        if job["state"] == "SUBMITTING":
+            self._set_state(job, "RUNNING", why)
+        if job["state"] in {"RUNNING", "UNKNOWN", "CANCEL_REQUESTED"}:
+            self._set_state(job, "OUTPUT_PENDING_VERIFY", why)
+        if answer in ADVERSE_ANSWERS:
+            job.setdefault("worker_observations", []).append(
+                {"answer": answer, "state": job["state"],
+                 "attempt_id": job["attempt_id"]})
+            log.warning("job %s attempt %s: worker answered %s after its "
+                        "completion was confirmed; kept in %s",
+                        job["job_key"], job["attempt_id"], answer,
+                        job["state"])
+        return True
 
     def _fence_unknown(self, job, action):
         if action in UNKNOWN_FENCED and job["state"] in {
@@ -805,27 +857,24 @@ class Coordinator:
                                 "already covered")
             record = dict(receipt)
             job["receipts"].append(record)
-            if receipt["kind"] in {"ACCEPTED", "RUNNING"}:
+            kind = receipt["kind"]
+            if kind == "COMPLETE":
+                job["covered"].append(rng)
+                for member in receipt["members"]:
+                    job["members"][str(member["frame_index"])] = member["sha256"]
+            if self._hold_confirmed_completion(job, kind):
+                pass
+            elif kind in {"ACCEPTED", "RUNNING"}:
                 if job["state"] == "SUBMITTING":
                     self._set_state(job, "RUNNING", "worker accepted")
                 elif job["state"] == "UNKNOWN":
                     self._set_state(job, "RUNNING",
                                     "existing job confirmed")
-            elif receipt["kind"] == "COMPLETE":
-                job["covered"].append(rng)
-                for member in receipt["members"]:
-                    job["members"][str(member["frame_index"])] = member["sha256"]
-                if self._complete(job):
-                    if job["state"] in {"RUNNING", "UNKNOWN",
-                                        "CANCEL_REQUESTED"}:
-                        self._set_state(job, "OUTPUT_PENDING_VERIFY",
-                                        "full coverage confirmed")
-            elif receipt["kind"] == "FAILED_CONFIRMED":
-                if job["state"] in {"RUNNING", "OUTPUT_PENDING_VERIFY",
-                                    "UNKNOWN"}:
+            elif kind == "FAILED_CONFIRMED":
+                if job["state"] in {"RUNNING", "UNKNOWN"}:
                     self._set_state(job, "FAILED_CONFIRMED",
                                     "failure confirmed")
-            elif receipt["kind"] == "CANCEL_CONFIRMED":
+            elif kind == "CANCEL_CONFIRMED":
                 if job["state"] in {"CANCEL_REQUESTED", "UNKNOWN"}:
                     self._set_state(job, "CANCEL_CONFIRMED",
                                     "termination confirmed")
@@ -966,23 +1015,21 @@ class Coordinator:
             return job["state"]
         with self._lock:
             self._drain(outcome.get("receipts", ()), worker)
-            if job["state"] == "CANCEL_REQUESTED":
-                answered = outcome.get("outcome")
-                if answered in {"CANCELLED", "NOT_FOUND"}:
-                    # 종료 또는 미접수 확인: termination or never-accepted
-                    # is a confirmed cancel, not a refund record.
-                    self._set_state(job, "CANCEL_CONFIRMED",
-                                    "worker confirmed termination or "
-                                    "never-accepted")
-                elif answered == "COMPLETED_FIRST" \
-                        and self._complete(job):
-                    # 완료가 먼저 확정: a completion confirmed before the
-                    # cancel is verified, never dropped — whether the
-                    # receipts just drained or were already collected.
-                    self._set_state(job, "OUTPUT_PENDING_VERIFY",
-                                    "completion was confirmed before the "
-                                    "cancel")
-                # RUNNING: cancel still in flight; explicit reconcile.
+            answered = outcome.get("outcome")
+            if self._hold_confirmed_completion(job, answered):
+                # 완료가 먼저 확정: a completion confirmed before the
+                # cancel is verified, never dropped — whatever the worker
+                # answers and whether the receipts just drained or were
+                # already collected.
+                pass
+            elif job["state"] == "CANCEL_REQUESTED" \
+                    and answered in {"CANCELLED", "NOT_FOUND"}:
+                # 종료 또는 미접수 확인: termination or never-accepted
+                # is a confirmed cancel, not a refund record.
+                self._set_state(job, "CANCEL_CONFIRMED",
+                                "worker confirmed termination or "
+                                "never-accepted")
+            # RUNNING: cancel still in flight; explicit reconcile.
             self._persist()
             return job["state"]
 
@@ -1027,25 +1074,19 @@ class Coordinator:
             self._drain(report.get("receipts", ()), worker)
             state = report.get("state")
             current = job["state"]
-            if state == "COMPLETE":
+            if self._hold_confirmed_completion(job, state):
+                # Stored receipts confirm the completion: whatever the
+                # worker now says (COMPLETE, CANCELLED, NOT_FOUND, FAILED)
+                # the coverage is kept for the coordinator's verification.
+                pass
+            elif state == "COMPLETE":
                 # A COMPLETE statement promotes only on coverage confirmed
                 # by stored receipts — never on the worker's word alone.
-                if current in {"RUNNING", "UNKNOWN", "CANCEL_REQUESTED"} \
-                        and self._complete(job):
-                    self._set_state(job, "OUTPUT_PENDING_VERIFY",
-                                    "reconciled: existing completion "
-                                    "confirmed")
+                pass
             elif state == "NOT_FOUND":
                 if current == "CANCEL_REQUESTED":
                     self._set_state(job, "CANCEL_CONFIRMED",
                                     "reconciled: never accepted")
-                elif current == "UNKNOWN" and self._complete(job):
-                    # The job fell back from OUTPUT_PENDING_VERIFY and
-                    # already holds full stored coverage — a NOT_FOUND
-                    # answer cannot discard a confirmed completion.
-                    self._set_state(job, "OUTPUT_PENDING_VERIFY",
-                                    "reconciled: stored completion "
-                                    "coverage kept for verification")
                 elif current in {"UNKNOWN", "RUNNING"}:
                     self._set_state(job, "FAILED_CONFIRMED",
                                     "reconciled: never accepted or lost")
@@ -1056,8 +1097,7 @@ class Coordinator:
                     "UNKNOWN", "CANCEL_REQUESTED"}:
                 self._set_state(job, "CANCEL_CONFIRMED",
                                 "reconciled: termination confirmed")
-            elif state == "FAILED" and current in {
-                    "RUNNING", "UNKNOWN", "OUTPUT_PENDING_VERIFY"}:
+            elif state == "FAILED" and current in {"RUNNING", "UNKNOWN"}:
                 self._set_state(job, "FAILED_CONFIRMED",
                                 "reconciled: failure confirmed")
             self._persist()
@@ -1089,10 +1129,11 @@ class Coordinator:
                 if other["state"] == "UNKNOWN":
                     raise FilmError("RESUME_REFUSED: an UNKNOWN job is "
                                     "still fenced")
-            if self._complete(job) and not job.get("verify_failed"):
+            if self._completion_confirmed(job):
                 # A confirmed completion still pending verification is
                 # never discarded — reconcile keeps it under
                 # OUTPUT_PENDING_VERIFY and a resume cannot erase it.
+                # _set_state makes this unreachable for new transitions.
                 raise FilmError("RESUME_REFUSED: the job holds a "
                                 "confirmed completion pending "
                                 "verification")
