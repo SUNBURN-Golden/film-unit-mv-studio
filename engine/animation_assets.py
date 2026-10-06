@@ -29,7 +29,11 @@ REGISTRY_TYPE = "animation_asset_registry"
 ASSET_ROOT = "animation/assets"
 ASSET_ID = re.compile(r"A[0-9]{4,}")
 SHA256 = re.compile(r"[0-9a-f]{64}")
-IMPLEMENTED_KINDS = {"FRAME_SEQUENCE", "LAYER_RGBA"}
+IMPLEMENTED_KINDS = {"FRAME_SEQUENCE", "COMPOSITE_SEQUENCE", "LAYER_RGBA",
+                     "MASK", "REPLACEMENT_DRAWING", "RIG_SPEC"}
+# Kinds that can satisfy a shot's assigned sequence (contiguous frame members).
+SEQUENCE_KINDS = {"FRAME_SEQUENCE", "COMPOSITE_SEQUENCE"}
+ASSIGNABLE_KINDS = set(SEQUENCE_KINDS)
 # Only lossless PNG is accepted for imported frames/layers in v1: re-encoding
 # would risk silent alpha or pixel loss before any recipe records it.
 ALLOWED_SUFFIX = {".png"}
@@ -40,9 +44,23 @@ RECORD_COMMON = {"asset_id", "revision", "kind", "provenance", "files",
                  "preparation", "acceptance"}
 SEQUENCE_FIELDS = {"canvas", "exposure_recipe_ref", "composite_recipe_ref"}
 LAYER_FIELDS = {"alpha", "canvas", "crop_origin", "pivot", "z_order"}
+MASK_FIELDS = {"alpha", "canvas", "target", "region", "channel"}
+REPLACEMENT_FIELDS = {"alpha", "canvas", "replaces", "frame", "rig"}
+RIG_FIELDS = {"spec"}
+KIND_EXTRA = {"FRAME_SEQUENCE": SEQUENCE_FIELDS,
+              "COMPOSITE_SEQUENCE": SEQUENCE_FIELDS,
+              "LAYER_RGBA": LAYER_FIELDS,
+              "MASK": MASK_FIELDS,
+              "REPLACEMENT_DRAWING": REPLACEMENT_FIELDS,
+              "RIG_SPEC": RIG_FIELDS}
 FILE_FIELDS = {"relative_name", "sha256", "byte_length", "frame_index",
                "source_name"}
 ASSIGNMENT_FIELDS = {"asset_id", "revision", "content_sha256", "kind"}
+PIN_FIELDS = {"asset_id", "revision", "content_sha256"}
+MASK_CHANNELS = {"ALPHA", "LUMINANCE"}
+RIG_SPEC_KEYS = {"layers", "children", "reference_points",
+                 "occlusion_order"}
+RIG_LAYER_KEYS = {"id", "parent", "asset", "z_order", "transforms"}
 
 
 def _empty_registry():
@@ -74,6 +92,27 @@ def _point(value, what):
     return value
 
 
+def _pin(value, what):
+    """An asset pin: asset_id + revision + content_sha256, nothing else."""
+    if type(value) is not dict or set(value.keys()) != PIN_FIELDS:
+        raise FilmError(f"{what} must be an asset pin "
+                        "{asset_id, revision, content_sha256}")
+    if not ASSET_ID.fullmatch(value["asset_id"]
+                              if type(value["asset_id"]) is str else ""):
+        raise FilmError(f"{what} asset_id must be an A0001-style identifier")
+    _int(value["revision"], f"{what} revision", 1)
+    _sha(value["content_sha256"], f"{what} content_sha256")
+    return value
+
+
+def _canvas(value, what="canvas"):
+    if (type(value) is not dict or type(value.get("width")) is not int
+            or type(value.get("height")) is not int
+            or value["width"] < 1 or value["height"] < 1):
+        raise FilmError(f"{what} must hold positive integer width/height")
+    return value
+
+
 def _content_fields(record):
     """The hashable identity of a revision: member hashes and content geometry.
 
@@ -86,13 +125,23 @@ def _content_fields(record):
     content = {"kind": record["kind"], "members": members,
                "coordinate_space": record["coordinate_space"],
                "canvas": record.get("canvas")}
-    if record["kind"] == "FRAME_SEQUENCE":
+    if record["kind"] in SEQUENCE_KINDS:
         content.update({"exposure_recipe_ref": record["exposure_recipe_ref"],
                         "composite_recipe_ref": record["composite_recipe_ref"]})
     elif record["kind"] == "LAYER_RGBA":
         content.update({"alpha": {"present": record["alpha"]["present"]},
                         "crop_origin": record["crop_origin"],
                         "pivot": record["pivot"], "z_order": record["z_order"]})
+    elif record["kind"] == "MASK":
+        content.update({"alpha": {"present": record["alpha"]["present"]},
+                        "target": record["target"], "region": record["region"],
+                        "channel": record["channel"]})
+    elif record["kind"] == "REPLACEMENT_DRAWING":
+        content.update({"alpha": {"present": record["alpha"]["present"]},
+                        "replaces": record["replaces"],
+                        "frame": record["frame"], "rig": record["rig"]})
+    elif record["kind"] == "RIG_SPEC":
+        content["spec"] = record["spec"]
     return content
 
 
@@ -100,7 +149,7 @@ def content_digest(record):
     return hashlib.sha256(canon_bytes(_content_fields(record))).hexdigest()
 
 
-def _check_files(files, require_frames):
+def _check_files(files, require_frames, kind="sequence"):
     if type(files) is not list or not files:
         raise FilmError("Asset record must list at least one file")
     seen = set()
@@ -117,7 +166,86 @@ def _check_files(files, require_frames):
                 raise FilmError("Duplicate frame_index in files[]")
             seen.add(index)
     if require_frames and seen != set(range(len(files))):
-        raise FilmError("FRAME_SEQUENCE frame_index values must be 0..N-1 without gaps")
+        raise FilmError(f"{kind} frame_index values must be 0..N-1 without gaps")
+
+
+def validate_rig_spec(spec):
+    """Structural contract of a RIG_SPEC body (schema §4).
+
+    The spec records the layer hierarchy (부모/자식), reference points
+    (기준점), each layer's allowed transforms (허용 변형) and the explicit
+    occlusion order (가림 순서). Registry cross-checks — pins resolving to
+    LAYER_RGBA revisions, z_order agreeing with occlusion order — happen in
+    `validate_registry`'s cross-reference pass.
+    """
+    if type(spec) is not dict or set(spec.keys()) != RIG_SPEC_KEYS:
+        raise FilmError(f"RIG_SPEC spec must hold {sorted(RIG_SPEC_KEYS)}")
+    layers = spec["layers"]
+    if type(layers) is not list or not layers:
+        raise FilmError("RIG_SPEC layers must be a non-empty list")
+    ids = []
+    for index, layer in enumerate(layers):
+        what = f"rig layer {index}"
+        if type(layer) is not dict or set(layer.keys()) != RIG_LAYER_KEYS:
+            raise FilmError(f"{what} must hold {sorted(RIG_LAYER_KEYS)}")
+        if type(layer["id"]) is not str or not layer["id"]:
+            raise FilmError(f"{what} id must be a non-empty string")
+        ids.append(layer["id"])
+        if layer["parent"] is not None and type(layer["parent"]) is not str:
+            raise FilmError(f"{what} parent must be a layer id or null")
+        _pin(layer["asset"], f"{what} asset")
+        _int(layer["z_order"], f"{what} z_order")
+        from .motion_plan import TRANSFORM_CHANNELS
+        allowed = layer["transforms"]
+        if (type(allowed) is not list
+                or any(name not in TRANSFORM_CHANNELS for name in allowed)):
+            raise FilmError(f"{what} transforms must name v1 channels: "
+                            f"{sorted(TRANSFORM_CHANNELS)}")
+    if len(ids) != len(set(ids)):
+        raise FilmError("RIG_SPEC layer ids must be unique")
+    for layer in layers:
+        if layer["parent"] is not None and layer["parent"] not in ids:
+            raise FilmError(f"rig layer {layer['id']} names an unknown "
+                            f"parent {layer['parent']}")
+    # Parent links form a forest; a cycle would make world transforms
+    # unresolvable.
+    for layer in layers:
+        seen = set()
+        cursor = layer["id"]
+        while True:
+            parent = next(l["parent"] for l in layers if l["id"] == cursor)
+            if parent is None:
+                break
+            if parent in seen:
+                raise FilmError("RIG_SPEC hierarchy has a parent cycle")
+            seen.add(parent)
+            cursor = parent
+    children = spec["children"]
+    derived = {lid: sorted(l["id"] for l in layers if l["parent"] == lid)
+               for lid in ids}
+    if type(children) is not dict or set(children.keys()) != set(ids):
+        raise FilmError("RIG_SPEC children must map every layer id")
+    for lid in ids:
+        if sorted(children[lid]) != derived[lid]:
+            raise FilmError("RIG_SPEC children does not match the parent links")
+    points = spec["reference_points"]
+    if type(points) is not dict:
+        raise FilmError("RIG_SPEC reference_points must be an object")
+    for name, point in points.items():
+        if type(name) is not str or not name:
+            raise FilmError("RIG_SPEC reference point names must be strings")
+        if (type(point) is not dict
+                or set(point.keys()) != {"layer", "point"}
+                or point["layer"] not in ids):
+            raise FilmError(f"reference point {name} must name a rig layer")
+        _point(point["point"], f"reference point {name}")
+    order = spec["occlusion_order"]
+    if (type(order) is not list or sorted(order) != sorted(ids)):
+        raise FilmError("RIG_SPEC occlusion_order must be a permutation of "
+                        "the layer ids, back to front")
+    if len({l["z_order"] for l in layers}) != len(layers):
+        raise FilmError("RIG_SPEC layer z_order values must be unique")
+    return spec
 
 
 def _validate_record(record):
@@ -129,13 +257,14 @@ def _validate_record(record):
     kind = record.get("kind")
     if kind not in IMPLEMENTED_KINDS:
         raise FilmError(f"Unsupported asset kind: {kind}")
-    extra = {"FRAME_SEQUENCE": SEQUENCE_FIELDS, "LAYER_RGBA": LAYER_FIELDS}[kind]
+    extra = KIND_EXTRA[kind]
     if set(record.keys()) - RECORD_COMMON - extra:
         raise FilmError(f"Unknown fields on {kind} record")
     missing = (RECORD_COMMON | extra) - record.keys()
     if missing:
         raise FilmError(f"{kind} record missing fields: {sorted(missing)}")
-    _check_files(record["files"], require_frames=kind == "FRAME_SEQUENCE")
+    _check_files(record["files"], require_frames=kind in SEQUENCE_KINDS,
+                 kind=kind)
     _sha(record["content_sha256"], "content_sha256")
     if content_digest(record) != record["content_sha256"]:
         raise FilmError("content_sha256 does not match the recorded content fields")
@@ -145,17 +274,48 @@ def _validate_record(record):
         raise FilmError("provenance and preparation must be objects")
     if record["acceptance"].get("state") != "DRAFT":
         raise FilmError("Imported assets are drafts; no approval state is written by import")
-    canvas = record["canvas"]
-    if (type(canvas) is not dict or type(canvas.get("width")) is not int
-            or type(canvas.get("height")) is not int
-            or canvas["width"] < 1 or canvas["height"] < 1):
-        raise FilmError("canvas must hold positive integer width/height")
+    if kind != "RIG_SPEC":
+        _canvas(record["canvas"])
     if kind == "LAYER_RGBA":
         if record["alpha"].get("present") is not True:
             raise FilmError("LAYER_RGBA must record a preserved alpha channel")
         _point(record["crop_origin"], "crop_origin")
         _point(record["pivot"], "pivot")
         _int(record["z_order"], "z_order")
+    elif kind == "MASK":
+        _pin(record["target"], "MASK target")
+        region = record["region"]
+        if region is not None:
+            if (type(region) is not list or len(region) != 4
+                    or any(type(v) is not int for v in region)
+                    or region[2] < 1 or region[3] < 1):
+                raise FilmError("MASK region must be null or "
+                                "[x, y, width, height] with positive extent")
+        if record["channel"] not in MASK_CHANNELS:
+            raise FilmError(f"MASK channel must be one of {sorted(MASK_CHANNELS)}")
+        if type(record["alpha"]) is not dict \
+                or type(record["alpha"].get("present")) is not bool:
+            raise FilmError("MASK alpha must record a present boolean")
+        if record["channel"] == "ALPHA" \
+                and record["alpha"]["present"] is not True:
+            raise FilmError("An ALPHA-channel MASK needs a preserved alpha channel")
+    elif kind == "REPLACEMENT_DRAWING":
+        if record["alpha"].get("present") is not True:
+            raise FilmError("REPLACEMENT_DRAWING must record a preserved "
+                            "alpha channel")
+        _pin(record["replaces"], "REPLACEMENT_DRAWING replaces")
+        _int(record["frame"], "REPLACEMENT_DRAWING frame")
+        rig = record["rig"]
+        if type(rig) is not dict or set(rig.keys()) != {"pivot"}:
+            raise FilmError("REPLACEMENT_DRAWING rig must hold only 'pivot'")
+        _point(rig["pivot"], "REPLACEMENT_DRAWING rig.pivot")
+    elif kind == "RIG_SPEC":
+        validate_rig_spec(record["spec"])
+    elif kind == "COMPOSITE_SEQUENCE":
+        if type(record["composite_recipe_ref"]) is not str \
+                or not SHA256.fullmatch(record["composite_recipe_ref"]):
+            raise FilmError("COMPOSITE_SEQUENCE needs the composite recipe "
+                            "SHA-256 in composite_recipe_ref")
     return record
 
 
@@ -185,13 +345,88 @@ def validate_registry(document):
             raise FilmError("Assignment keys must be shot identifiers")
         if type(pin) is not dict or set(pin.keys()) != ASSIGNMENT_FIELDS:
             raise FilmError("Malformed assignment pin")
-        if pin["kind"] not in IMPLEMENTED_KINDS:
+        if pin["kind"] not in ASSIGNABLE_KINDS:
             raise FilmError(f"Unsupported assigned kind: {pin['kind']}")
         if not ASSET_ID.fullmatch(pin["asset_id"] if type(pin["asset_id"]) is str else ""):
             raise FilmError("Assignment asset_id must be an A0001-style identifier")
         _int(pin["revision"], "assignment revision", 1)
         _sha(pin["content_sha256"], "assignment content_sha256")
+    _check_cross_references(assets)
     return document
+
+
+def _doc_pin_record(assets, pin, what):
+    """Resolve a pin inside one registry document; every leg must verify."""
+    entry = assets.get(pin["asset_id"])
+    if entry is None:
+        raise FilmError(f"{what} references unknown asset {pin['asset_id']}")
+    record = entry["revisions"].get(str(pin["revision"]))
+    if record is None:
+        raise FilmError(f"{what} references missing revision "
+                        f"{pin['asset_id']} r{pin['revision']}")
+    if record["content_sha256"] != pin["content_sha256"]:
+        raise FilmError(f"{what} pin does not match "
+                        f"{pin['asset_id']} r{pin['revision']} content")
+    return record
+
+
+def _check_cross_references(assets):
+    """Asset-to-asset pins: mask targets, replacement targets, rig layers.
+
+    A record's own fields are already validated; this pass rejects pins that
+    dangle, lie about the target's bytes, or contradict the geometry the
+    target revision pins.
+    """
+    for entry in assets.values():
+        for record in entry["revisions"].values():
+            kind = record["kind"]
+            if kind == "MASK":
+                target = _doc_pin_record(assets, record["target"],
+                                         "MASK target")
+                if target["kind"] != "LAYER_RGBA":
+                    raise FilmError("MASK target must be a LAYER_RGBA revision")
+                region = record["region"]
+                if region is None:
+                    if record["canvas"] != target["canvas"]:
+                        raise FilmError("A full-canvas MASK must match its "
+                                        "target layer's canvas")
+                else:
+                    x, y, w, h = region
+                    bounds = target["canvas"]
+                    if (x < 0 or y < 0 or x + w > bounds["width"]
+                            or y + h > bounds["height"]):
+                        raise FilmError("MASK region must stay inside its "
+                                        "target layer's canvas")
+                    if record["canvas"] != {"width": w, "height": h}:
+                        raise FilmError("MASK canvas must equal its "
+                                        "declared region extent")
+            elif kind == "REPLACEMENT_DRAWING":
+                target = _doc_pin_record(assets, record["replaces"],
+                                         "REPLACEMENT_DRAWING replaces")
+                if target["kind"] != "LAYER_RGBA":
+                    raise FilmError("REPLACEMENT_DRAWING replaces must be a "
+                                    "LAYER_RGBA revision")
+                if record["canvas"] != target["canvas"]:
+                    raise FilmError("A replacement drawing must share its "
+                                    "target layer's canvas")
+                if record["rig"]["pivot"] != target["pivot"]:
+                    raise FilmError("A replacement drawing's rig pivot must "
+                                    "match its target layer's pivot")
+            elif kind == "RIG_SPEC":
+                spec = record["spec"]
+                by_z = sorted(spec["layers"], key=lambda l: l["z_order"])
+                if [l["id"] for l in by_z] != spec["occlusion_order"]:
+                    raise FilmError("RIG_SPEC occlusion_order must agree "
+                                    "with the layer z_order values")
+                for layer in spec["layers"]:
+                    target = _doc_pin_record(assets, layer["asset"],
+                                             f"rig layer {layer['id']} asset")
+                    if target["kind"] != "LAYER_RGBA":
+                        raise FilmError(f"rig layer {layer['id']} must pin "
+                                        "a LAYER_RGBA revision")
+                    if target["z_order"] != layer["z_order"]:
+                        raise FilmError(f"rig layer {layer['id']} z_order "
+                                        "must match its pinned layer asset")
 
 
 def load_registry(p):
@@ -209,6 +444,8 @@ def save_registry(p, document):
 
 def _read_source(path):
     """Read external bytes for import; symlinks and non-files are refused."""
+    if type(path) in (bytes, bytearray):
+        return bytes(path)
     path = Path(path)
     if path.is_symlink() or not path.is_file():
         raise FilmError(f"Not a regular file: {path}")
@@ -374,8 +611,8 @@ def _commit_revision(p, registry, asset_id, kind, staged, record):
         files.append({"relative_name": relative, "sha256": member["sha256"],
                       "byte_length": len(data),
                       "source_name": member["source_name"],
-                      **({"frame_index": position} if record["kind"] == "FRAME_SEQUENCE"
-                         else {})})
+                      **({"frame_index": position}
+                         if record["kind"] in SEQUENCE_KINDS else {})})
     record["files"] = files
     record["content_sha256"] = content_digest(record)
     _validate_record(record)
@@ -440,19 +677,24 @@ def import_frame_sequence(project, shot_id, *, index=None, folder=None,
                                             "kind": "FRAME_SEQUENCE"}
         save_registry(p, registry)
         # Adopting this revision for the shot pins it in the edit document.
-        timeline_path = safe_path(
-            p, (read(p / "project.yaml").get("animation") or {})
-            .get("timeline", "timeline/edit.json"))
-        if timeline_path.exists():
-            timeline = read_canon(timeline_path)
-            for entry in timeline["entries"]:
-                if entry["shot_id"] == shot_id:
-                    entry["sequence_revision"] = record["revision"]
-            write_canon(timeline_path, timeline)
+        _adopt_revision(p, shot_id, record["revision"])
         return {"asset_id": record["asset_id"], "revision": record["revision"],
                 "content_sha256": record["content_sha256"],
                 "frames": len(record["files"]), "assigned_to": shot_id,
                 "state": "DRAFT", "new_revision": created}
+
+
+def _adopt_revision(p, shot_id, revision):
+    """Pin the adopted sequence revision into the shot's timeline entries."""
+    timeline_path = safe_path(
+        p, (read(p / "project.yaml").get("animation") or {})
+        .get("timeline", "timeline/edit.json"))
+    if timeline_path.exists():
+        timeline = read_canon(timeline_path)
+        for entry in timeline["entries"]:
+            if entry["shot_id"] == shot_id:
+                entry["sequence_revision"] = revision
+        write_canon(timeline_path, timeline)
 
 
 def import_layer_rgba(project, file, *, asset_id=None, pivot=(0, 0),
@@ -505,6 +747,262 @@ def import_layer_rgba(project, file, *, asset_id=None, pivot=(0, 0),
         return {"asset_id": record["asset_id"], "revision": record["revision"],
                 "content_sha256": record["content_sha256"], "kind": "LAYER_RGBA",
                 "state": "DRAFT", "new_revision": created}
+
+
+def import_mask(project, file, *, target, region=None, channel="LUMINANCE",
+                asset_id=None, note=""):
+    """Import a MASK asset: a single-channel matte pinned to a layer revision.
+
+    `target` pins the LAYER_RGBA revision the mask clips; `region` is the
+    [x, y, w, h] extent of the target canvas the mask covers (null = the
+    whole target canvas), and `channel` names the meaning of its samples —
+    "ALPHA" requires a real alpha channel, "LUMINANCE" reads luma.
+    """
+    p = Path(project)
+    with project_mutex(p):
+        require_animation_profile(p)
+        if asset_id is not None and not ASSET_ID.fullmatch(asset_id):
+            raise FilmError("asset_id must be an A0001-style identifier")
+        _pin(target, "MASK target")
+        if channel not in MASK_CHANNELS:
+            raise FilmError(f"MASK channel must be one of {sorted(MASK_CHANNELS)}")
+        if region is not None:
+            if (type(region) is not list or len(region) != 4
+                    or any(type(v) is not int for v in region)
+                    or region[2] < 1 or region[3] < 1):
+                raise FilmError("MASK region must be null or "
+                                "[x, y, width, height] with positive extent")
+        registry = load_registry(p)
+        target_rec = _resolve_pin(registry, target["asset_id"],
+                                  target["revision"], target["content_sha256"])
+        if target_rec["kind"] != "LAYER_RGBA":
+            raise FilmError("MASK target must be a LAYER_RGBA revision")
+        data = _read_source(file)
+        size, mode = _decode_png(data, Path(file).name)
+        canvas = {"width": size[0], "height": size[1]}
+        bounds = target_rec["canvas"]
+        if region is None:
+            if canvas != bounds:
+                raise FilmError("A full-canvas MASK must match its target "
+                                "layer's canvas")
+        else:
+            x, y, w, h = region
+            if (x < 0 or y < 0 or x + w > bounds["width"]
+                    or y + h > bounds["height"]):
+                raise FilmError("MASK region must stay inside its target "
+                                "layer's canvas")
+            if canvas != {"width": w, "height": h}:
+                raise FilmError("MASK canvas must equal its declared "
+                                "region extent")
+        if channel == "ALPHA" and "A" not in mode:
+            raise FilmError("An ALPHA-channel MASK needs a source alpha "
+                            "channel")
+        staged = [{"stored_name": "mask.png", "source": file,
+                   "sha256": hashlib.sha256(data).hexdigest(),
+                   "byte_length": len(data), "source_name": Path(file).name}]
+        record = {"asset_id": asset_id or "A0000", "revision": 0,
+                  "kind": "MASK",
+                  "provenance": {"type": "EXTERNAL_IMPORT", "via": "file",
+                                 "source": str(file), "imported_at": now(),
+                                 "note": note.strip()},
+                  "files": [{"relative_name": "", "sha256": staged[0]["sha256"],
+                             "byte_length": len(data)}],
+                  "coordinate_space": _coordinate_space(canvas),
+                  "dependencies": [],
+                  "preparation": {"state": "IMPORTED_DRAFT",
+                                  "checks": {"member_hashes_verified": True,
+                                             "decoded_png": True},
+                                  "not_verified": ["human_review"]},
+                  "acceptance": {"state": "DRAFT"},
+                  "alpha": {"present": "A" in mode, "mode": mode},
+                  "canvas": canvas, "target": dict(target),
+                  "region": list(region) if region is not None else None,
+                  "channel": channel}
+        record["content_sha256"] = content_digest(record)
+        record, created = _commit_revision(p, registry, asset_id,
+                                           "MASK", staged, record)
+        save_registry(p, registry)
+        return {"asset_id": record["asset_id"], "revision": record["revision"],
+                "content_sha256": record["content_sha256"], "kind": "MASK",
+                "state": "DRAFT", "new_revision": created}
+
+
+def import_replacement_drawing(project, file, *, replaces, frame, pivot,
+                               asset_id=None, note=""):
+    """Import a REPLACEMENT_DRAWING: alternate art for one LAYER_RGBA.
+
+    `replaces` pins the base layer revision; `frame` declares the cut-local
+    frame at which the replacement first appears (the shot plan's exposure
+    must agree); `pivot` is the rig anchor the drawing was authored for and
+    must equal the target layer's pivot — a mismatched canvas or pivot is
+    not a compatible replacement.
+    """
+    p = Path(project)
+    with project_mutex(p):
+        require_animation_profile(p)
+        if asset_id is not None and not ASSET_ID.fullmatch(asset_id):
+            raise FilmError("asset_id must be an A0001-style identifier")
+        _pin(replaces, "REPLACEMENT_DRAWING replaces")
+        _int(frame, "REPLACEMENT_DRAWING frame")
+        _point(list(pivot), "REPLACEMENT_DRAWING pivot")
+        registry = load_registry(p)
+        target = _resolve_pin(registry, replaces["asset_id"],
+                              replaces["revision"], replaces["content_sha256"])
+        if target["kind"] != "LAYER_RGBA":
+            raise FilmError("REPLACEMENT_DRAWING replaces must be a "
+                            "LAYER_RGBA revision")
+        if list(pivot) != target["pivot"]:
+            raise FilmError("A replacement drawing's rig pivot must match "
+                            "its target layer's pivot")
+        data = _read_source(file)
+        size, mode = _decode_png(data, Path(file).name)
+        if "A" not in mode:
+            raise FilmError("REPLACEMENT_DRAWING requires a source alpha "
+                            "channel; refusing to flatten")
+        canvas = {"width": size[0], "height": size[1]}
+        if canvas != target["canvas"]:
+            raise FilmError("A replacement drawing must share its target "
+                            "layer's canvas")
+        with Image.open(io.BytesIO(data)) as im:
+            alpha_min, alpha_max = im.getchannel("A").getextrema()
+        staged = [{"stored_name": "drawing.png", "source": file,
+                   "sha256": hashlib.sha256(data).hexdigest(),
+                   "byte_length": len(data), "source_name": Path(file).name}]
+        record = {"asset_id": asset_id or "A0000", "revision": 0,
+                  "kind": "REPLACEMENT_DRAWING",
+                  "provenance": {"type": "EXTERNAL_IMPORT", "via": "file",
+                                 "source": str(file), "imported_at": now(),
+                                 "note": note.strip()},
+                  "files": [{"relative_name": "", "sha256": staged[0]["sha256"],
+                             "byte_length": len(data)}],
+                  "coordinate_space": _coordinate_space(canvas),
+                  "dependencies": [],
+                  "preparation": {"state": "IMPORTED_DRAFT",
+                                  "checks": {"member_hashes_verified": True,
+                                             "decoded_png": True,
+                                             "alpha_channel": True},
+                                  "not_verified": ["human_review"]},
+                  "acceptance": {"state": "DRAFT"},
+                  "alpha": {"present": True, "mode": mode,
+                            "min": alpha_min, "max": alpha_max},
+                  "canvas": canvas, "replaces": dict(replaces),
+                  "frame": frame, "rig": {"pivot": list(pivot)}}
+        record["content_sha256"] = content_digest(record)
+        record, created = _commit_revision(p, registry, asset_id,
+                                           "REPLACEMENT_DRAWING", staged,
+                                           record)
+        save_registry(p, registry)
+        return {"asset_id": record["asset_id"], "revision": record["revision"],
+                "content_sha256": record["content_sha256"],
+                "kind": "REPLACEMENT_DRAWING", "state": "DRAFT",
+                "new_revision": created}
+
+
+def import_rig_spec(project, spec, *, asset_id=None, note=""):
+    """Register a RIG_SPEC: hierarchy, anchors, allowed transforms, z-order.
+
+    The spec dict is stored canonically as `rig.json`; every layer's pinned
+    LAYER_RGBA revision must already exist in the registry.
+    """
+    p = Path(project)
+    with project_mutex(p):
+        require_animation_profile(p)
+        if asset_id is not None and not ASSET_ID.fullmatch(asset_id):
+            raise FilmError("asset_id must be an A0001-style identifier")
+        validate_rig_spec(spec)
+        registry = load_registry(p)
+        for layer in spec["layers"]:
+            target = _resolve_pin(registry, layer["asset"]["asset_id"],
+                                  layer["asset"]["revision"],
+                                  layer["asset"]["content_sha256"])
+            if target["kind"] != "LAYER_RGBA":
+                raise FilmError(f"rig layer {layer['id']} must pin a "
+                                "LAYER_RGBA revision")
+            if target["z_order"] != layer["z_order"]:
+                raise FilmError(f"rig layer {layer['id']} z_order must "
+                                "match its pinned layer asset")
+        if [l["id"] for l in sorted(spec["layers"],
+                                    key=lambda l: l["z_order"])] \
+                != spec["occlusion_order"]:
+            raise FilmError("RIG_SPEC occlusion_order must agree with the "
+                            "layer z_order values")
+        data = canon_bytes(spec)
+        staged = [{"stored_name": "rig.json", "source": data,
+                   "sha256": hashlib.sha256(data).hexdigest(),
+                   "byte_length": len(data), "source_name": "rig.json"}]
+        record = {"asset_id": asset_id or "A0000", "revision": 0,
+                  "kind": "RIG_SPEC",
+                  "provenance": {"type": "EXTERNAL_IMPORT", "via": "spec",
+                                 "imported_at": now(), "note": note.strip()},
+                  "files": [{"relative_name": "",
+                             "sha256": staged[0]["sha256"],
+                             "byte_length": len(data)}],
+                  "coordinate_space": {"system": "CUT_CANVAS_PIXELS",
+                                       "origin": "TOP_LEFT"},
+                  "dependencies": [],
+                  "preparation": {"state": "IMPORTED_DRAFT",
+                                  "checks": {"hierarchy_valid": True,
+                                             "pins_resolved": True},
+                                  "not_verified": ["human_review"]},
+                  "acceptance": {"state": "DRAFT"},
+                  "spec": spec}
+        record["content_sha256"] = content_digest(record)
+        record, created = _commit_revision(p, registry, asset_id,
+                                           "RIG_SPEC", staged, record)
+        save_registry(p, registry)
+        return {"asset_id": record["asset_id"], "revision": record["revision"],
+                "content_sha256": record["content_sha256"], "kind": "RIG_SPEC",
+                "layers": [l["id"] for l in spec["layers"]],
+                "state": "DRAFT", "new_revision": created}
+
+
+def register_composite_sequence(p, shot_id, *, canvas, members, dependencies,
+                                composite_recipe_ref, plan_sha256):
+    """Register locally composited frames as a COMPOSITE_SEQUENCE revision.
+
+    Runs inside the compositor's project mutex. `members` are staged PNG
+    paths plus their digests; `dependencies` pin every input asset the
+    composite consumed. The shot's assignment is pinned to the resulting
+    revision and the timeline adopts it — the revision stays a draft.
+    """
+    registry = load_registry(p)
+    pin = registry["assignments"].get(shot_id)
+    asset_id = None
+    if pin is not None:
+        existing = registry["assets"].get(pin["asset_id"])
+        if existing is not None and next(iter(existing["revisions"].values()))\
+                ["kind"] == "COMPOSITE_SEQUENCE":
+            asset_id = pin["asset_id"]
+    record = {"asset_id": asset_id or "A0000", "revision": 0,
+              "kind": "COMPOSITE_SEQUENCE",
+              "provenance": {"type": "LOCAL_COMPOSITE",
+                             "plan_sha256": plan_sha256,
+                             "recipe_sha256": composite_recipe_ref,
+                             "composited_at": now()},
+              "files": [{"relative_name": "", "sha256": m["sha256"],
+                         "byte_length": m["byte_length"], "frame_index": i}
+                        for i, m in enumerate(members)],
+              "coordinate_space": _coordinate_space(canvas),
+              "dependencies": list(dependencies),
+              "preparation": {"state": "COMPOSITED_DRAFT",
+                              "checks": {"member_hashes_verified": True,
+                                         "recipe_bound": True},
+                              "not_verified": ["human_review",
+                                               "motion_approval"]},
+              "acceptance": {"state": "DRAFT"}, "canvas": dict(canvas),
+              "exposure_recipe_ref": None,
+              "composite_recipe_ref": composite_recipe_ref}
+    record["content_sha256"] = content_digest(record)
+    record, created = _commit_revision(p, registry, asset_id,
+                                       "COMPOSITE_SEQUENCE", members, record)
+    registry["assignments"][shot_id] = {"asset_id": record["asset_id"],
+                                        "revision": record["revision"],
+                                        "content_sha256":
+                                            record["content_sha256"],
+                                        "kind": "COMPOSITE_SEQUENCE"}
+    save_registry(p, registry)
+    _adopt_revision(p, shot_id, record["revision"])
+    return record, created
 
 
 def _verify_member_bytes(p, record):
@@ -565,8 +1063,9 @@ def resolve_shot_sequence(p, shot_id, used_range=None, handles=None,
             f"{shot_id} timeline adopts sequence revision {expected_revision} "
             f"but the registry assignment pins revision {pin['revision']}")
     resolved = resolve_asset(p, pin["asset_id"], pin["revision"], pin["content_sha256"])
-    if resolved["record"]["kind"] != "FRAME_SEQUENCE":
-        raise FilmError(f"{shot_id} is not assigned a FRAME_SEQUENCE")
+    if resolved["record"]["kind"] not in SEQUENCE_KINDS:
+        raise FilmError(f"{shot_id} is not assigned a frame sequence "
+                        f"(found {resolved['record']['kind']})")
     if used_range is not None:
         handles = handles or {}
         before = _int(handles.get("before", 0), "unused_handles.before")
