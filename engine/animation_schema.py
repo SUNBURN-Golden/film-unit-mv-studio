@@ -24,6 +24,8 @@ DOCUMENT_SCHEMAS = {
     "animation_waves": 1,
     "route_decision": 1,
     "animation_build": 2,
+    "animation_shot_plan": 1,
+    "composite_recipe": 1,
 }
 
 TIMELINE_FIELDS = {"document_type", "schema_version", "target_frames", "entries"}
