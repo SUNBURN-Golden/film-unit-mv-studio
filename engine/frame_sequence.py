@@ -156,6 +156,9 @@ def animation_validate(project):
     p = Path(project)
     require_animation_profile(p)
     timeline = load_animation_timeline(p)
+    # Local import: transitions.py already depends on this module.
+    from .transitions import audit_timeline
+    audit = audit_timeline(timeline)
     entries = []
     for entry in timeline["entries"]:
         try:
@@ -175,6 +178,11 @@ def animation_validate(project):
                             "shot_id": entry["shot_id"], "resolved": False,
                             "reason": str(e)})
     return {"target_frames": timeline["target_frames"],
+            "timeline": {"output_frames": audit["output_frames"],
+                         "used_source_frames": audit["used_source_frames"],
+                         "overlap_frames": audit["overlap_frames"],
+                         "transitions": audit["transitions"],
+                         "coverage": audit["coverage"]},
             "entries": entries,
             "ok": all(e["resolved"] for e in entries),
             "unresolved": [e["instance_id"] for e in entries
