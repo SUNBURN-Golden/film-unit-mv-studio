@@ -42,14 +42,20 @@ def render_capabilities(project=None, state_dir=None):
     st.caption("scope-묶인 evidence만 표시합니다 — fake/fixture PASS는 "
                "qualification이 아니며, 환경·사용권 변경이나 만료는 STALE입니다.")
     try:
+        # Display only: with no fresh observation the stored claim is
+        # shown (trust_stored) and labelled as such — the execution
+        # gate never reads this view and re-probes instead.
         status = capability_registry.registry_status(
-            state_dir or settings.home())
+            state_dir or settings.home(), trust_stored=True)
     except Exception as exc:
         st.error(f"capability registry를 읽지 못했습니다: {exc}")
         return
     if not status["entries"]:
         st.info("등록된 capability evidence가 없습니다. probe가 없으면 어떤 "
                 "candidate도 QUALIFIED_FOR_SCOPE가 아닙니다.")
+    st.caption("현재 observation 없이 저장된 claim 기준 표시 "
+               "(information only) — 실행 gate는 이 표시를 신뢰하지 않고 "
+               "재-probe가 필요합니다.")
     for entry in status["entries"]:
         fake = " · FAKE" if entry["fake"] else ""
         st.markdown(f"**{entry['axis']}** · `{entry['evidence_id']}` — "

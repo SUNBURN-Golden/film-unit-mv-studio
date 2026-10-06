@@ -11,7 +11,8 @@ import json
 
 import pytest
 
-from anim_014_kit import local_plan, remote_plan
+from anim_014_kit import (RECIPE, local_plan, make_plan, operation,
+                          remote_plan)
 
 from engine import cli
 from engine.animation_schema import (canon_bytes, read_canon,
@@ -36,7 +37,8 @@ QUALITY_SHA = hashlib.sha256(b"anim-019-quality").hexdigest()
 COMPOSE_SCOPE = {"operation": "compose_frame_range",
                  "runtime_contract": "python-deterministic-v1",
                  "route": "relay", "width": 8, "height": 6,
-                 "pixel_format": "RGBA8", "frames": 8}
+                 "pixel_format": "RGBA8", "frames": 8,
+                 "max_scratch_bytes": 1 << 25}
 
 ENCODE_SCOPE = {"width": 8, "height": 6, "fps": {"num": 24, "den": 1},
                 "frames": 8, "codec": "h264", "pixel_format": "yuv420p",
@@ -87,7 +89,8 @@ def observation_for(evidence):
     return obs
 
 
-def full_measurement(evidence, **patch):
+def full_measurement(evidence, *, input_digest=INPUT_SHA,
+                     quality_digest=QUALITY_SHA, **patch):
     """A complete CAP-MEASURE record bound to `evidence`."""
     sections = {
         "cold": {"end_to_end_ms": 5000, "startup_ms": 1000,
@@ -108,8 +111,8 @@ def full_measurement(evidence, **patch):
                     "max_ms": 3100}}
     for key, value in patch.items():
         sections[key] = value
-    return make_measurement(evidence, input_digest=INPUT_SHA,
-                            quality_digest=QUALITY_SHA,
+    return make_measurement(evidence, input_digest=input_digest,
+                            quality_digest=quality_digest,
                             scope=evidence["scope"], **sections)
 
 
@@ -133,6 +136,7 @@ def encode_evidence(scope=None, state="QUALIFIED_FOR_SCOPE",
 
 def compose_candidate(scope=None, **kwargs):
     return {"candidate_id": "c1", "axis": "COMPOSE", "worker": "w-1",
+            "snapshot_digest": INPUT_SHA, "recipe_digest": QUALITY_SHA,
             "scope": scope if scope is not None else dict(COMPOSE_SCOPE),
             **kwargs}
 
@@ -146,7 +150,7 @@ def test_register_roundtrip_and_status(tmp_path):
     assert read_canon(path) == ev
     loaded = entries(state)
     assert loaded == [ev]
-    status = registry_status(state)
+    status = registry_status(state, observation=observation_for(ev))
     entry = status["entries"][0]
     assert entry["state"] == "QUALIFIED_FOR_SCOPE"
     assert entry["axis"] == "COMPOSE"
@@ -204,6 +208,27 @@ def test_encode_scope_requires_exact_codec_and_rate():
     assert scope_covers("ENCODE", ev["scope"],
                         dict(ENCODE_SCOPE, frames=2,
                              fps={"num": 48, "den": 2}))
+
+
+def test_encode_scope_unchecked_keys_fail_closed():
+    """Requested keys the encoder contract does not check (color,
+    route, scratch caps, …) must equal the probed value or fail."""
+    ev = encode_evidence()
+    base = dict(ENCODE_SCOPE)
+    # the contract itself covers this scope
+    assert scope_covers("ENCODE", ev["scope"], base)
+    # a key the probe never recorded fails closed
+    assert not scope_covers("ENCODE", ev["scope"],
+                            dict(base, color="bt709"))
+    assert not scope_covers("ENCODE", ev["scope"],
+                            dict(base, route="relay",
+                                 max_scratch_bytes=1 << 20))
+    # a recorded key with a different value fails too
+    assert not scope_covers("ENCODE", ev["scope"],
+                            dict(base, container="webm"))
+    # same value as probed is fine
+    assert scope_covers("ENCODE", ev["scope"],
+                        dict(base, container="mp4"))
 
 
 # --- CAP-STALE -----------------------------------------------------------------
@@ -264,11 +289,57 @@ def test_caps_and_allowance_change_stales():
 def test_session_expiry_stales():
     ev = make_evidence(
         env={"session_expires_at_ms": 1000})
-    assert current_state(ev, now_ms=999)["state"] == \
+    obs = observation_for(ev)
+    assert current_state(ev, obs, now_ms=999)["state"] == \
         "QUALIFIED_FOR_SCOPE"
-    state = current_state(ev, now_ms=1000)
+    state = current_state(ev, obs, now_ms=1000)
     assert state["state"] == "STALE"
     assert "session_expired" in state["reasons"]
+
+
+def test_observation_deadline_tightens_expiry():
+    """An earlier expiry reported by the observation applies — the
+    bound later deadline never extends it."""
+    ev = make_evidence(env={"session_expires_at_ms": 5000})
+    obs = observation_for(ev)
+    obs["environment"]["session_expires_at_ms"] = 1000
+    assert current_state(ev, obs, now_ms=999)["state"] == \
+        "QUALIFIED_FOR_SCOPE"
+    state = current_state(ev, obs, now_ms=1000)
+    assert state["state"] == "STALE"
+    assert "session_expired" in state["reasons"]
+
+
+def test_missing_observation_is_stale_not_selectable():
+    """A stored QUALIFIED_FOR_SCOPE with no current observation needs
+    re-probe — it is never silently reused."""
+    ev = make_evidence()
+    state = current_state(ev)
+    assert state["state"] == "STALE"
+    assert "no_current_observation" in state["reasons"]
+    # trust_stored is a display-only escape the gate never uses
+    assert current_state(ev, trust_stored=True)["state"] == \
+        "QUALIFIED_FOR_SCOPE"
+    report = preflight([compose_candidate()], [ev],
+                       policy="AUTO_PERFORMANCE")
+    assert report["candidates"][0]["registry_state"] == "STALE"
+    assert report["selections"] == []
+
+
+@pytest.mark.parametrize("field", [
+    "credential_epoch", "allowance", "caps", "account_binding"])
+def test_unreported_bound_field_is_unverified(field):
+    """A bound field the observation does not report fails closed."""
+    ev = make_evidence()
+    obs = observation_for(ev)
+    del obs[field]
+    state = current_state(ev, obs)
+    assert state["state"] == "STALE"
+    assert f"{field} unverified" in state["reasons"]
+    report = preflight([compose_candidate()], [ev],
+                       policy="AUTO_PERFORMANCE", observation=obs)
+    assert not report["candidates"][0]["eligible"]
+    assert not report["candidates"][0]["selectable"]
 
 
 def test_entitlement_expiry_stales():
@@ -290,7 +361,8 @@ def test_old_pass_never_extended_after_change(tmp_path):
     save_measurement(state, full_measurement(ev))
     candidate = compose_candidate()
     report = preflight([candidate], entries(state),
-                       measurements(state), policy="AUTO_PERFORMANCE")
+                       measurements(state), policy="AUTO_PERFORMANCE",
+                       observation=observation_for(ev))
     assert report["candidates"][0]["selectable"]
 
     obs = observation_for(ev)
@@ -317,7 +389,8 @@ def test_fake_evidence_never_qualifies(tmp_path):
     assert "fake_evidence" in current["reasons"]
     assert is_fake(ev)
     report = preflight([compose_candidate()], entries(state),
-                       policy="AUTO_PERFORMANCE")
+                       policy="AUTO_PERFORMANCE",
+                       observation=observation_for(ev))
     assert report["candidates"][0]["registry_state"] == \
         "DOCUMENTED_ONLY"
     assert report["selections"] == []
@@ -337,7 +410,8 @@ def test_complete_measurement_yields_estimate(tmp_path):
     assert bound_measurement(compose_candidate(), ev,
                              measurements(state)) == record
     report = preflight([compose_candidate()], entries(state),
-                       measurements(state), policy="AUTO_PERFORMANCE")
+                       measurements(state), policy="AUTO_PERFORMANCE",
+                       observation=observation_for(ev))
     verdict = report["candidates"][0]
     assert verdict["eligible"] and verdict["selectable"]
     assert verdict["estimate"]["cold_ms"] == 5000
@@ -367,7 +441,8 @@ def test_partial_measurement_stays_unknown(tmp_path, cut):
     missing = measurement_missing(record)
     assert missing
     report = preflight([compose_candidate()], entries(state),
-                       measurements(state), policy="AUTO_PERFORMANCE")
+                       measurements(state), policy="AUTO_PERFORMANCE",
+                       observation=observation_for(ev))
     verdict = report["candidates"][0]
     assert verdict["eligible"]            # evidence is fine …
     assert not verdict["selectable"]      # … but timing is UNKNOWN
@@ -395,9 +470,32 @@ def test_measurement_detached_from_evidence_is_unusable(tmp_path):
     assert bound_measurement(compose_candidate(), ev,
                              measurements(state)) is None
     report = preflight([compose_candidate()], entries(state),
-                       measurements(state), policy="AUTO_PERFORMANCE")
+                       measurements(state), policy="AUTO_PERFORMANCE",
+                       observation=observation_for(ev))
     assert report["candidates"][0]["estimate"] == "UNKNOWN"
     assert report["selections"] == []
+
+
+def test_measurement_on_another_input_or_recipe_is_unusable(tmp_path):
+    """A timing run on a different input/recipe never authorizes
+    AUTO_PERFORMANCE — the estimate stays UNKNOWN."""
+    state = tmp_path / "state"
+    ev = make_evidence()
+    register(state, ev)
+    save_measurement(state, full_measurement(ev))
+    obs = observation_for(ev)
+    for field in ("snapshot_digest", "recipe_digest"):
+        candidate = compose_candidate(
+            **{field: hashlib.sha256(b"other").hexdigest()})
+        assert bound_measurement(candidate, ev,
+                                 measurements(state)) is None
+        report = preflight([candidate], entries(state),
+                           measurements(state),
+                           policy="AUTO_PERFORMANCE", observation=obs)
+        verdict = report["candidates"][0]
+        assert verdict["eligible"]
+        assert verdict["estimate"] == "UNKNOWN"
+        assert report["selections"] == []
 
 
 def test_measurement_bound_to_smaller_scope_does_not_cover(tmp_path):
@@ -410,7 +508,8 @@ def test_measurement_bound_to_smaller_scope_does_not_cover(tmp_path):
     assert bound_measurement(compose_candidate(), ev,
                              measurements(state)) is None
     report = preflight([compose_candidate()], entries(state),
-                       measurements(state), policy="AUTO_PERFORMANCE")
+                       measurements(state), policy="AUTO_PERFORMANCE",
+                       observation=observation_for(ev))
     assert report["candidates"][0]["missing_measurement"] == \
         ["measurement"]
 
@@ -465,7 +564,8 @@ def test_llm_subscription_never_covers_api_credits():
     candidate = {"candidate_id": "gpu-job", "axis": "ENTITLEMENT",
                  "scope": {"service": "chatgpt"},
                  "requires": {"api_credits": 5, "compute_units": 1}}
-    report = preflight([candidate], [ev], policy="AUTO_PERFORMANCE")
+    report = preflight([candidate], [ev], policy="AUTO_PERFORMANCE",
+                       observation=observation_for(ev))
     verdict = report["candidates"][0]
     assert not verdict["eligible"]
     assert any("allowance_missing" in r for r in verdict["reasons"])
@@ -487,7 +587,8 @@ def test_drive_connector_never_covers_sandbox_network():
     storage_candidate = {"candidate_id": "store", "axis": "STORAGE",
                          "scope": {"backend": "drive"}}
     report = preflight([network_candidate, storage_candidate], [ev],
-                       policy="AUTO_PERFORMANCE")
+                       policy="AUTO_PERFORMANCE",
+                       observation=observation_for(ev))
     net, store = report["candidates"]
     assert not net["eligible"]
     assert net["registry_state"] == "NO_EVIDENCE"
@@ -533,7 +634,8 @@ def test_auto_performance_needs_bound_measurement(tmp_path):
     ev = make_evidence()
     register(state, ev)
     report = preflight([compose_candidate()], entries(state),
-                       policy="AUTO_PERFORMANCE")
+                       policy="AUTO_PERFORMANCE",
+                       observation=observation_for(ev))
     verdict = report["candidates"][0]
     assert verdict["eligible"] and not verdict["selectable"]
     assert verdict["estimate"] == "UNKNOWN"
@@ -546,14 +648,16 @@ def test_fixed_route_is_labelled_user_choice(tmp_path):
     ev = make_evidence()
     register(state, ev)
     report = preflight([compose_candidate()], entries(state),
-                       policy="FIXED_ROUTE")
+                       policy="FIXED_ROUTE",
+                       observation=observation_for(ev))
     selection = report["selections"][0]
     assert selection["label"] == "FIXED_ROUTE_USER_CHOICE"
     assert selection["eligible"]                       # qualified
     assert selection["estimate"] == "UNKNOWN"          # unmeasured
     # an unqualified fixed-route choice is still labelled, never upgraded
     report = preflight([compose_candidate(worker="w-9")],
-                       entries(state), policy="FIXED_ROUTE")
+                       entries(state), policy="FIXED_ROUTE",
+                       observation=observation_for(ev))
     assert report["selections"][0]["label"] == \
         "FIXED_ROUTE_USER_CHOICE"
     assert report["selections"][0]["eligible"] is False
@@ -565,20 +669,26 @@ def test_plan_preflight_and_execution_gate(tmp_path):
     plan = remote_plan(policy="AUTO_PERFORMANCE", evidence_required=True)
     ev = make_evidence(env={"worker_id": "remote-1"})
     register(state, ev)
+    obs = observation_for(ev)
 
-    report = plan_preflight(plan, state_dir=state)
+    report = plan_preflight(plan, state_dir=state, observation=obs)
     ops = {v["candidate_id"]: v for v in report["candidates"]
            if v["candidate_id"].startswith("op-")}
     assert all(v["eligible"] for v in ops.values())
     assert all(v["estimate"] == "UNKNOWN" for v in ops.values())
-    # unmeasured: nothing auto-selectable, the gate stays empty
+    # unmeasured: nothing auto-selectable, no route/worker qualified
     assert report["selections"] == []
-    assert report["evidence"] == {}
+    assert all(v["state"] == "NOT_QUALIFIED"
+               for v in report["evidence"]["operations"].values())
+    assert "REMOTE_CPU" not in report["evidence"]
+    assert "remote-1" not in report["evidence"]
     with pytest.raises(FilmError, match="CAPABILITY_EVIDENCE_REQUIRED"):
         assert_executable(plan, evidence=report["evidence"])
 
-    save_measurement(state, full_measurement(ev))
-    report = plan_preflight(plan, state_dir=state)
+    save_measurement(state, full_measurement(
+        ev, input_digest=plan["snapshot_digest"],
+        quality_digest=RECIPE))
+    report = plan_preflight(plan, state_dir=state, observation=obs)
     assert all(s["label"] == "AUTO_QUALIFIED"
                for s in report["selections"])
     assert_executable(plan, evidence=report["evidence"])
@@ -589,13 +699,112 @@ def test_plan_preflight_and_execution_gate(tmp_path):
     assert enc["encode:FFMPEG"]["registry_state"] == "NO_EVIDENCE"
 
 
+# -- the gate is per operation: no qualification leak between siblings ---------
+
+def test_gate_uneven_ranges_cover_only_their_scope(tmp_path):
+    """A 2-frame probe never qualifies the 6-frame sibling operation
+    sharing the same route and worker."""
+    state = tmp_path / "state"
+    plan = make_plan(
+        [operation("op-a", [0, 6], "REMOTE_CPU", "remote-1"),
+         operation("op-b", [6, 8], "REMOTE_CPU", "remote-1")],
+        policy="AUTO_PERFORMANCE", evidence_required=True)
+    ev = make_evidence(env={"worker_id": "remote-1"},
+                       scope=dict(COMPOSE_SCOPE, frames=2))
+    register(state, ev)
+    save_measurement(state, full_measurement(
+        ev, input_digest=plan["snapshot_digest"],
+        quality_digest=RECIPE))
+    report = plan_preflight(plan, state_dir=state,
+                            observation=observation_for(ev))
+    ops = report["evidence"]["operations"]
+    assert ops["op-b"]["state"] == "QUALIFIED_FOR_SCOPE"
+    assert ops["op-a"]["state"] == "NOT_QUALIFIED"
+    # the shared route and worker keys stay unmarked: not every
+    # operation using them is ok
+    assert "REMOTE_CPU" not in report["evidence"]
+    assert "remote-1" not in report["evidence"]
+    with pytest.raises(FilmError, match="CAPABILITY_EVIDENCE_REQUIRED"):
+        assert_executable(plan, evidence=report["evidence"])
+
+
+def test_gate_two_workers_one_route_no_leak(tmp_path):
+    """An unevidenced worker on an evidenced route fails its own
+    operation — the sibling's PASS never covers it."""
+    state = tmp_path / "state"
+    plan = make_plan(
+        [operation("op-a", [0, 4], "REMOTE_CPU", "w-a"),
+         operation("op-b", [4, 8], "REMOTE_CPU", "w-b")],
+        policy="AUTO_PERFORMANCE", evidence_required=True)
+    ev = make_evidence(env={"worker_id": "w-a"})
+    register(state, ev)
+    save_measurement(state, full_measurement(
+        ev, input_digest=plan["snapshot_digest"],
+        quality_digest=RECIPE))
+    report = plan_preflight(plan, state_dir=state,
+                            observation=observation_for(ev))
+    ops = report["evidence"]["operations"]
+    assert ops["op-a"]["state"] == "QUALIFIED_FOR_SCOPE"
+    assert ops["op-b"]["state"] == "NOT_QUALIFIED"
+    assert "REMOTE_CPU" not in report["evidence"]
+    assert "w-b" not in report["evidence"]
+    assert report["evidence"]["w-a"]["state"] == "QUALIFIED_FOR_SCOPE"
+    with pytest.raises(FilmError, match="CAPABILITY_EVIDENCE_REQUIRED"):
+        assert_executable(plan, evidence=report["evidence"])
+
+
+def test_gate_unmeasured_sibling_fails_under_auto(tmp_path):
+    """Eligible but unmeasured: AUTO_PERFORMANCE fails the operation
+    even though its sibling is selectable."""
+    state = tmp_path / "state"
+    plan = make_plan(
+        [operation("op-a", [0, 6], "REMOTE_CPU", "remote-1"),
+         operation("op-b", [6, 8], "REMOTE_CPU", "remote-1")],
+        policy="AUTO_PERFORMANCE", evidence_required=True)
+    ev = make_evidence(env={"worker_id": "remote-1"})
+    register(state, ev)
+    record = full_measurement(ev, input_digest=plan["snapshot_digest"],
+                              quality_digest=RECIPE)
+    record["scope"] = dict(ev["scope"], frames=2)  # measured 2 only
+    save_measurement(state, record)
+    report = plan_preflight(plan, state_dir=state,
+                            observation=observation_for(ev))
+    ops = report["evidence"]["operations"]
+    assert ops["op-a"]["state"] == "NOT_QUALIFIED"      # UNKNOWN timing
+    assert ops["op-a"]["eligible"]
+    assert not ops["op-a"]["selectable"]
+    assert ops["op-b"]["state"] == "QUALIFIED_FOR_SCOPE"
+    with pytest.raises(FilmError, match="CAPABILITY_EVIDENCE_REQUIRED"):
+        assert_executable(plan, evidence=report["evidence"])
+
+
+def test_gate_all_operations_ok_passes(tmp_path):
+    state = tmp_path / "state"
+    plan = remote_plan(policy="AUTO_PERFORMANCE", evidence_required=True)
+    ev = make_evidence(env={"worker_id": "remote-1"})
+    register(state, ev)
+    save_measurement(state, full_measurement(
+        ev, input_digest=plan["snapshot_digest"],
+        quality_digest=RECIPE))
+    report = plan_preflight(plan, state_dir=state,
+                            observation=observation_for(ev))
+    assert all(v["state"] == "QUALIFIED_FOR_SCOPE"
+               for v in report["evidence"]["operations"].values())
+    assert report["evidence"]["REMOTE_CPU"]["state"] == \
+        "QUALIFIED_FOR_SCOPE"
+    assert report["evidence"]["remote-1"]["state"] == \
+        "QUALIFIED_FOR_SCOPE"
+    assert assert_executable(plan, evidence=report["evidence"])
+
+
 def test_fixed_route_plan_gate_admits_scope_eligible_choice(tmp_path):
     state = tmp_path / "state"
     plan = local_plan(policy="FIXED_ROUTE", evidence_required=True)
     ev = make_evidence(env={"worker_id": "local-1"},
                        scope=dict(COMPOSE_SCOPE, route="local"))
     register(state, ev)
-    report = plan_preflight(plan, state_dir=state)
+    report = plan_preflight(plan, state_dir=state,
+                            observation=observation_for(ev))
     assert all(s["label"] == "FIXED_ROUTE_USER_CHOICE"
                for s in report["selections"])
     # FIXED_ROUTE admits the user choice on scope evidence alone —
@@ -611,13 +820,22 @@ def test_cli_capability_status_and_preflight(tmp_path, capsys):
     state = tmp_path / "state"
     ev = make_evidence()
     register(state, ev)
+    # no current observation: a stored QUALIFIED_FOR_SCOPE fails closed
     assert cli.main(["capability-status", "--state-dir",
                      str(state)]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["entries"][0]["state"] == "STALE"
+    assert "no_current_observation" in out["entries"][0]["reasons"]
+
+    obs_file = tmp_path / "obs.json"
+    obs_file.write_text(json.dumps(observation_for(ev)))
+    assert cli.main(["capability-status", "--state-dir",
+                     str(state), "--observation",
+                     str(obs_file)]) == 0
     out = json.loads(capsys.readouterr().out)
     assert out["entries"][0]["state"] == "QUALIFIED_FOR_SCOPE"
     assert out["facets"]["release_state"] == "NOT_AUTHORIZED"
 
-    obs_file = tmp_path / "obs.json"
     obs = observation_for(ev)
     obs["environment"]["device"] = "other-box"
     obs_file.write_text(json.dumps(obs))
@@ -631,11 +849,16 @@ def test_cli_capability_status_and_preflight(tmp_path, capsys):
     plan = remote_plan(policy="AUTO_PERFORMANCE", evidence_required=True)
     worker_ev = make_evidence(env={"worker_id": "remote-1"})
     register(state, worker_ev)
-    save_measurement(state, full_measurement(worker_ev))
+    save_measurement(state, full_measurement(
+        worker_ev, input_digest=plan["snapshot_digest"],
+        quality_digest=RECIPE))
+    worker_obs = tmp_path / "obs-worker.json"
+    worker_obs.write_text(json.dumps(observation_for(worker_ev)))
     plan_path = tmp_path / "plan.json"
     write_plan(plan_path, plan)
     assert cli.main(["capability-preflight", str(plan_path),
-                     "--state-dir", str(state)]) == 0
+                     "--state-dir", str(state),
+                     "--observation", str(worker_obs)]) == 0
     out = json.loads(capsys.readouterr().out)
     assert out["policy"] == "AUTO_PERFORMANCE"
     assert all(s["label"] == "AUTO_QUALIFIED"
@@ -645,7 +868,8 @@ def test_cli_capability_status_and_preflight(tmp_path, capsys):
     (project / "execution").mkdir(parents=True)
     write_plan(project / "execution" / "plan.json", plan)
     assert cli.main(["capability-preflight", str(project),
-                     "--state-dir", str(state)]) == 0
+                     "--state-dir", str(state),
+                     "--observation", str(worker_obs)]) == 0
     json.loads(capsys.readouterr().out)
     assert cli.main(["capability-preflight",
                      str(tmp_path / "empty"),

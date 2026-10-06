@@ -111,8 +111,10 @@ _MEASURE_INTS = (
 )
 
 # Execution route -> the evidence transport vocabulary a probe records.
+# REMOTE_CPU and REMOTE_GPU are distinct vocabularies on purpose: a CPU
+# relay probe never covers a GPU route and vice versa.
 _ROUTE_TRANSPORT = {"LOCAL_NATIVE": "local", "REMOTE_CPU": "relay",
-                    "REMOTE_GPU": "relay",
+                    "REMOTE_GPU": "relay:gpu",
                     "SUBSCRIPTION_CODE_RUNTIME": "MANUAL_PACKET"}
 
 
@@ -235,6 +237,12 @@ def _rational_equal(want, have):
     return want["num"] * have["den"] == have["num"] * want["den"]
 
 
+# The encoder scope contract checks only these keys — every other
+# requested key must match the probed scope exactly (fail closed).
+_ENCODE_CONTRACT_KEYS = {"width", "height", "codec", "pixel_format",
+                        "fps", "frames"}
+
+
 def scope_covers(axis, probed, requested):
     """True only when every requested requirement was actually probed.
 
@@ -244,11 +252,19 @@ def scope_covers(axis, probed, requested):
     measured fails closed — no superset inference, so a 720p/2-frame
     fixture never covers 1080p/5760. ENCODE delegates to the encoder
     scope contract (codec, pixel format, resolution, rational fps and a
-    frame count no larger than tested).
+    frame count no larger than tested) and then requires every other
+    requested key — color, route, scratch caps, anything the contract
+    does not check — to equal the probed value exactly.
     """
     if axis == "ENCODE":
         from .encoder_backends import scope_covered
-        return scope_covered(probed, requested)
+        if type(probed) is not dict or type(requested) is not dict \
+                or not requested \
+                or not scope_covered(probed, requested):
+            return False
+        return all(probed.get(key) == want
+                   for key, want in requested.items()
+                   if key not in _ENCODE_CONTRACT_KEYS)
     if type(probed) is not dict or type(requested) is not dict \
             or not requested:
         return False
@@ -285,34 +301,43 @@ def staleness_reasons(evidence, observation=None, *, now_ms=None):
     expires_at_ms. Any bound field that differs — or an expired session
     or entitlement — makes the evidence STALE; the remedy is re-probe
     or an explicit user wait, never silent reuse of an old PASS.
+
+    Fail closed: a bound document field the observation does not report
+    (credential_epoch, allowance, caps, account_binding, ...) is
+    `<field> unverified`, and an expiry the observation reports tightens
+    the bound deadline — the earlier of the two applies.
     """
     reasons = []
     env = evidence.get("environment") or {}
     if now_ms is None:
         now_ms = _now_ms()
+    other = (observation or {}).get("environment") or {}
     for field, code in (("session_expires_at_ms", "session_expired"),
                         ("expires_at_ms", "environment_expired")):
-        bound = env.get(field)
-        if bound is not None and now_ms >= bound:
+        deadlines = [d for d in (env.get(field), other.get(field))
+                     if d is not None]
+        if deadlines and now_ms >= min(deadlines):
             reasons.append(code)
     if observation is None:
         return reasons
-    other = observation.get("environment") or {}
     for field in sorted((set(env) | set(other)) - _ENV_SKIP):
         if env.get(field) != other.get(field):
             reasons.append(f"environment.{field} changed")
     for field in _DOC_BINDINGS:
-        if field in observation \
-                and evidence.get(field) != observation.get(field):
-            reasons.append({"caps": "limits changed"}.get(
-                field, f"{field} changed"))
+        if field in observation:
+            if evidence.get(field) != observation.get(field):
+                reasons.append({"caps": "limits changed"}.get(
+                    field, f"{field} changed"))
+        elif evidence.get(field) is not None:
+            reasons.append(f"{field} unverified")
     expires = observation.get("expires_at_ms")
     if expires is not None and now_ms >= expires:
         reasons.append("entitlement_expired")
     return reasons
 
 
-def current_state(evidence, observation=None, *, now_ms=None):
+def current_state(evidence, observation=None, *, now_ms=None,
+                  trust_stored=False):
     """The entry's state computed against the current environment —
     never the stored claim alone.
 
@@ -320,6 +345,12 @@ def current_state(evidence, observation=None, *, now_ms=None):
     claims QUALIFIED_FOR_SCOPE is reported STALE when its bindings
     drifted and DOCUMENTED_ONLY otherwise — fixture PASS never reaches
     real qualification.
+
+    Without a current observation a stored QUALIFIED_FOR_SCOPE cannot be
+    confirmed: the entry is STALE with reason `no_current_observation`
+    (re-probe needed) unless the caller explicitly passes
+    `trust_stored=True` — a display-only escape the execution gate
+    never uses.
     """
     validate_capability_evidence(evidence)
     stored = evidence.get("registry_state")
@@ -327,6 +358,9 @@ def current_state(evidence, observation=None, *, now_ms=None):
         return {"state": "UNAVAILABLE", "reasons": ["probe_unavailable"],
                 "detail": evidence.get("reason")}
     stale = staleness_reasons(evidence, observation, now_ms=now_ms)
+    if stored == "QUALIFIED_FOR_SCOPE" and not is_fake(evidence) \
+            and observation is None and not trust_stored:
+        stale = [*stale, "no_current_observation"]
     if stale:
         return {"state": "STALE", "reasons": stale,
                 "detail": evidence.get("reason")}
@@ -411,12 +445,19 @@ def measurement_missing(measurement):
 
 def bound_measurement(candidate, evidence, measurement_list):
     """The measurement bound to exactly this evidence document over a
-    scope covering the request. A record whose evidence_digest drifted
-    — or that timed a different scope — is unusable, never borrowed."""
+    scope covering the request. A record whose evidence_digest drifted,
+    that timed a different input or recipe (input_digest/quality_digest
+    must equal the candidate's snapshot_digest/recipe_digest), or that
+    timed a different scope is unusable, never borrowed — a timing run
+    on another input leaves the estimate UNKNOWN."""
     digest = evidence_digest(evidence)
     for record in measurement_list:
         if record.get("evidence_id") != evidence["evidence_id"] \
                 or record.get("evidence_digest") != digest:
+            continue
+        if record.get("input_digest") != candidate.get("snapshot_digest") \
+                or record.get("quality_digest") \
+                != candidate.get("recipe_digest"):
             continue
         if not scope_covers(candidate["axis"],
                             record.get("scope") or {},
@@ -566,22 +607,42 @@ def plan_candidates(plan):
     """The candidates an ExecutionPlan 1 needs decided: one COMPOSE
     request per operation bound to its worker, route, runtime contract,
     resolution, pixel format and frame count, plus one ENCODE request
-    per allowed driver over the plan's delivery scope."""
+    per allowed driver over the plan's delivery scope.
+
+    Every candidate pins `snapshot_digest` (and operations their
+    `recipe_digest`) so a bound measurement can never be borrowed from a
+    timing run on another input, and the requested scope carries the
+    plan's scratch/lifetime/halo requirements when present — a probe
+    that never covered them fails closed. REMOTE_CPU and REMOTE_GPU map
+    to distinct transport vocabularies: a CPU relay probe never covers
+    a GPU route.
+    """
     enc = plan["encoding"]
+    workspace = plan.get("workspace") or {}
     candidates = []
     for op in plan["operations"]:
         start, stop = op["output_range"]
+        scope = {"operation": "compose_frame_range",
+                 "runtime_contract": op["runtime_contract"],
+                 "route": _ROUTE_TRANSPORT.get(op["route"],
+                                              op["route"]),
+                 "width": enc["width"], "height": enc["height"],
+                 "pixel_format": "RGBA8",
+                 "frames": stop - start}
+        if workspace.get("worker_scratch_limit_bytes") is not None:
+            scope["max_scratch_bytes"] = \
+                workspace["worker_scratch_limit_bytes"]
+        if op.get("lifetime_ms") is not None:
+            scope["lifetime_ms"] = op["lifetime_ms"]
+        if op.get("halo_ranges"):
+            scope["halo_ranges"] = [list(r) for r in op["halo_ranges"]]
         candidates.append({
             "candidate_id": op["operation_id"], "kind": "operation",
             "axis": "COMPOSE", "route": op["route"],
             "worker": op["worker"],
-            "scope": {"operation": "compose_frame_range",
-                      "runtime_contract": op["runtime_contract"],
-                      "route": _ROUTE_TRANSPORT.get(op["route"],
-                                                  op["route"]),
-                      "width": enc["width"], "height": enc["height"],
-                      "pixel_format": "RGBA8",
-                      "frames": stop - start}})
+            "snapshot_digest": plan["snapshot_digest"],
+            "recipe_digest": op["recipe_digest"],
+            "scope": scope})
     scope = {"width": enc["width"], "height": enc["height"],
              "fps": dict(enc["fps"]), "codec": "h264",
              "pixel_format": "yuv420p",
@@ -589,30 +650,54 @@ def plan_candidates(plan):
     for driver in enc["allowed_drivers"]:
         candidates.append({"candidate_id": f"encode:{driver}",
                            "kind": "encoder", "axis": "ENCODE",
-                           "driver": driver, "scope": dict(scope)})
+                           "driver": driver,
+                           "snapshot_digest": plan["snapshot_digest"],
+                           "scope": dict(scope)})
     return candidates
 
 
 def gate_evidence(plan, report):
     """Preflight verdicts as the evidence map assert_executable()
-    consumes: a route/worker only reports QUALIFIED_FOR_SCOPE when a
-    current scope-bound entry backs it — and under AUTO_PERFORMANCE
-    only when a complete bound measurement exists, so a plan with
-    unverified timing is never auto-executable."""
+    consumes. The gate is per operation: `operations[operation_id]`
+    carries each operation's own verdict — an operation absent there or
+    not QUALIFIED_FOR_SCOPE fails. A route/worker key is marked
+    QUALIFIED_FOR_SCOPE only when *every* operation using it (as route
+    or as worker) is itself ok — under AUTO_PERFORMANCE that means a
+    complete bound measurement per operation, so qualification never
+    leaks between sibling operations sharing a route or worker."""
     policy = plan["execution"]["policy"]
     by_id = {v["candidate_id"]: v for v in report["candidates"]}
-    gate = {}
+    operations = {}
     for op in plan["operations"]:
         verdict = by_id.get(op["operation_id"])
-        if verdict is None:
-            continue
-        ok = verdict["selectable"] if policy == "AUTO_PERFORMANCE" \
-            else verdict["eligible"]
-        if ok:
+        ok = verdict is not None and (
+            verdict["selectable"] if policy == "AUTO_PERFORMANCE"
+            else verdict["eligible"])
+        entry = {"state": "QUALIFIED_FOR_SCOPE" if ok
+                 else "NOT_QUALIFIED"}
+        if verdict is not None:
+            entry["evidence_id"] = verdict["evidence_id"]
+            entry["registry_state"] = verdict["registry_state"]
+            entry["eligible"] = verdict["eligible"]
+            entry["selectable"] = verdict["selectable"]
+            if not ok:
+                entry["reasons"] = verdict["reasons"]
+        operations[op["operation_id"]] = entry
+    gate = {"operations": operations}
+    users = {}
+    for op in plan["operations"]:
+        for key in (op["route"], op["worker"]):
+            users.setdefault(key, []).append(op["operation_id"])
+    for key, op_ids in users.items():
+        if all(operations[o]["state"] == "QUALIFIED_FOR_SCOPE"
+               for o in op_ids):
             entry = {"state": "QUALIFIED_FOR_SCOPE",
-                     "evidence_id": verdict["evidence_id"]}
-            gate[op["route"]] = dict(entry)
-            gate[op["worker"]] = dict(entry)
+                     "operations": sorted(op_ids)}
+            ids = {operations[o].get("evidence_id") for o in op_ids}
+            ids.discard(None)
+            if len(ids) == 1:
+                entry["evidence_id"] = ids.pop()
+            gate[key] = entry
     return gate
 
 
@@ -644,9 +729,15 @@ def plan_preflight(plan, *, state_dir=None, evidence_list=None,
 
 # --- status ------------------------------------------------------------------
 
-def registry_status(state_dir, *, observation=None, now_ms=None):
+def registry_status(state_dir, *, observation=None, now_ms=None,
+                    trust_stored=False):
     """Every stored entry with its computed current state and reasons —
     the machine-readable truth behind the CLI and the browser panel.
+
+    Without a fresh `observation` a stored QUALIFIED_FOR_SCOPE reports
+    STALE/`no_current_observation` — fail closed. `trust_stored=True`
+    reports the stored claim for display surfaces only; it is never
+    used by the execution gate.
 
     Facets are reported honestly: this registry records capability
     evidence, and real external qualification/acceptance/release stay
@@ -655,7 +746,8 @@ def registry_status(state_dir, *, observation=None, now_ms=None):
     """
     listed = []
     for ev in entries(state_dir):
-        state = current_state(ev, observation, now_ms=now_ms)
+        state = current_state(ev, observation, now_ms=now_ms,
+                              trust_stored=trust_stored)
         listed.append({
             "evidence_id": ev["evidence_id"],
             "axis": axis_of(ev),
