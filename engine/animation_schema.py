@@ -26,6 +26,8 @@ DOCUMENT_SCHEMAS = {
     "animation_build": 2,
     "pack_index": 1,
     "storage_archive": 1,
+    "animation_shot_plan": 1,
+    "composite_recipe": 1,
 }
 
 TIMELINE_FIELDS = {"document_type", "schema_version", "target_frames", "entries"}

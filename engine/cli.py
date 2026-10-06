@@ -63,15 +63,28 @@ def main(argv=None):
     group.add_argument("--folder", help="Folder of PNG members ordered lexically by filename")
     seq.add_argument("--asset-id", help="Existing A0001-style asset id to revise")
     seq.add_argument("--note", default="")
-    asset = sub.add_parser("import-animation-asset", help="FRAME_ANIMATION_V1: import one RGBA layer, preserving alpha/crop origin/pivot; registers a draft revision")
+    asset = sub.add_parser("import-animation-asset", help="FRAME_ANIMATION_V1: import a layer/mask/replacement drawing/rig spec as a draft revision")
     asset.add_argument("project")
-    asset.add_argument("--kind", required=True, help="Asset kind; LAYER_RGBA is implemented in this node")
-    asset.add_argument("--file", required=True)
+    asset.add_argument("--kind", required=True, help="LAYER_RGBA, MASK, REPLACEMENT_DRAWING or RIG_SPEC")
+    asset.add_argument("--file", required=True, help="Source PNG, or the rig spec JSON for RIG_SPEC")
     asset.add_argument("--asset-id", help="Existing A0001-style asset id to revise")
-    asset.add_argument("--pivot", default="0,0", help="Layer pivot as integer x,y in asset pixels")
+    asset.add_argument("--pivot", default="0,0", help="Layer/replacement pivot as integer x,y in asset pixels")
     asset.add_argument("--crop-origin", default="0,0", help="Crop origin as integer x,y")
     asset.add_argument("--z-order", type=int, default=0)
+    asset.add_argument("--target", help="MASK: target pin asset_id:revision:sha256")
+    asset.add_argument("--region", help="MASK region x,y,w,h in target canvas; default whole canvas")
+    asset.add_argument("--channel", choices=["ALPHA", "LUMINANCE"], default="LUMINANCE")
+    asset.add_argument("--replaces", help="REPLACEMENT_DRAWING: pin it replaces asset_id:revision:sha256")
+    asset.add_argument("--frame", type=int, help="REPLACEMENT_DRAWING declared first frame")
     asset.add_argument("--note", default="")
+    plan_cmd = sub.add_parser("shot-plan", help="FRAME_ANIMATION_V1: validate and store a shot's animation_shot_plan (C-path layers/camera)")
+    plan_cmd.add_argument("project")
+    plan_cmd.add_argument("shot")
+    plan_cmd.add_argument("--file", required=True, help="Plan JSON document")
+    composite_cmd = sub.add_parser("compile-shot", help="FRAME_ANIMATION_V1: composite one shot's C-path plan into a COMPOSITE_SEQUENCE draft")
+    composite_cmd.add_argument("project")
+    composite_cmd.add_argument("shot")
+    composite_cmd.add_argument("--instance", help="Instance id when a shot has several entries")
     listing_anim = sub.add_parser("animation-assets", help="List registered animation assets and shot assignments")
     listing_anim.add_argument("project")
     check_anim = sub.add_parser("animation-validate", help="FRAME_ANIMATION_V1: check the edit timeline and per-shot sequence coverage")
@@ -220,14 +233,58 @@ def main(argv=None):
                                            folder=a.folder, asset_id=a.asset_id,
                                            note=a.note)
         elif a.command == "import-animation-asset":
-            from .animation_assets import import_layer_rgba
-            if a.kind.upper() != "LAYER_RGBA":
-                raise FilmError(f"Asset kind {a.kind} is not implemented in this node; LAYER_RGBA is")
+            from .animation_assets import (import_layer_rgba, import_mask,
+                                           import_replacement_drawing,
+                                           import_rig_spec)
+            def _pin_arg(value, flag):
+                if not value:
+                    raise FilmError(f"--{flag} is required as "
+                                    "asset_id:revision:sha256")
+                parts = value.split(":")
+                if len(parts) != 3:
+                    raise FilmError(f"--{flag} must be "
+                                    "asset_id:revision:sha256")
+                return {"asset_id": parts[0], "revision": int(parts[1]),
+                        "content_sha256": parts[2]}
+            kind = a.kind.upper()
             pivot = [int(v) for v in a.pivot.split(",")]
-            origin = [int(v) for v in a.crop_origin.split(",")]
-            result = import_layer_rgba(a.project, a.file, asset_id=a.asset_id,
-                                       pivot=pivot, crop_origin=origin,
-                                       z_order=a.z_order, note=a.note)
+            if kind == "LAYER_RGBA":
+                origin = [int(v) for v in a.crop_origin.split(",")]
+                result = import_layer_rgba(a.project, a.file,
+                                           asset_id=a.asset_id,
+                                           pivot=pivot, crop_origin=origin,
+                                           z_order=a.z_order, note=a.note)
+            elif kind == "MASK":
+                region = ([int(v) for v in a.region.split(",")]
+                          if a.region else None)
+                result = import_mask(a.project, a.file,
+                                     target=_pin_arg(a.target, "target"),
+                                     region=region, channel=a.channel,
+                                     asset_id=a.asset_id, note=a.note)
+            elif kind == "REPLACEMENT_DRAWING":
+                if a.frame is None:
+                    raise FilmError("--frame is required for "
+                                    "REPLACEMENT_DRAWING")
+                result = import_replacement_drawing(
+                    a.project, a.file,
+                    replaces=_pin_arg(a.replaces, "replaces"),
+                    frame=a.frame, pivot=pivot, asset_id=a.asset_id,
+                    note=a.note)
+            elif kind == "RIG_SPEC":
+                spec = json.loads(Path(a.file).read_text(encoding="utf-8"))
+                result = import_rig_spec(a.project, spec,
+                                         asset_id=a.asset_id, note=a.note)
+            else:
+                raise FilmError(f"Asset kind {a.kind} is not implemented "
+                                "in this node")
+        elif a.command == "shot-plan":
+            from .motion_plan import save_shot_plan
+            document = json.loads(Path(a.file).read_text(encoding="utf-8"))
+            result = save_shot_plan(a.project, document)
+        elif a.command == "compile-shot":
+            from .compositor import composite_shot
+            result = composite_shot(a.project, a.shot,
+                                    instance_id=a.instance)
         elif a.command == "animation-assets":
             from .animation_assets import asset_status
             result = asset_status(a.project)
