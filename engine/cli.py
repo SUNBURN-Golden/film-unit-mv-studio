@@ -89,6 +89,20 @@ def main(argv=None):
     listing_anim.add_argument("project")
     check_anim = sub.add_parser("animation-validate", help="FRAME_ANIMATION_V1: check the edit timeline and per-shot sequence coverage")
     check_anim.add_argument("project")
+    arch = sub.add_parser("archive-create", help="ANIM-013: pack a folder of PNGs into a sealed FAV1 archive on a local backend")
+    arch.add_argument("source", help="Folder of PNG members")
+    arch.add_argument("--root", required=True, help="Archive backend root (objects/ + manifests/)")
+    arch.add_argument("--profile", choices=["LOCAL_FULL", "DRIVE_BOUNDED"], default="LOCAL_FULL")
+    arch.add_argument("--min-level", choices=["UPLOADED_UNVERIFIED", "UPLOAD_HASH_MATCHED", "FULL_READBACK"], default="UPLOAD_HASH_MATCHED")
+    rst = sub.add_parser("archive-restore", help="ANIM-013: verified restore of an archive through the bounded workspace")
+    rst.add_argument("manifest", help="Path to a storage_archive manifest JSON")
+    rst.add_argument("dest", help="Destination folder (created; never overwritten)")
+    rst.add_argument("--root", help="Archive backend root; defaults to the manifest's parent")
+    rst.add_argument("--workspace", help="Bounded cache directory")
+    rst.add_argument("--offline", action="store_true", help="Require the whole pack verified before writing")
+    ast = sub.add_parser("archive-status", help="ANIM-013: object inventory and seal state of an archive manifest")
+    ast.add_argument("manifest")
+    ast.add_argument("--root")
     for name in ["review-cut", "review-transition"]:
         review = sub.add_parser(name, help="FRAME_ANIMATION_V1: record a human review bound to the current adopted digests")
         review.add_argument("project")
@@ -277,6 +291,18 @@ def main(argv=None):
         elif a.command == "animation-validate":
             from .frame_sequence import animation_validate
             result = animation_validate(a.project)
+        elif a.command == "archive-create":
+            from .archive_cli import archive_create
+            result = archive_create(a.source, a.root, profile=a.profile,
+                                    min_level=a.min_level)
+        elif a.command == "archive-restore":
+            from .archive_cli import archive_restore
+            result = archive_restore(a.manifest, a.dest, root=a.root,
+                                     workspace=a.workspace,
+                                     offline=a.offline)
+        elif a.command == "archive-status":
+            from .archive_cli import archive_status_cli
+            result = archive_status_cli(a.manifest, root=a.root)
         elif a.command == "review-cut":
             from .animation_review import record_cut_review
             with project_mutex(a.project):
