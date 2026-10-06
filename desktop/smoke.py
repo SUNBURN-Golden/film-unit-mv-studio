@@ -63,8 +63,9 @@ def run(folder):
             raise AssertionError("Packaging must not bypass Final approval")
 
     # The panels are loaded by name at run time; a module missing from the bundle would only fail on its tab.
+    # app.animation_ui carries the FRAME_ANIMATION_V1 panels (paths A/B/C) added by ANIM-011/012.
     import importlib
-    modules = ["app.models_ui", "app.handoff_ui"]
+    modules = ["app.models_ui", "app.handoff_ui", "app.animation_ui"]
     for name in modules:
         importlib.import_module(name)
 
