@@ -13,10 +13,14 @@ import pytest
 from streamlit.testing.v1 import AppTest
 
 from engine import perf_scheduler as ps
+from engine.animation_schema import write_canon
 from engine.capability_registry import (make_measurement, plan_candidates,
                                         register, save_measurement)
 from engine.encoder_backends import capability_evidence
+from engine.execution_plan import validate_execution_plan
+from engine.execution_workers.subscription import save_entitlement
 from test_anim_017 import perf_project
+from test_film_resource_forecast import entitlement, subscription_plan
 import engine.resource_forecast as rf
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -125,6 +129,22 @@ def test_forecast_panel_shows_measured_provenance(screen):
     assert any("측정 출처" in label for label in labels)
     jsons = " ".join(str(j.value) for j in at.json)
     assert "CAP-MEASURE" in jsons and "box-ui" in jsons
+
+
+def test_forecast_panel_usage_unknown_warning(screen):
+    """A subscription plan with a confirmed entitlement but no measured
+    usage renders USAGE_UNKNOWN as a warning, with the cost basis shown
+    next to the verdict."""
+    project, _ = screen
+    write_canon(project / "execution" / "plan.json",
+                validate_execution_plan(subscription_plan()))
+    save_entitlement(ps.perf_state_dir(project), entitlement())
+    at = _run_screen()
+    warnings = [w.value for w in at.warning]
+    assert any("USAGE_UNKNOWN" in w and "비용 근거" in w
+               for w in warnings)
+    texts = " ".join(warnings + [m.value for m in at.markdown])
+    assert "비용 근거" in texts and "DECLARED" in texts
 
 
 def test_forecast_panel_is_hidden_for_legacy(tmp_path, monkeypatch):

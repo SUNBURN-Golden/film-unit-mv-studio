@@ -25,8 +25,9 @@ from engine.core import FilmError
 from engine.encoder_backends import capability_evidence
 from engine.execution_plan import validate_execution_plan
 from engine.execution_workers.subscription import (
-    make_entitlement, quote_digest, subscription_worker_id)
-from engine.resource_forecast import forecast_plan
+    make_entitlement, quote_digest, save_entitlement,
+    subscription_worker_id)
+from engine.resource_forecast import _load_entitlements, forecast_plan
 from test_anim_017 import perf_project
 
 SERVICE = "chatgpt-code-runtime"
@@ -275,17 +276,84 @@ def test_unobserved_disk_is_unknown_not_assumed():
         r["code"] for r in forecast["refusals"]}
 
 
+def test_measured_zero_disk_peak_stays_measured(tmp_path):
+    """A measured disk peak of 0 is a real measurement — only a
+    missing one is UNKNOWN."""
+    plan = subscription_plan()
+    candidates = {c["candidate_id"]: c for c in plan_candidates(plan)}
+    state_dir = tmp_path / "state"
+    last = None
+    for op in plan["operations"]:
+        cand = candidates[op["operation_id"]]
+        ev = subscription_evidence(cand["scope"])
+        register(state_dir, ev)
+        record = complete_measurement(ev, plan, cand)
+        record["peaks"]["disk_bytes"] = 0
+        save_measurement(state_dir, record)
+        last = ev
+    forecast = forecast_plan(plan, state_dir=state_dir,
+                             observation=ps._observation_for(last))
+    capacity = forecast["workspace"]["capacity"]
+    assert capacity["measured_peak_disk_bytes"]["value"] == 0
+    assert capacity["measured_peak_disk_bytes"]["basis"] == "MEASURED"
+    assert capacity["peak_within_declared_caps"] is True
+
+
+def test_decoded_frame_bytes_counts_encoder_input_once():
+    """The plan-level decoded total is the frames the compose
+    operations produce — the encode candidate consumes those same
+    frames and must not count them twice."""
+    plan = subscription_plan()
+    forecast = forecast_plan(plan, evidence_list=[])
+    per_frame = 8 * 6 * 4
+    encode = next(r for r in forecast["operations"]
+                  if r["kind"] == "encoder")
+    # The per-row value is still the encoder's full input — the total
+    # is the two 4-frame operations' output, counted once.
+    assert encode["output"]["decoded_frame_bytes"]["value"] == \
+        8 * per_frame
+    assert forecast["totals"]["output"]["decoded_frame_bytes"][
+        "value"] == 8 * per_frame
+
+
 # --- subscription: inclusion / quote / extra charge ------------------------------
 
-def test_subscription_covered_and_allowance_exhausted():
+def test_subscription_covered_and_allowance_exhausted(tmp_path):
     plan = subscription_plan()
-    covered = forecast_plan(plan, evidence_list=[],
-                            entitlements=[entitlement()])
+    candidates = {c["candidate_id"]: c for c in plan_candidates(plan)}
+    state_dir = tmp_path / "state"
+    last = None
+    for op in plan["operations"]:
+        cand = candidates[op["operation_id"]]
+        ev = subscription_evidence(cand["scope"])
+        register(state_dir, ev)
+        save_measurement(state_dir, complete_measurement(
+            ev, plan, cand,
+            usage={"subscription_units": 2, "handoff_minutes": 1}))
+        last = ev
+    covered = forecast_plan(
+        plan, state_dir=state_dir, entitlements=[entitlement()],
+        observation=ps._observation_for(last))
     section = covered["subscription"][SERVICE]
     assert section["inclusion"] == "CONFIRMED"
     assert section["charge"]["verdict"] == "COVERED"
-    assert section["cost_estimate"]["basis"] == "DECLARED"
+    assert section["cost_estimate"]["basis"] == "MEASURED"
+    assert section["cost_estimate"]["unmeasured_paid_units"] == []
     assert section["quote"]["status"] == "CURRENT"
+
+    # With no measured usage the declared frame estimate can never
+    # prove there is no extra charge — the verdict is USAGE_UNKNOWN
+    # and the forecast refuses.
+    unknown = forecast_plan(plan, evidence_list=[],
+                            entitlements=[entitlement()])
+    section = unknown["subscription"][SERVICE]
+    assert section["charge"]["verdict"] == "USAGE_UNKNOWN"
+    assert section["cost_estimate"]["basis"] == "DECLARED"
+    assert section["charge"]["declared_estimate_verdict"]["verdict"] \
+        == "COVERED"
+    assert "not measured" in section["charge"]["reason"]
+    assert "USAGE_UNKNOWN" in {
+        r["code"] for r in unknown["refusals"]}
 
     exhausted = forecast_plan(
         plan, evidence_list=[],
@@ -296,12 +364,72 @@ def test_subscription_covered_and_allowance_exhausted():
     section = exhausted["subscription"][SERVICE]
     assert section["charge"]["verdict"] == "ALLOWANCE_EXHAUSTED"
     assert "no reroute" in section["charge"]["reason"]
+    # A refusal verdict stays as-is; its reason still notes that the
+    # usage itself was never measured.
+    assert "not measured" in section["charge"]["reason"]
     assert "ALLOWANCE_EXHAUSTED" in {
         r["code"] for r in exhausted["refusals"]}
     alt = next(a for a in exhausted["alternatives"]
                if a["kind"] == "ROUTE_OR_CHUNK")
     assert alt["paid_fallback_auto_run"] is False
     assert alt["executes"].startswith("NEVER")
+
+
+def test_stale_paid_usage_is_usage_unknown(tmp_path):
+    """A stale measurement's paid units are unaccounted for — the
+    declared frame estimate can never read as COVERED."""
+    plan = subscription_plan()
+    candidates = {c["candidate_id"]: c for c in plan_candidates(plan)}
+    state_dir = tmp_path / "state"
+    for op in plan["operations"]:
+        cand = candidates[op["operation_id"]]
+        ev = subscription_evidence(cand["scope"])
+        register(state_dir, ev)
+        save_measurement(state_dir, complete_measurement(
+            ev, plan, cand,
+            usage={"subscription_units": 1, "handoff_minutes": 1,
+                   "api_credits": 3}))
+    # No current observation: the bound measurements are STALE, so the
+    # usage values are UNKNOWN — api_credits included.
+    forecast = forecast_plan(plan, state_dir=state_dir,
+                             entitlements=[entitlement()],
+                             observation=None)
+    section = forecast["subscription"][SERVICE]
+    assert section["charge"]["verdict"] == "USAGE_UNKNOWN"
+    assert "STALE" in section["charge"]["reason"]
+    assert section["charge"]["declared_estimate_verdict"]["verdict"] \
+        == "COVERED"
+    assert section["cost_estimate"]["unmeasured_paid_units"] == \
+        ["api_credits"]
+    assert "USAGE_UNKNOWN" in {
+        r["code"] for r in forecast["refusals"]}
+
+
+def test_partial_usage_map_is_usage_unknown(tmp_path):
+    """One measured sibling row does not cover a sibling with no usage
+    map at all — the section is still USAGE_UNKNOWN."""
+    # op-b's scope (6 frames) is not covered by op-a's measurement
+    # (4 frames), so its row carries no usage map at all.
+    plan = make_plan(
+        [operation("op-a", [0, 4], "SUBSCRIPTION_CODE_RUNTIME", WID),
+         operation("op-b", [4, 10], "SUBSCRIPTION_CODE_RUNTIME", WID)],
+        transfer_route="MANUAL_PACKET", output_frames=10)
+    candidates = {c["candidate_id"]: c for c in plan_candidates(plan)}
+    state_dir = tmp_path / "state"
+    cand = candidates["op-a"]
+    ev = subscription_evidence(cand["scope"])
+    register(state_dir, ev)
+    save_measurement(state_dir, complete_measurement(ev, plan, cand))
+    forecast = forecast_plan(
+        plan, state_dir=state_dir, entitlements=[entitlement()],
+        observation=ps._observation_for(ev))
+    section = forecast["subscription"][SERVICE]
+    assert section["charge"]["verdict"] == "USAGE_UNKNOWN"
+    assert "missing" in section["charge"]["reason"]
+    assert section["charge"]["declared_estimate_verdict"]["verdict"] \
+        == "COVERED"
+    assert "USAGE_UNKNOWN" in {
+        r["code"] for r in forecast["refusals"]}
 
 
 def test_unknown_inclusion_is_never_free(tmp_path):
@@ -391,6 +519,21 @@ def test_expired_entitlement_refuses():
         r["code"] for r in forecast["refusals"]}
     assert "RENEW_ENTITLEMENT" in {
         a["kind"] for a in forecast["alternatives"]}
+
+
+def test_load_entitlements_skips_symlinks(tmp_path):
+    """Only real files inside subscriptions/ are read — a symlink or a
+    path resolving outside the directory is never followed."""
+    state_dir = tmp_path / "state"
+    save_entitlement(state_dir, entitlement())
+    ghost = make_entitlement(
+        "ghost-svc", usage_path="CODE_RUNTIME_FILE_PACKET",
+        account_binding=hashlib.sha256(b"other-account").hexdigest())
+    write_canon(tmp_path / "ghost.json", ghost)
+    (state_dir / "subscriptions" / "ghost-svc.json").symlink_to(
+        tmp_path / "ghost.json")
+    loaded = _load_entitlements(state_dir)
+    assert [e["service"] for e in loaded] == [SERVICE]
 
 
 # --- AUTO / FIXED_ROUTE and the preview --------------------------------------------

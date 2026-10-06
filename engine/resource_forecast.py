@@ -283,11 +283,13 @@ def _totals(rows, plan):
                     "reason": f"{what} never measured for any "
                               "candidate"}
         out = {"value": best if not missing else UNKNOWN,
-               "basis": MEASURED if not missing else "PARTIAL",
+               "basis": MEASURED if not missing else UNKNOWN,
                "measured_max": best,
                "missing": missing,
                "reason": f"per-candidate peaks never sum; {what} is the "
                          "max over measured candidates"}
+        if missing:
+            out["partial"] = True
         return out
 
     usage = {}
@@ -300,8 +302,11 @@ def _totals(rows, plan):
             else:
                 usage[unit] = UNKNOWN
     manual = [r["manual_minutes"]["value"] for r in rows]
+    # The encoder's input is the same frames the compose operations
+    # produce, so only operation rows are summed — counting encoder
+    # candidates too would count those decoded bytes twice.
     decoded = sum(r["output"]["decoded_frame_bytes"]["value"]
-                  for r in rows)
+                  for r in rows if r.get("kind") == "operation")
     return {
         "cpu_ms": summed(lambda r: r["time_ms"]["cold"],
                          "cold end_to_end_ms"),
@@ -376,7 +381,10 @@ def _workspace_check(plan, rows, disk):
     cap_total = caps.get("pc_cache_limit_bytes", 0) \
         + caps.get("worker_scratch_limit_bytes", 0)
     peaks = [r["peaks"]["disk_bytes"]["value"] for r in rows]
-    measured_peak = max((v for v in peaks if type(v) is int), default=0)
+    measured = [v for v in peaks if type(v) is int]
+    # A measured peak of 0 is a real measurement — only a missing one
+    # is UNKNOWN.
+    measured_peak = max(measured) if measured else None
     capacity = {"pc_cache_limit_bytes": _line(
                     caps.get("pc_cache_limit_bytes", 0), DECLARED,
                     source=_declared("plan.workspace")),
@@ -385,12 +393,14 @@ def _workspace_check(plan, rows, disk):
                     DECLARED, source=_declared("plan.workspace")),
                 "on_limit": caps.get("on_limit"),
                 "measured_peak_disk_bytes": _line(
-                    measured_peak, MEASURED if measured_peak else UNKNOWN,
-                    reason=None if measured_peak else
+                    measured_peak if measured_peak is not None
+                    else UNKNOWN,
+                    MEASURED if measured_peak is not None else UNKNOWN,
+                    reason=None if measured_peak is not None else
                     "no measured disk peak yet"),
                 "peak_within_declared_caps":
                     (measured_peak <= cap_total)
-                    if measured_peak else UNKNOWN}
+                    if measured_peak is not None else UNKNOWN}
     return {"reservations": checks, "capacity": capacity,
             "shortfalls": [c for c in checks
                            if c["sufficient"] is False]}
@@ -441,10 +451,17 @@ def _subscription_section(plan, rows, entitlements, prior_quotes,
         usage_units = sorted({
             unit for r in service_rows for unit in (r.get("usage") or {})
             if unit in ALLOWANCE_UNITS})
-        usage_known = bool(usage_units) and all(
-            type(((r.get("usage") or {}).get(unit) or {}).get("value"))
-            is int
-            for r in service_rows for unit in usage_units)
+        unmeasured_bases = set()
+        for r in service_rows:
+            for unit in usage_units:
+                line = (r.get("usage") or {}).get(unit) or {}
+                if type(line.get("value")) is not int:
+                    unmeasured_bases.add(line.get("basis") or "missing")
+        usage_known = bool(usage_units) and not unmeasured_bases
+        unmeasured_paid = sorted(
+            u for u in usage_units if u in PAID_UNITS and any(
+                type(((r.get("usage") or {}).get(u) or {}).get("value"))
+                is not int for r in service_rows))
         section = {"service": service,
                    "operations": [r["candidate_id"]
                                   for r in service_rows],
@@ -484,6 +501,28 @@ def _subscription_section(plan, rows, entitlements, prior_quotes,
             allow_additional_charges=
             plan["execution"]["allow_additional_charges"],
             additional_charges_approved=False)
+        if not usage_known:
+            # A declared frame-count estimate can never prove there is
+            # no extra charge — an unmeasured usage stays unknown, and
+            # any paid units of a known or stale measurement are
+            # unaccounted for.
+            note = ("subscription usage is not measured ("
+                    + ", ".join(sorted(unmeasured_bases) or ["missing"])
+                    + ") — the declared frame estimate cannot prove "
+                    "there is no extra charge; any paid units of a "
+                    "known or stale measurement are unaccounted for")
+            if unmeasured_paid:
+                note += ": " + ", ".join(unmeasured_paid)
+            if verdict["verdict"] in {"COVERED",
+                                      "EXTRA_CHARGE_APPROVED"}:
+                verdict = {"verdict": "USAGE_UNKNOWN",
+                           "detail": verdict.get("detail") or {},
+                           "reason": note,
+                           "declared_estimate_verdict": verdict}
+            else:
+                verdict = dict(verdict)
+                base = (verdict.get("reason") or "").rstrip()
+                verdict["reason"] = base + " — " + note if base else note
         current_quote = quote_digest(entitlement)
         prior = (prior_quotes or {}).get(service)
         issued_here = [i for i in issued if i["service"] == service]
@@ -496,7 +535,8 @@ def _subscription_section(plan, rows, entitlements, prior_quotes,
             "credential_epoch": entitlement["credential_epoch"],
             "inclusion": entitlement["inclusion"]
             ["execution_in_subscription"],
-            "cost_estimate": {"units": cost, "basis": cost_basis},
+            "cost_estimate": {"units": cost, "basis": cost_basis,
+                              "unmeasured_paid_units": unmeasured_paid},
             "charge": verdict,
             "quote": {"status": "CHANGED" if changed else "CURRENT",
                       "quote_digest": current_quote,
@@ -733,8 +773,14 @@ def _load_entitlements(state_dir):
     folder = Path(state_dir) / "subscriptions"
     if not folder.is_dir():
         return []
+    root = folder.resolve()
     out = []
     for path in sorted(folder.glob("*.json")):
+        # Only real files inside the subscriptions dir are read — a
+        # symlink or anything resolving outside is never followed.
+        if path.is_symlink() \
+                or not path.resolve().is_relative_to(root):
+            continue
         out.append(validate_entitlement(read_canon(path)))
     return out
 

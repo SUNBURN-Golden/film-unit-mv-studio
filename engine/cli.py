@@ -323,7 +323,7 @@ def main(argv=None):
     forecast.add_argument("project")
     forecast.add_argument("--plan", help="ExecutionPlan 1 JSON; default <project>/execution/plan.json then the perf graph's AUTO_PERFORMANCE plan")
     forecast.add_argument("--state-dir", help="Registry + subscriptions dir; default <project>/render/perf/registry")
-    forecast.add_argument("--observation", help="JSON file with a fresh environment observation; default observes the current device")
+    forecast.add_argument("--observation", help="JSON file with a fresh environment observation; by default the current device/session is observed, and evidence measured under another session still shows as STALE until it is re-measured here")
     forecast.add_argument("--no-observe", action="store_true",
         help="Skip the current observation — stored evidence stays STALE and every measured line degrades to UNKNOWN")
     forecast.add_argument("--disk-free-bytes", type=int, default=None,

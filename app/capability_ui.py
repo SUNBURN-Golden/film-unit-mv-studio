@@ -167,10 +167,16 @@ def render_forecast(project=None, state_dir=None):
                        f"필요 {_lv(check['needed_bytes'])} B, "
                        f"여유 {_lv(check['free_bytes'])} B")
     for service, sub in forecast["subscription"].items():
-        st.markdown(f"**구독** `{service}` — 포함: "
-                    f"**{sub['inclusion']}** · 청구 판정: "
-                    f"**{sub['charge']['verdict']}** · quote: "
-                    f"**{sub['quote']['status']}**")
+        verdict = sub["charge"]["verdict"]
+        basis = (sub.get("cost_estimate") or {}).get("basis") or "UNKNOWN"
+        line = (f"**구독** `{service}` — 포함: "
+                f"**{sub['inclusion']}** · 청구 판정: "
+                f"**{verdict}** · 비용 근거: **{basis}** · quote: "
+                f"**{sub['quote']['status']}**")
+        if verdict == "USAGE_UNKNOWN":
+            st.warning(line)
+        else:
+            st.markdown(line)
         if sub["charge"].get("reason"):
             st.caption(sub["charge"]["reason"])
     for refusal in forecast["refusals"]:
