@@ -7,9 +7,9 @@ import shutil
 from PIL import Image, ImageDraw
 
 from .core import (FilmError, atomic_text, digest, ffmpeg, frame_at, now, object_hash,
-                   probe, production_fingerprint, project_mutex, read, require_lock,
-                   require_legacy_profile, safe_path, validate_manifest,
-                   visual_context_fingerprint, write)
+                   probe, production_fingerprint, production_profile, project_mutex,
+                   read, require_lock, require_legacy_profile, safe_path,
+                   validate_manifest, visual_context_fingerprint, write)
 from .builds import allocate_build, capture, seal_build
 from .resolver import candidates, checked_source, register_asset, shot_hash
 
@@ -154,11 +154,21 @@ def _resolve_clip(p, build, shot, fmt, visual_context_id, strict):
     raise FilmError(f"{shot['id']} has no eligible Final asset: " + "; ".join(failures))
 
 
+def _animation_project(project):
+    return production_profile(read(Path(project) / "project.yaml")) != "LEGACY_MV"
+
+
 def compile_preview(project, quality="draft", progress=None):
+    if _animation_project(project):
+        from .animation_preview import compile_draft_preview
+        return compile_draft_preview(project, quality, progress)
     return _compile(project, False, quality, progress)
 
 
 def compile_final(project, quality="final", progress=None):
+    if _animation_project(project):
+        raise FilmError("Final compile for FRAME_ANIMATION_V1 arrives with the "
+                        "review/output node; a draft Preview never substitutes")
     return _compile(project, True, quality, progress)
 
 

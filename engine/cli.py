@@ -55,6 +55,25 @@ def main(argv=None):
     anim_init = sub.add_parser("animation-init", help="Explicitly convert a LEGACY_MV project to FRAME_ANIMATION_V1 with metadata backup; never runs implicitly")
     anim_init.add_argument("project")
     anim_init.add_argument("--profile", choices=["frame-animation-v1"], default="frame-animation-v1")
+    seq = sub.add_parser("import-sequence", help="FRAME_ANIMATION_V1: import an external frame sequence for one shot from an index or folder; registers a draft revision")
+    seq.add_argument("project")
+    seq.add_argument("shot")
+    group = seq.add_mutually_exclusive_group(required=True)
+    group.add_argument("--index", help="JSON index with an explicit frames order and per-member sha256")
+    group.add_argument("--folder", help="Folder of PNG members ordered lexically by filename")
+    seq.add_argument("--asset-id", help="Existing A0001-style asset id to revise")
+    seq.add_argument("--note", default="")
+    asset = sub.add_parser("import-animation-asset", help="FRAME_ANIMATION_V1: import one RGBA layer, preserving alpha/crop origin/pivot; registers a draft revision")
+    asset.add_argument("project")
+    asset.add_argument("--kind", required=True, help="Asset kind; LAYER_RGBA is implemented in this node")
+    asset.add_argument("--file", required=True)
+    asset.add_argument("--asset-id", help="Existing A0001-style asset id to revise")
+    asset.add_argument("--pivot", default="0,0", help="Layer pivot as integer x,y in asset pixels")
+    asset.add_argument("--crop-origin", default="0,0", help="Crop origin as integer x,y")
+    asset.add_argument("--z-order", type=int, default=0)
+    asset.add_argument("--note", default="")
+    listing_anim = sub.add_parser("animation-assets", help="List registered animation assets and shot assignments")
+    listing_anim.add_argument("project")
     packets = sub.add_parser("packets", help="Write per-shot prompts and import commands for making media by hand in subscription apps; no provider calls")
     packets.add_argument("project")
     packets.add_argument("--shots", help="Comma-separated shot IDs; default all shots")
@@ -138,6 +157,23 @@ def main(argv=None):
         elif a.command == "animation-init":
             from .animation_migrate import animation_init
             result = animation_init(a.project, profile=a.profile)
+        elif a.command == "import-sequence":
+            from .animation_assets import import_frame_sequence
+            result = import_frame_sequence(a.project, a.shot, index=a.index,
+                                           folder=a.folder, asset_id=a.asset_id,
+                                           note=a.note)
+        elif a.command == "import-animation-asset":
+            from .animation_assets import import_layer_rgba
+            if a.kind.upper() != "LAYER_RGBA":
+                raise FilmError(f"Asset kind {a.kind} is not implemented in this node; LAYER_RGBA is")
+            pivot = [int(v) for v in a.pivot.split(",")]
+            origin = [int(v) for v in a.crop_origin.split(",")]
+            result = import_layer_rgba(a.project, a.file, asset_id=a.asset_id,
+                                       pivot=pivot, crop_origin=origin,
+                                       z_order=a.z_order, note=a.note)
+        elif a.command == "animation-assets":
+            from .animation_assets import asset_status
+            result = asset_status(a.project)
         elif a.command == "builds":
             from .builds import list_builds
             result = list_builds(a.project)
