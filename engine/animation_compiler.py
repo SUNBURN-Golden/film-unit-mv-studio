@@ -454,6 +454,13 @@ def replay_local_full(build_dir, out, record):
     if not verify_build(build)["valid"]:
         raise FilmError("Build 2 archive failed its inventory check")
     snapshot = build / "snapshot"
+    # Paths stored inside the archive are confined to it before any use.
+    audio_rel = (record.get("audio") or {}).get("path")
+    if type(audio_rel) is not str:
+        raise FilmError("Archived master audio is missing")
+    master = safe_path(build, audio_rel)
+    if not master.is_file():
+        raise FilmError("Archived master audio is missing")
     document = read_canon(snapshot / "timeline/edit.json")
     registry = validate_registry(
         read_canon(snapshot / "manifest/animation_assets.json"))
@@ -481,7 +488,7 @@ def replay_local_full(build_dir, out, record):
         asset = registry["assets"][pin["asset_id"]]["revisions"][
             str(pin["revision"])]
         member_files[entry["instance_id"]] = {
-            f["frame_index"]: snapshot / f["relative_name"]
+            f["frame_index"]: safe_path(snapshot, f["relative_name"])
             for f in asset["files"]}
     work = Path(tempfile.mkdtemp(prefix=".recompose-", dir=out))
     try:
@@ -514,9 +521,6 @@ def replay_local_full(build_dir, out, record):
                 != record["sequences"]["subbed_sequence_root"]:
             raise FilmError("Stored delivery sequence does not match the "
                             "sealed subbed_sequence_root")
-        master = build / record["audio"]["path"]
-        if not master.is_file():
-            raise FilmError("Archived master audio is missing")
         subbed = _encode_master(final_dir, output_frames, fmt, master,
                                 out / "MASTER_SUBBED.mp4", seconds)
         _check_delivery(subbed, fmt, output_frames, seconds)

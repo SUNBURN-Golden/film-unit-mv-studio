@@ -510,3 +510,131 @@ def test_cli_review_commands(tmp_path):
     legacy = fixture_project(legacy_root, seconds=1, shot_count=1)
     assert cli.main(["review-cut", str(legacy), "I001", "--reviewer", "x",
                      "--methods", "CUT_FULL_SPEED_PLAYBACK"]) == 1
+
+
+# --- FINAL_FILM staleness and path confinement -----------------------------
+
+def test_film_review_stale_when_delivery_pixels_change(tmp_path):
+    p = approved_project(tmp_path)
+    folder, record, _ = make_build(p)
+    record_film_review(p, record["build_id"], reviewer=REVIEWER,
+                       methods=FILM_METHODS)
+    assert film_review_status(p, record["build_id"])["state"] == "CURRENT"
+    # Same file name, different pixels: the recomputed frame-sequence root
+    # no longer matches and the sealed inventory fails too.
+    rgba_frame(folder / "final_frames" / "F_000050.png",
+               size=(320, 240), seed=999)
+    assert film_review_status(p, record["build_id"])["state"] == "STALE"
+    # A build that fails inventory cannot be bound to a new review either.
+    with pytest.raises(FilmError, match="inventory"):
+        record_film_review(p, record["build_id"], reviewer=REVIEWER,
+                           methods=FILM_METHODS)
+
+
+def test_film_review_stale_when_archived_font_changes(tmp_path):
+    p = approved_project(tmp_path)
+    folder, record, _ = make_build(p)
+    record_film_review(p, record["build_id"], reviewer=REVIEWER,
+                       methods=FILM_METHODS)
+    assert film_review_status(p, record["build_id"])["state"] == "CURRENT"
+    exported = Path(record["subtitles"]["font"]["exported_path"]).name
+    font = folder / "subtitle_fonts" / exported
+    assert font.is_file() and record["subtitles"]["font"]["sha256"]
+    font.write_bytes(b"tampered font bytes\n")
+    assert film_review_status(p, record["build_id"])["state"] == "STALE"
+
+
+def test_film_review_stale_when_archived_lyrics_change(tmp_path):
+    p = approved_project(tmp_path)
+    folder, record, _ = make_build(p)
+    record_film_review(p, record["build_id"], reviewer=REVIEWER,
+                       methods=FILM_METHODS)
+    assert film_review_status(p, record["build_id"])["state"] == "CURRENT"
+    ass = folder / "lyrics.ass"
+    ass.write_text(ass.read_text() + "Comment: tampered cue\n")
+    assert film_review_status(p, record["build_id"])["state"] == "STALE"
+
+
+def test_replay_refuses_audio_path_escaping_the_build(tmp_path):
+    p = approved_project(tmp_path)
+    folder, record, _ = make_build(p)
+    manifest = read(folder / "build.json")
+    original = manifest["audio"]["path"]
+    # build.json is not in its own inventory; absolute and parent-escaping
+    # audio paths must still be refused before any output is written.
+    for bad in (str(tmp_path / "outside.m4a"), "../outside.m4a"):
+        manifest["audio"]["path"] = bad
+        write(folder / "build.json", manifest)
+        assert verify_build(folder)["valid"]
+        with pytest.raises(FilmError, match="inside"):
+            replay_build(folder, tmp_path / "replay_escape")
+        assert not (tmp_path / "replay_escape").exists()
+    manifest["audio"]["path"] = original
+    write(folder / "build.json", manifest)
+
+
+def test_replay_refuses_registry_member_escaping_the_snapshot(tmp_path):
+    p = approved_project(tmp_path)
+    folder, record, _ = make_build(p)
+    registry_path = folder / "snapshot" / "manifest" / "animation_assets.json"
+    registry = read_canon(registry_path)
+    revision = registry["assets"]["A0001"]["revisions"]["1"]
+    revision["files"][0]["relative_name"] = "../escape.png"
+    write_canon(registry_path, registry)
+    # Keep the sealed inventory honest so the traversal itself is what fails.
+    manifest = read(folder / "build.json")
+    manifest["files"]["snapshot/manifest/animation_assets.json"] = \
+        digest(registry_path)
+    write(folder / "build.json", manifest)
+    assert verify_build(folder)["valid"]
+    with pytest.raises(FilmError, match="inside"):
+        replay_build(folder, tmp_path / "replay_registry")
+    assert not (tmp_path / "replay_registry").exists()
+
+
+def test_film_review_refuses_escaping_identifiers(tmp_path):
+    p = approved_project(tmp_path)
+    _, record, _ = make_build(p)
+    build_id = record["build_id"]
+    for deliverable in ("../x", "snapshot/../build.json", "/etc/passwd"):
+        with pytest.raises(FilmError, match="deliverable"):
+            record_film_review(p, build_id, reviewer=REVIEWER,
+                               methods=FILM_METHODS, deliverable=deliverable)
+    for bad_id in ("../outside", "B0001/x", "draft"):
+        with pytest.raises(FilmError, match="build id"):
+            record_film_review(p, bad_id, reviewer=REVIEWER,
+                               methods=FILM_METHODS)
+    with pytest.raises(FilmError, match="No build"):
+        record_film_review(p, "B9999", reviewer=REVIEWER,
+                           methods=FILM_METHODS)
+    # The sealed build is untouched and still reviewable.
+    record_film_review(p, build_id, reviewer=REVIEWER, methods=FILM_METHODS)
+    assert film_review_status(p, build_id)["state"] == "CURRENT"
+
+
+def test_later_fix_required_supersedes_earlier_approval(tmp_path):
+    """Latest decision on identical digests wins — for cuts and the film."""
+    p = approved_project(tmp_path)
+    record_cut_review(p, "I001", reviewer=REVIEWER, methods=CUT_METHODS)
+    assert review_status(p)["targets"]["I001"]["state"] == "CURRENT"
+    record_cut_review(
+        p, "I001", reviewer=REVIEWER, methods=CUT_METHODS,
+        decision="FIX_REQUIRED",
+        unresolved_major_issues=[{"disposition": "FIX_REQUIRED",
+                                  "note": "edge flicker at the cut point"}])
+    assert review_status(p)["targets"]["I001"]["state"] == "CHANGES_REQUIRED"
+    # A still-later approval on the same digests restores the gate.
+    record_cut_review(p, "I001", reviewer=REVIEWER, methods=CUT_METHODS)
+    assert review_status(p)["targets"]["I001"]["state"] == "CURRENT"
+
+    folder, record, _ = make_build(p)
+    record_film_review(p, record["build_id"], reviewer=REVIEWER,
+                       methods=FILM_METHODS)
+    assert film_review_status(p, record["build_id"])["state"] == "CURRENT"
+    record_film_review(
+        p, record["build_id"], reviewer=REVIEWER, methods=FILM_METHODS,
+        decision="FIX_REQUIRED",
+        unresolved_major_issues=[{"disposition": "FIX_REQUIRED",
+                                  "note": "audio pop near the join"}])
+    assert film_review_status(p, record["build_id"])["state"] \
+        == "CHANGES_REQUIRED"
