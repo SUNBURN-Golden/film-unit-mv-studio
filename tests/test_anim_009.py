@@ -356,8 +356,9 @@ def test_work_packet_records_only_what_the_target_accepts(tmp_path):
     inputs2 = {i["id"]: i for i in doc2["inputs"]}
     assert inputs2["layout"]["disposition"] == "NOT_SENT"
     assert inputs2["mask"]["disposition"] == "NOT_SENT"
-    assert inputs2["control:KEYPOSE:0"]["disposition"] == \
-        "PENDING_PRODUCTION"
+    # An unproduced control the target cannot take is NOT_SENT like any
+    # other unaccepted input, never left silently pending.
+    assert inputs2["control:KEYPOSE:0"]["disposition"] == "NOT_SENT"
     assert {i["input"] for i in doc2["transport"]["not_sent"]} >= \
         {"layout", "guide", "mask"}
     at5b = next(r for r in doc2["requests"] if r["frame"] == 5)
@@ -367,6 +368,25 @@ def test_work_packet_records_only_what_the_target_accepts(tmp_path):
     assert any("layout" in b for b in at5b["blocked"])
     assert doc2["transport"]["mode"] == "MANUAL_PACKET"
     assert doc2["transport"]["target"]["id"] == "prompt-and-refs"
+
+    # A target that accepts layout but caps images still cannot take it:
+    # required references are never trimmed silently to fit the limit.
+    capped = {"id": "one-image-app",
+              "accepts": ["prompt_text", "reference_image", "layout_image",
+                          "pose_image", "mask_region"],
+              "max_images": 1}
+    export_work_packets(p, target=capped)
+    doc3 = load_work_packet(p, "S001")
+    inputs3 = {i["id"]: i for i in doc3["inputs"]}
+    assert inputs3["layout"]["disposition"] == "INCLUDE"
+    at5c = next(r for r in doc3["requests"] if r["frame"] == 5)
+    assert set(at5c["carries"]) == {"prompt", "master"}
+    assert any("layout" in b and "OVER_MAX_IMAGES" in b
+               for b in at5c["blocked"])
+    dropped = {i["input"]: i for i in doc3["transport"]["not_sent"]
+               if "OVER_MAX_IMAGES" in i["reason"]}
+    assert "layout" in dropped
+    assert "S001:inbetween:5" in dropped["layout"]["requests"]
 
 
 def test_work_packet_reference_request_when_no_master(tmp_path):
@@ -378,10 +398,86 @@ def test_work_packet_reference_request_when_no_master(tmp_path):
     document = load_work_packet(p, "S001")
     references = [r for r in document["requests"] if r["kind"] == "reference"]
     assert len(references) == 1
+    assert references[0]["request_id"] == "S001:reference:master"
+    assert references[0]["produces"]["role"] == "master"
     assert references[0]["produces"]["fills_input"] == "master"
     assert references[0]["produces"]["fills_member"] is False
     assert references[0]["carries"] == ["prompt"]
     assert any("master" in w for w in document["warnings"])
+    # Frame requests wait on the reference request and stay blocked until
+    # the master is pinned in the plan and the packet regenerated.
+    frames = [r for r in document["requests"] if r["kind"] != "reference"]
+    assert frames
+    for request in frames:
+        assert "S001:reference:master" in request["depends_on"]
+        assert any("master" in b for b in request["blocked"])
+
+
+def test_missing_layout_blocks_frames_and_refuses_import_and_commit(
+        tmp_path):
+    p, pins, _ = a_scene(tmp_path, with_packet=False)
+    plan = a_plan(pins)
+    plan["assets"] = [a for a in plan["assets"] if a["role"] != "layout"]
+    save_shot_plan(p, plan)
+    export_work_packets(p, target=FULL_TARGET)
+    document = load_work_packet(p, "S001")
+    ref = next(r for r in document["requests"] if r["kind"] == "reference")
+    assert ref["request_id"] == "S001:reference:layout"
+    assert ref["produces"]["role"] == "layout"
+    request = next(r for r in document["requests"] if r["frame"] == 5)
+    assert "S001:reference:layout" in request["depends_on"]
+    assert request["blocked"]
+    # A member frame cannot import while its request is blocked.
+    refs = [pins[k] for k in ("master", "guide", "mask", "replacement")]
+    with pytest.raises(FilmError, match="REQUEST_BLOCKED"):
+        import_draft_image(p, "S001", _frame_png(tmp_path / "f5.png", 5),
+                           role="inbetween", frame=5, references=refs)
+    # Even a hand-filled complete ledger cannot commit: the plan pins no
+    # layout reference (schema 6 path-A rejection).
+    packet_sha = digest(safe_path(p, "animation/packets/S001.json"))
+    entries = []
+    for frame in range(FRAMES):
+        png = _frame_png(tmp_path / f"f{frame}.png", 100 + frame)
+        member = f"animation/shots/S001/drafts/m{frame:06d}.png"
+        stored = safe_path(p, member)
+        stored.parent.mkdir(parents=True, exist_ok=True)
+        stored.write_bytes(png.read_bytes())
+        entries.append({"frame": frame, "role": _role_for(frame).upper(),
+                        "member": member, "sha256": digest(png),
+                        "byte_length": png.stat().st_size,
+                        "source_name": png.name, "imported_at": "fixture",
+                        "packet_sha256": packet_sha, "references": refs,
+                        "asset_pin": None, "state": "DRAFT"})
+    write_canon(safe_path(p, "animation/shots/S001/draft_frames.json"),
+                {"document_type": "animation_draft_frames",
+                 "schema_version": 1, "shot_id": "S001",
+                 "entries": entries})
+    with pytest.raises(FilmError, match="MISSING_REFERENCE"):
+        commit_draft_frames(p, "S001")
+
+
+def test_over_cap_required_input_blocks_request_and_import(tmp_path):
+    p, pins, _ = a_scene(tmp_path, with_packet=False)
+    capped = {"id": "one-image-app",
+              "accepts": ["prompt_text", "reference_image", "layout_image",
+                          "pose_image", "mask_region"],
+              "max_images": 1}
+    export_work_packets(p, target=capped)
+    document = load_work_packet(p, "S001")
+    request = next(r for r in document["requests"] if r["frame"] == 5)
+    # The required layout pin never left the project: absent from
+    # carries, named in blocked and recorded in transport.not_sent.
+    assert "layout" not in request["carries"]
+    assert any("layout" in b and "OVER_MAX_IMAGES" in b
+               for b in request["blocked"])
+    sent = [i for i in document["transport"]["not_sent"]
+            if i["input"] == "layout"]
+    assert sent and "OVER_MAX_IMAGES" in sent[0]["reason"]
+    # Carrying only what fit the cap is not enough to import the frame.
+    with pytest.raises(FilmError, match="REQUEST_BLOCKED"):
+        import_draft_image(p, "S001", _frame_png(tmp_path / "f5.png", 5),
+                           role="inbetween", frame=5,
+                           references=[pins["master"]])
 
 
 def test_work_packet_is_deterministic_and_manual_only(tmp_path):
@@ -578,6 +674,16 @@ def test_commit_refuses_symlinked_member(tmp_path):
     outside.write_bytes(payload)
     os.symlink(outside, member)
     with pytest.raises(FilmError, match="DRAFT_MEMBER_MISSING"):
+        commit_draft_frames(p, "S001")
+
+
+def test_commit_refuses_ledger_entries_from_another_packet(tmp_path):
+    p, pins, _ = a_scene(tmp_path)
+    _import_all(tmp_path, p, pins)
+    # A regenerated packet binds the same plan but different bytes; the
+    # ledger entries were verified against the old one, so commit refuses.
+    export_work_packets(p, target={**FULL_TARGET, "id": "other-app"})
+    with pytest.raises(FilmError, match="PACKET_STALE"):
         commit_draft_frames(p, "S001")
 
 

@@ -470,14 +470,14 @@ def _role_inputs(plan, role, base, token, required, target):
 def _packet_input(input_id, kind, pin, token, required, target):
     """One input with the disposition the named target forces."""
     accepted = token in target["accepts"]
-    if pin is None and kind == "CONTROL_IMAGE":
-        disposition = "PENDING_PRODUCTION"
-        reason = "control not yet produced/imported" + (
-            "" if accepted
-            else f"; target '{target['id']}' also accepts no {token} input")
-    elif not accepted:
+    pending = pin is None and kind == "CONTROL_IMAGE"
+    if not accepted:
         disposition = "NOT_SENT"
-        reason = f"target '{target['id']}' accepts no {token} input"
+        reason = f"target '{target['id']}' accepts no {token} input" + (
+            "; control not yet produced/imported" if pending else "")
+    elif pending:
+        disposition = "PENDING_PRODUCTION"
+        reason = "control not yet produced/imported"
     else:
         disposition, reason = "INCLUDE", None
     return {"id": input_id, "kind": kind, "pin": pin, "token": token,
@@ -559,6 +559,9 @@ def _build_work_packet(p, entry, plan, plan_sha, registry, target, fmt,
         for frame in range(seg["start"], seg["end"]):
             seg_of[frame] = seg
     requests, warnings = [], []
+    missing_refs = [role for role in ("master", "layout")
+                    if not any(a["role"] == role for a in plan["assets"])]
+    cap_dropped = {}
     for frame in needed:
         seg = seg_of.get(frame)
         slot = slots.get(frame)
@@ -582,12 +585,15 @@ def _build_work_packet(p, entry, plan, plan_sha, registry, target, fmt,
         request_inputs += [i["id"] for i in inputs
                            if i["id"].startswith(("mask", "replacement"))]
         # Prior produced control images this request is sequenced behind.
+        request_id = f"{shot_id}:{kind}:{frame}"
         depends = [f"{shot_id}:{slots[f].lower()}:{f}"
                    for f in seg_slots
                    if by_id[f"control:{slots[f]}:{f}"]["pin"] is None
                    and (kind not in {"keypose", "breakdown", "pose"}
                         or f < frame)]
-        carried, images = [], 0
+        depends += [f"{shot_id}:reference:{role}"
+                    for role in missing_refs]
+        carried, images, over_cap = [], 0, []
         for input_id in request_inputs:
             item = by_id[input_id]
             if item["disposition"] != "INCLUDE":
@@ -596,15 +602,32 @@ def _build_work_packet(p, entry, plan, plan_sha, registry, target, fmt,
                 images += 1
                 if target["max_images"] is not None \
                         and images > target["max_images"]:
+                    over_cap.append(input_id)
+                    cap_dropped.setdefault(input_id, []).append(
+                        request_id)
                     continue
             carried.append(input_id)
-        blocked = [f"required input {iid} is not carried by target "
-                   f"'{target['id']}' ({by_id[iid]['reason']})"
-                   for iid in request_inputs
-                   if by_id[iid]["required"] and iid not in carried
-                   and by_id[iid]["disposition"] == "NOT_SENT"]
+        blocked = []
+        for input_id in request_inputs:
+            item = by_id[input_id]
+            if not item["required"] or input_id in carried:
+                continue
+            if input_id in over_cap:
+                reason = (f"OVER_MAX_IMAGES: target '{target['id']}' "
+                          f"accepts at most {target['max_images']} "
+                          "images")
+            elif item["disposition"] == "PENDING_PRODUCTION":
+                continue  # produced by a request named in depends_on
+            else:
+                reason = (item["reason"]
+                          or "required input is not carried")
+            blocked.append(f"required input {input_id} is not carried "
+                           f"by target '{target['id']}' ({reason})")
+        blocked += [f"required {role} reference is not pinned in the "
+                    f"plan; request {shot_id}:reference:{role} "
+                    "produces it first" for role in missing_refs]
         requests.append({
-            "request_id": f"{shot_id}:{kind}:{frame}", "kind": kind,
+            "request_id": request_id, "kind": kind,
             "frame": frame,
             "segment": [seg["start"], seg["end"]] if seg else None,
             "produces": {"role": kind, "frame": frame,
@@ -616,11 +639,11 @@ def _build_work_packet(p, entry, plan, plan_sha, registry, target, fmt,
             "prompt": _request_prompt(shot_id, description, kind, frame,
                                       fps, length)})
     anchor = next((f for f in needed if f >= 0), 0)
-    for missing, role in (([a for a in plan["assets"] if a["role"] == "master"],
-                           "master"),
-                          ([a for a in plan["assets"] if a["role"] == "layout"],
-                           "layout")):
-        if missing:
+    for declared, role in (([a for a in plan["assets"] if a["role"] == "master"],
+                            "master"),
+                           ([a for a in plan["assets"] if a["role"] == "layout"],
+                            "layout")):
+        if declared:
             continue
         warnings.append(f"{shot_id}: plan declares no '{role}' asset; "
                         "a reference request covers producing it, then pin "
@@ -628,7 +651,7 @@ def _build_work_packet(p, entry, plan, plan_sha, registry, target, fmt,
         requests.insert(0, {
             "request_id": f"{shot_id}:reference:{role}", "kind": "reference",
             "frame": None, "segment": None,
-            "produces": {"role": "layout", "frame": anchor,
+            "produces": {"role": role, "frame": anchor,
                          "fills_member": False, "fills_input": role},
             "inputs": ["prompt"], "carries": ["prompt"], "aux": [],
             "depends_on": [], "blocked": [],
@@ -644,6 +667,12 @@ def _build_work_packet(p, entry, plan, plan_sha, registry, target, fmt,
                         + ", ".join(pending))
     not_sent = [{"input": i["id"], "reason": i["reason"]}
                 for i in inputs if i["disposition"] == "NOT_SENT"]
+    not_sent += [{"input": i["id"],
+                  "reason": f"OVER_MAX_IMAGES: target '{target['id']}' "
+                            f"accepts at most {target['max_images']} "
+                            "images",
+                  "requests": cap_dropped[i["id"]]}
+                 for i in inputs if i["id"] in cap_dropped]
     blocked_requests = [r["request_id"] for r in requests if r["blocked"]]
     if blocked_requests:
         warnings.append(f"{shot_id}: requests with required inputs the "

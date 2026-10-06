@@ -1308,9 +1308,10 @@ def import_draft_image(project, shot_id, file, *, role, frame,
     must match a request in the shot's work packet and declare the same
     references the packet carried — mismatches fail with reason codes
     (PACKET_MISSING, PACKET_STALE, FRAME_OUT_OF_RANGE, ROLE_MISMATCH,
-    UNKNOWN_FRAME, REFERENCE_MISSING, REFERENCE_UNEXPECTED,
-    REFERENCE_UNKNOWN, CANVAS_MISMATCH). Nothing is inferred from the file
-    name, and no approval, review or LOCK is created.
+    UNKNOWN_FRAME, REQUEST_BLOCKED, REFERENCE_MISSING,
+    REFERENCE_UNEXPECTED, REFERENCE_UNKNOWN, CANVAS_MISMATCH). Nothing is
+    inferred from the file name, and no approval, review or LOCK is
+    created.
     """
     p = Path(project)
     role = role.strip().upper() if type(role) is str else ""
@@ -1389,6 +1390,9 @@ def import_draft_image(project, shot_id, file, *, role, frame,
                 raise FilmError(
                     f"UNKNOWN_FRAME: no work-packet request assigns "
                     f"frame {frame} to this shot")
+            if request["blocked"]:
+                raise FilmError(
+                    "REQUEST_BLOCKED: " + "; ".join(request["blocked"]))
             inputs_by_id = {i["id"]: i for i in packet["inputs"]}
             expected, input_ids = [], {}
             for input_id in request["carries"]:
@@ -1401,9 +1405,6 @@ def import_draft_image(project, shot_id, file, *, role, frame,
                                        input_ids)
             checks.append({"code": "REQUEST_MATCHED",
                            "request_id": request["request_id"]})
-            if request["blocked"]:
-                raise FilmError(
-                    "REQUEST_BLOCKED: " + "; ".join(request["blocked"]))
         else:  # LAYOUT: a conditioning input, not a produced member
             if packet is not None and _packet_stale(p, shot_id, packet):
                 checks.append({"code": "PACKET_STALE",
@@ -1562,10 +1563,54 @@ def commit_draft_frames(project, shot_id, *, asset_id=None, note=""):
                 "was written; regenerate animation-packets first")
         current_sha = digest(safe_path(
             p, f"animation/packets/{shot_id}.json"))
-        members, dependencies, stale = [], [], []
+        stale = [f for f in sorted(needed)
+                 if by_frame[f]["packet_sha256"] != current_sha]
+        if stale:
+            raise FilmError(
+                "PACKET_STALE: draft ledger frames "
+                f"{stale} were recorded against a different work "
+                "packet; re-import them against the current packet")
+        # Schema 6 path-A rejection: no sequence without master/layout pins.
+        pinned_roles = {a["role"] for a in plan["assets"]}
+        missing_refs = [r for r in ("master", "layout")
+                        if r not in pinned_roles]
+        if missing_refs:
+            raise FilmError(
+                "MISSING_REFERENCE: the shot plan pins no "
+                + " or ".join(f"'{r}'" for r in missing_refs)
+                + " reference asset; path A refuses a sequence without "
+                  "master and layout pins")
+        inputs_by_id = {i["id"]: i for i in current_packet["inputs"]}
+        requests_by_frame = {r["produces"]["frame"]: r
+                             for r in current_packet["requests"]
+                             if r["produces"].get("fills_member")}
+        members, dependencies = [], []
         seen_pins = set()
         for frame in sorted(needed):
             row = by_frame[frame]
+            request = requests_by_frame.get(frame)
+            if request is None \
+                    or request["produces"]["role"] != row["role"].lower():
+                raise FilmError(
+                    f"PACKET_MISMATCH: ledger frame {frame} "
+                    f"({row['role']}) matches no produced-frame request "
+                    "in the current work packet")
+            if request["blocked"]:
+                raise FilmError(
+                    "REQUEST_BLOCKED: " + "; ".join(request["blocked"]))
+            carried_pins = set()
+            for iid in request["carries"]:
+                pin = inputs_by_id[iid]["pin"]
+                if pin is not None:
+                    carried_pins.add((pin["asset_id"], pin["revision"],
+                                      pin["content_sha256"]))
+            if {(pin["asset_id"], pin["revision"],
+                 pin["content_sha256"])
+                    for pin in row["references"]} != carried_pins:
+                raise FilmError(
+                    f"PACKET_MISMATCH: ledger frame {frame} declares "
+                    "references that do not match the current work "
+                    "packet's carried inputs")
             if (Path(p) / row["member"]).is_symlink():
                 raise FilmError(
                     f"DRAFT_MEMBER_MISSING: {row['member']} is a symlink; "
@@ -1583,9 +1628,6 @@ def commit_draft_frames(project, shot_id, *, asset_id=None, note=""):
             members.append({"source": member_path, "sha256": row["sha256"],
                             "byte_length": row["byte_length"],
                             "source_name": row["source_name"]})
-            if row["packet_sha256"] is not None \
-                    and row["packet_sha256"] != current_sha:
-                stale.append(frame)
             for pin in [row["asset_pin"], *row["references"]]:
                 if pin is None:
                     continue
@@ -1606,7 +1648,6 @@ def commit_draft_frames(project, shot_id, *, asset_id=None, note=""):
         result = _register_frame_sequence(
             p, shot_id, members, canvas, provenance,
             dependencies=dependencies, asset_id=asset_id)
-        result["stale_packet_entries"] = stale
         result["dependencies"] = len(dependencies)
         result["qualification_state"] = "UNQUALIFIED"
         result["note"] = ("Assembled from packet-verified draft members; "
