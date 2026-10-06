@@ -131,6 +131,34 @@ def _sha256(data):
     return hashlib.sha256(data).hexdigest()
 
 
+def _has_symlink_component(project, relative):
+    """True when any component of the unresolved path is a symlink.
+
+    safe_path resolves links, so a member reached through one would pass
+    a resolved `is_symlink()` check; the components must be checked
+    before resolution (the anim-010 pattern).
+    """
+    cursor = Path(project)
+    for part in Path(relative).parts:
+        cursor = cursor / part
+        if cursor.is_symlink():
+            return True
+    return False
+
+
+def _tree_bytes(root):
+    """Bytes currently on disk under `root` — cache, output spool and
+    live mux/encode temps, not cache used_bytes alone."""
+    total = 0
+    for dirpath, _dirs, files in os.walk(root):
+        for name in files:
+            try:
+                total += os.path.getsize(os.path.join(dirpath, name))
+            except OSError:
+                pass
+    return total
+
+
 def _sha256_json(material):
     return hashlib.sha256(canon_bytes(material)).hexdigest()
 
@@ -163,6 +191,9 @@ class LocalMemberSource:
         return self._record["files"][index]["relative_name"]
 
     def fetch(self, index, meta, metrics):
+        if _has_symlink_component(self.project, meta["locator"]):
+            raise FilmError(f"Asset member locator traverses a symlink: "
+                            f"{meta['locator']}")
         path = safe_path(self.project, meta["locator"])
         if path.is_symlink() or not path.is_file():
             raise FilmError(f"Missing asset member: {meta['locator']}")
@@ -333,6 +364,10 @@ class MemberStore:
     under two member ids decode once. Fetches first hit the persistent
     content-keyed byte cache (PACK-SPARSE: no re-transfer of cached
     members), then the source.
+
+    `get` hands every caller a private raster copy — Pillow images are
+    not thread-safe, and a compose worker mutating the shared decode
+    could corrupt a sibling frame under workers > 1.
     """
 
     def __init__(self, graph, metrics, cache=None,
@@ -366,6 +401,12 @@ class MemberStore:
         data = source.fetch(index, meta, self.metrics)
         self.metrics.count("member_fetch_ms",
                            round((time.monotonic() - t0) * 1000))
+        # §8.2 member-hash gate on every source: bytes that do not match
+        # the pinned registry entry are refused before decode or cache.
+        if len(data) != meta["byte_length"] \
+                or _sha256(data) != meta["sha256"]:
+            raise FilmError(f"Member {iid}/{index} bytes do not match "
+                            "the pinned registry hash")
         if self.cache is not None and source.cacheable:
             self.cache.put_member(meta["sha256"], data)
             self.metrics.edge("cache:members", 1, len(data))
@@ -407,7 +448,7 @@ class MemberStore:
             if cached is not None:
                 self._images.move_to_end(sha)
                 self.metrics.count("member_store_hits")
-                return cached[0]
+                return cached[0].copy()
             if sha in self._inflight:
                 while sha in self._inflight:
                     self._lock.wait()
@@ -415,7 +456,7 @@ class MemberStore:
                 if cached is not None:
                     self._images.move_to_end(sha)
                     self.metrics.count("member_store_hits")
-                    return cached[0]
+                    return cached[0].copy()
             self._inflight.add(sha)
         try:
             image, estimate = self._decode(iid, index)
@@ -430,7 +471,7 @@ class MemberStore:
                     len(self._images) > 1:
                 _, (_, old_est) = self._images.popitem(last=False)
                 self._decoded -= old_est
-        return image
+        return image.copy()
 
     def prefetch(self, iid, index):
         sha = self._member(iid, index)["sha256"]
@@ -846,6 +887,7 @@ def _compose_stage(graph, cache, store, invalidation, out_dir, metrics, *,
     def write_result(index, key, pixel_sha, data):
         path = out_dir / frame_filename(index)
         path.write_bytes(data)
+        metrics.count("output_write_bytes", len(data))
         if pixel_sha is None:
             metrics.count("frame_verify_decodes")
         digests[index] = pixel_sha or frame_pixel_sha256(path)
@@ -990,6 +1032,7 @@ def _subbed_stage(graph, cache, prev_state, subtitle, clean_digests,
         data = cache.get_frame("subbed", keys[index])
         if data is not None:
             (subbed_dir / frame_filename(index)).write_bytes(data)
+            metrics.count("output_write_bytes", len(data))
             metrics.edge("cache:subbed", 1, len(data))
             metrics.count("subbed_cache_hits")
     burn = [i for i in range(len(rows))
@@ -1001,6 +1044,7 @@ def _subbed_stage(graph, cache, prev_state, subtitle, clean_digests,
         for index in burn:
             path = subbed_dir / frame_filename(index)
             data = path.read_bytes()
+            metrics.count("output_write_bytes", len(data))
             cache.put_frame("subbed", keys[index], data)
             metrics.edge("cache:subbed", 1, len(data))
     _check_frame_sequence(subbed_dir, len(rows))
@@ -1044,11 +1088,20 @@ def _encode_stage(graph, cache, prev_state, roots, run_dir, perf_root,
             target = run_dir / f"MASTER_{role.upper()}.mp4"
             if artifact is not None:
                 target.write_bytes(artifact)
+                metrics.count("output_write_bytes", len(artifact))
                 record.update({"cached": True,
                                "artifact_sha256": _sha256(artifact),
                                "verification":
                                    prev_record.get("verification"),
-                               "output_sha256": _sha256(artifact)})
+                               "output_sha256": _sha256(artifact),
+                               "driver": prev_record.get("driver"),
+                               "sequence_root":
+                                   prev_record.get("sequence_root"),
+                               "no_ffmpeg_encoding":
+                                   prev_record.get("no_ffmpeg_encoding"),
+                               "qualification_state":
+                                   prev_record.get(
+                                       "qualification_state")})
                 results[role] = record
                 continue
             if audio_track is None:
@@ -1057,6 +1110,7 @@ def _encode_stage(graph, cache, prev_state, roots, run_dir, perf_root,
                 audio_track = prepare_audio_track(master, seconds,
                                                   audio_work)
                 metrics.count("audio_tracks")
+                metrics.observe_disk(_tree_bytes(perf_root))
             frames_dir = run_dir / ("clean" if role == "clean"
                                     else "subbed")
             frames = FrameSource(frames_dir, fmt["fps"], fmt["width"],
@@ -1067,8 +1121,11 @@ def _encode_stage(graph, cache, prev_state, roots, run_dir, perf_root,
                 result = encode_delivery(
                     frames, recipe, target, audio_track=audio_track,
                     master=master, work_dir=work, role=role)
+                # Peak while the mux temps and the spooled target coexist.
+                metrics.observe_disk(_tree_bytes(perf_root))
             metrics.count("encode_runs")
             data = target.read_bytes()
+            metrics.count("output_write_bytes", len(data))
             cache.put_artifact(enc_digest, data)
             metrics.edge("cache:encode", 1, len(data))
             record.update({"cached": False,
@@ -1155,9 +1212,12 @@ def run_pipeline(project, perf_root=None, *, exposure=None,
         master = safe_path(p, graph["audio_path"])
         cursors = _backend_cursors(graph)
         # Pack sources fetch their index inside the timed run so the
-        # transfer lands on the run's pack_index edge.
+        # transfer lands on the run's pack_index edge. Only a source
+        # with a needed member opens — a warm run never GETs the index
+        # of a pack with no dirty member.
         opened = set()
-        for src in graph["member_sources"].values():
+        for iid in invalidation["needed_members"]:
+            src = graph["member_sources"][iid]
             if id(src) not in opened:
                 src.open()
                 opened.add(id(src))
@@ -1175,6 +1235,7 @@ def run_pipeline(project, perf_root=None, *, exposure=None,
                 interrupt_after=interrupt_after)
         _check_frame_sequence(clean_dir, graph["output_frames"])
         clean_root = sequence_root("clean", compose["pixel_digests"])
+        metrics.observe_disk(_tree_bytes(perf_root))
 
         with metrics.stage("subtitles"):
             subtitle = _subtitle_recipe(p, perf_root / "subtitles",
@@ -1186,6 +1247,7 @@ def run_pipeline(project, perf_root=None, *, exposure=None,
                 compose["pixel_digests"], clean_dir, subbed_dir,
                 perf_root, metrics)
         subbed_root = sequence_root("subbed", subbed["pixel_digests"])
+        metrics.observe_disk(_tree_bytes(perf_root))
 
         roots = {"clean": clean_root, "subbed": subbed_root}
         encodes = {}
@@ -1194,6 +1256,7 @@ def run_pipeline(project, perf_root=None, *, exposure=None,
                 encodes = _encode_stage(
                     graph, cache, prev_state, roots, run_dir, perf_root,
                     metrics, master, encode_roles)
+            metrics.observe_disk(_tree_bytes(perf_root))
 
         with metrics.stage("verify"):
             for info in cursors.values():
@@ -1227,10 +1290,10 @@ def run_pipeline(project, perf_root=None, *, exposure=None,
                         "create or extend reviews, approvals or "
                         "qualification."}
             _save_state(perf_root, state)
-            metrics.observe_disk(cache.used_bytes)
+            metrics.observe_disk(_tree_bytes(perf_root))
     finally:
         store.stop_prefetch()
-    metrics.observe_disk(cache.used_bytes)
+    metrics.observe_disk(_tree_bytes(perf_root))
     metrics.add_stage("end_to_end",
                       round((time.monotonic() - started) * 1000))
     result.update({
@@ -1622,11 +1685,15 @@ def _measurement_for(evidence, graph, scope, report):
     member_bytes = sum(e["bytes"] for name, e in cold["edges"].items()
                        if name.startswith(("member_source",
                                            "pack_members")))
+    # Transfer counters cover real source/backend reads only — local
+    # cache reuse (`cache:*` edges) is not network transfer.
+    transfer_edges = ("member_source", "pack_index", "pack_members",
+                      "pack_fallback", "pack_whole")
     transfer_reads = sum(e["bytes"] for name, e in cold["edges"].items()
-                         if name.startswith(("member_source", "pack",
-                                             "cache")))
+                         if name.startswith(transfer_edges))
     transfer_requests = sum(e["requests"]
-                            for e in cold["edges"].values())
+                            for name, e in cold["edges"].items()
+                            if name.startswith(transfer_edges))
     samples = report["samples"]
     return make_measurement(
         evidence,
@@ -1646,8 +1713,15 @@ def _measurement_for(evidence, graph, scope, report):
                      "ms": cold["counters"].get("member_fetch_ms", 0)},
         peaks={"disk_bytes": cold["peaks"]["disk_bytes"],
                "ram_bytes": cold["peaks"]["ram_bytes"],
-               "vram_bytes": 0},     # CPU compose used no VRAM
-        transfer={"read_bytes": transfer_reads, "write_bytes": 0,
+               # No GPU on this contract — an unmeasured peak stays
+               # UNKNOWN, never filled by assumption (§7.2.1/§11), so
+               # the candidate stays unselectable.
+               "vram_bytes": "UNKNOWN"},
+        transfer={"read_bytes": transfer_reads,
+                  # Measured output-spool/encode writes; absent counter
+                  # stays UNKNOWN rather than an invented 0.
+                  "write_bytes": cold["counters"].get(
+                      "output_write_bytes"),
                   "requests": transfer_requests},
         cache={"hits": sum(warm["cache"].values()),
                "misses": cold["frames"]["recomputed"]},

@@ -271,6 +271,49 @@ def test_parallel_pool_is_bounded(tmp_path, monkeypatch):
                         workers=ps.MAX_WORKERS + 1, encode_roles=())
 
 
+def test_member_store_returns_defensive_copies(tmp_path):
+    """A shared decoded member hands each caller a private raster — a
+    compose worker mutating its copy can never corrupt a sibling frame
+    under workers > 1."""
+    p = perf_project(tmp_path)
+    graph = ps.build_graph(p)
+    store = ps.MemberStore(graph, ps.PerfMetrics())
+    pristine = store.get("I001", 5).tobytes()
+    seen = []
+
+    def work():
+        image = store.get("I001", 5)
+        image.paste((255, 0, 255), (0, 0, 8, 8))
+        seen.append(store.get("I001", 5).tobytes())
+
+    threads = [threading.Thread(target=work) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert seen and all(b == pristine for b in seen)
+    assert store.get("I001", 5).tobytes() == pristine
+
+
+def test_local_member_symlink_locator_is_refused(tmp_path):
+    """A member path that traverses a symlink is refused before
+    safe_path's resolve could hide it (the anim-010 pattern)."""
+    p = perf_project(tmp_path)
+    registry = load_registry(p)
+    pin = registry["assignments"]["S001"]
+    record = registry["assets"][pin["asset_id"]]["revisions"][
+        str(pin["revision"])]
+    rel = record["files"][0]["relative_name"]
+    member = safe_path(p, rel)
+    real = p / "animation" / "moved-real.png"
+    shutil.copyfile(member, real)
+    member.unlink()
+    member.symlink_to(real)
+    with pytest.raises(FilmError, match="symlink"):
+        ps.run_pipeline(p, tmp_path / "perf", encode_roles=(),
+                        perf_label="symlink")
+
+
 # --- prefetch -----------------------------------------------------------------
 
 def test_prefetch_fetches_only_upcoming_members(tmp_path):
@@ -344,12 +387,23 @@ def test_master_encode_carries_original_audio(tmp_path):
     perf_root = Path(result["perf_root"])
     warm = ps.run_pipeline(p, perf_root, perf_label="warm")
     assert warm["metrics"]["counters"]["encode_cache_hits"] == 2
-    assert warm["encodes"]["subbed"]["cached"] is True
-    assert warm["encodes"]["subbed"]["output_sha256"] == \
-        subbed["output_sha256"]
+    warm_subbed = warm["encodes"]["subbed"]
+    assert warm_subbed["cached"] is True
+    assert warm_subbed["output_sha256"] == subbed["output_sha256"]
+    # A cache hit preserves every facet the miss path recorded — a hit
+    # never drops qualification_state, driver or verification.
+    assert warm_subbed["qualification_state"] == "UNQUALIFIED"
+    assert warm_subbed["driver"] == "FFMPEG"
+    assert warm_subbed["verification"] == subbed["verification"]
+    assert warm_subbed["sequence_root"] == subbed["sequence_root"]
     target = Path(warm["run_dir"]) / "MASTER_SUBBED.mp4"
     assert hashlib.sha256(target.read_bytes()).hexdigest() == \
         subbed["output_sha256"]
+    # peak_disk measures the whole perf tree — output spool and mux
+    # temps as well as the cache — never cache used_bytes alone.
+    assert result["peaks"]["disk_bytes"] >= \
+        (Path(result["run_dir"]) / "MASTER_SUBBED.mp4") \
+        .stat().st_size
 
 
 def test_workers_one_is_the_serial_default(tmp_path):

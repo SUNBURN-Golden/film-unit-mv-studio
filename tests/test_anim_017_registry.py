@@ -124,10 +124,16 @@ def test_pack_warm_one_cut_reads_only_needed_and_halo(tmp_path):
                   if m["member_id"] == "m00007")
     assert ranges[0]["offset"] == member["byte_offset"]
     assert ranges[0]["length"] == member["byte_length"]
-    # No member of the untouched packs was re-read.
+    # No member of the untouched packs was re-read — and a pack with no
+    # dirty member never even GETs its index on the warm run.
     untouched = {packed["objects"]["S001"]["pack_object_id"],
                  packed["objects"]["S003"]["pack_object_id"]}
     assert member_request_targets(backend, since) & untouched == set()
+    index_gets = {r["object_id"] for r in request_log(backend, since)
+                  if r["op"] == "get_object"}
+    assert index_gets == {
+        repacked["objects"]["S002"]["index_object_id"],
+        repacked["objects"]["S003"]["index_object_id"]}
     counters = warm["metrics"]["counters"]
     assert counters["member_cache_hits"] >= 1
     assert counters["member_decodes"] == 2   # m7 (changed) + m1 (halo)
@@ -141,6 +147,22 @@ def test_pack_warm_one_cut_reads_only_needed_and_halo(tmp_path):
     assert fresh["subbed_sequence_root"] == warm["subbed_sequence_root"]
     assert file_shas(fresh["subbed_dir"], 20) == \
         file_shas(warm["subbed_dir"], 20)
+
+
+def test_pack_member_must_match_registry_pin(tmp_path):
+    """Pack bytes hash-match their own index but not the pinned registry
+    revision — the §8.2 member-hash gate refuses before decode."""
+    p = perf_project(tmp_path)
+    _, backend = counting_backend()
+    packed = packed_sources(p, backend)          # packs pin revision r1
+    # A one-cut edit adopts revision r2: the registry pin moved while
+    # the stale pack still serves r1 bytes for the same member id.
+    edit_member(p, "S002", 3)
+    with pytest.raises(FilmError, match="pinned registry hash"):
+        ps.run_pipeline(
+            p, tmp_path / "perf",
+            member_sources=packed["member_sources"],
+            encode_roles=(), perf_label="stale-pack")
 
 
 # --- Range-unsupported whole-pack fallback ----------------------------------------
@@ -271,29 +293,49 @@ def test_benchmark_report_is_complete_and_secret_free(benchmark):
         "perf_benchmark"
 
 
-def test_benchmark_registers_selectable_compose_candidates(benchmark):
-    """The complete bound measurement makes the LOCAL_NATIVE op
-    candidates selectable through ANIM-019's gate — and nothing else."""
+def test_benchmark_registers_compose_evidence(benchmark):
+    """The bound measurement registers real evidence, but VRAM was never
+    measured — UNKNOWN is recorded, never fabricated into 0, so the
+    measurement is incomplete and AUTO_PERFORMANCE selects nothing."""
     _, report = benchmark
     state_dir = report["project"] + "/perf-registry"
     registration = ps.register_benchmark(state_dir, report)
     assert len(registration["registered"]) == 3
     preflight_report = registration["preflight"]
-    selected = {s["candidate_id"] for s in
-                ps.select_candidates(preflight_report)}
-    assert selected == {r["operation_id"]
-                        for r in registration["registered"]}
+    assert ps.select_candidates(preflight_report) == []
+    candidates = {c["candidate_id"]: c
+                  for c in preflight_report["candidates"]}
+    for r in registration["registered"]:
+        verdict = candidates[r["operation_id"]]
+        # Evidence itself qualifies; the UNKNOWN peak does not.
+        assert verdict["eligible"] is True
+        assert verdict["registry_state"] == "QUALIFIED_FOR_SCOPE"
+        assert verdict["selectable"] is False
+        assert verdict["estimate"] == "UNKNOWN"
+        assert "peaks.vram_bytes" in verdict["missing_measurement"]
     # The encode axis got no evidence — its candidate is UNKNOWN and
     # unselectable, never borrowed from compose timing.
-    encode = next(c for c in preflight_report["candidates"]
-                  if c["kind"] == "encoder")
+    encode = candidates["encode:FFMPEG"]
     assert encode["selectable"] is False
     assert encode["estimate"] == "UNKNOWN"
     assert "encode:FFMPEG" in preflight_report["unknown_estimate"]
-    # The per-operation gate map the executor consumes is all-green for
-    # compose ops.
-    gate = preflight_report["evidence"]["operations"]
-    assert all(v["state"] == "QUALIFIED_FOR_SCOPE" for v in gate.values())
+    # The stored measurement records the real counters: UNKNOWN vram,
+    # measured output writes, and transfer reads over source/backend
+    # edges only — never local cache reuse.
+    state = Path(state_dir)
+    mid = registration["registered"][0]["measurement_id"]
+    record = json.loads((state / "capability" / "measurements"
+                         / f"{mid}.json").read_text())
+    assert record["peaks"]["vram_bytes"] == "UNKNOWN"
+    assert measurement_missing(record) == ["peaks.vram_bytes"]
+    assert record["transfer"]["write_bytes"] > 0
+    cold_edges = report["phases"]["cold"]["edges"]
+    assert any(name.startswith("cache:") for name in cold_edges)
+    real_reads = sum(e["bytes"] for name, e in cold_edges.items()
+                     if not name.startswith("cache:"))
+    assert record["transfer"]["read_bytes"] == real_reads
+    assert record["transfer"]["read_bytes"] < \
+        sum(e["bytes"] for e in cold_edges.values())
 
 
 def test_incomplete_or_unbound_measurement_stays_unknown(benchmark):
