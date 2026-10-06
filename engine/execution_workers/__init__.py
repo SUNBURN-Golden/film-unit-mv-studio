@@ -20,6 +20,10 @@ State machine is exactly schema §13 — only the listed transitions exist:
     UNKNOWN -> RUNNING | FAILED_CONFIRMED | OUTPUT_PENDING_VERIFY
                | CANCEL_CONFIRMED          (existing job confirmed only)
     VERIFIED -> ARCHIVED
+    FAILED_CONFIRMED -> RESERVED          (explicit user resume only —
+                                           §5.3 text: a new attempt starts
+                                           after the user sees the failure
+                                           and continues; bounded allowance)
 
 UNKNOWN fences reservation release, substitute workers and new attempts.
 A completion confirmed before a cancel lands in OUTPUT_PENDING_VERIFY —
@@ -73,6 +77,10 @@ TRANSITIONS = {
     "UNKNOWN": {"RUNNING", "FAILED_CONFIRMED", "OUTPUT_PENDING_VERIFY",
                 "CANCEL_CONFIRMED"},
     "VERIFIED": {"ARCHIVED"},
+    # §5.3 text: FAILED_CONFIRMED allows a new attempt only as the user's
+    # explicit resume — the FAILED_CONFIRMED -> RESERVED edge exists solely
+    # for resume_failed; it is never an automatic retry.
+    "FAILED_CONFIRMED": {"RESERVED"},
 }
 
 RECEIPT_KINDS = {"ACCEPTED", "RUNNING", "COMPLETE", "FAILED_CONFIRMED",
@@ -88,8 +96,8 @@ GRANT_FIELDS = {"issuer", "audience", "peer", "connection_digest",
                 "expires_at_ms", "nonce", "grant_digest"}
 PACKET_FIELDS = {"job_key", "attempt_id", "request_id", "snapshot_digest",
                  "plan_revision", "operation", "frame_contract", "grant",
-                 "endpoint", "input_members", "output_range",
-                 "receipt_nonce", "input_bytes"}
+                 "endpoint", "input_members", "input_object_digests",
+                 "output_range", "receipt_nonce", "input_bytes"}
 # A worker packet is coordinator-mediated: no user credential, no
 # arbitrary URL, no inbound callback. These keys can never appear.
 FORBIDDEN_PACKET_KEYS = {"oauth_token", "refresh_token", "access_token",
@@ -146,12 +154,17 @@ def issue_grant(*, issuer, audience, peer, connection_digest,
 
 
 def check_grant(grant, *, worker, job_key, attempt_id, snapshot_digest,
-                output_range, needed_bytes, now_ms):
+                output_range, needed_bytes, now_ms,
+                object_digests=(), member_ids=(), revoked=None):
     """RELAY-AUTH: pin the peer, the scope and the lifetime.
 
     Any tampered field breaks the grant digest; anything outside the
-    bound job/attempt/snapshot/range/bytes/expiry is denied. Grant reuse
-    after expiry or an epoch change is denied, and a grant is never a
+    bound job/attempt/snapshot/range/bytes/expiry is denied. A request
+    naming an object or member outside the grant's bound
+    `object_digests`/`member_ids`, or arriving on a different
+    connection than `connection_digest`, is denied. Grant reuse after
+    expiry, an epoch change or a coordinator revocation (`revoked`,
+    the issuer-published digest set) is denied, and a grant is never a
     new compute submit by itself.
     """
     if type(grant) is not dict or set(grant.keys()) != GRANT_FIELDS:
@@ -166,6 +179,9 @@ def check_grant(grant, *, worker, job_key, attempt_id, snapshot_digest,
                         "worker")
     if grant["peer"] != worker.expected_peer:
         raise FilmError("RELAY_AUTH_DENIED: unexpected coordinator peer")
+    if grant["connection_digest"] != worker.connection_digest:
+        raise FilmError("RELAY_AUTH_DENIED: grant is bound to a different "
+                        "connection")
     if grant["credential_epoch"] != worker.credential_epoch:
         raise FilmError("RELAY_AUTH_DENIED: credential epoch changed; the "
                         "grant is void")
@@ -174,8 +190,17 @@ def check_grant(grant, *, worker, job_key, attempt_id, snapshot_digest,
             or grant["snapshot_digest"] != snapshot_digest:
         raise FilmError("RELAY_AUTH_DENIED: grant is bound to a different "
                         "job/attempt/snapshot")
+    if any(digest not in grant["object_digests"]
+           for digest in object_digests):
+        raise FilmError("RELAY_AUTH_DENIED: request object is outside the "
+                        "granted objects")
+    if any(member not in grant["member_ids"] for member in member_ids):
+        raise FilmError("RELAY_AUTH_DENIED: request member is outside the "
+                        "granted members")
     if now_ms >= grant["expires_at_ms"]:
         raise FilmError("RELAY_AUTH_DENIED: grant expired")
+    if revoked and grant["grant_digest"] in revoked:
+        raise FilmError("RELAY_AUTH_DENIED: grant was revoked")
     if needed_bytes > grant["max_bytes"]:
         raise FilmError("RELAY_AUTH_DENIED: request exceeds grant "
                         "max_bytes")
@@ -304,7 +329,7 @@ class Worker:
 
     def __init__(self, worker_id, *, expected_peer="coordinator-user-desktop",
                  trusted_issuers=("coordinator",), credential_epoch=1,
-                 endpoint=None):
+                 endpoint=None, connection_digest=None, revoked_grants=None):
         self.worker_id = worker_id
         self.expected_peer = expected_peer
         self.trusted_issuers = set(trusted_issuers)
@@ -312,6 +337,15 @@ class Worker:
         # The pinned endpoint identity; there is no inbound listener and a
         # packet naming any other endpoint is a refused redirect.
         self.endpoint = endpoint or worker_id
+        # Digest of this worker's authenticated connection/session — a
+        # grant bound to any other connection is void.
+        self.connection_digest = connection_digest or hashlib.sha256(
+            f"conn:{worker_id}:{self.endpoint}".encode()).hexdigest()
+        # The issuer-published revocation view the relay consults; the
+        # coordinator adds a grant digest on terminal confirmation or a
+        # new attempt.
+        self.revoked_grants = revoked_grants \
+            if revoked_grants is not None else set()
 
     def authenticate(self, packet, needed_bytes, now_ms):
         check_packet(packet)
@@ -323,7 +357,11 @@ class Worker:
                            attempt_id=packet["attempt_id"],
                            snapshot_digest=packet["snapshot_digest"],
                            output_range=packet["output_range"],
-                           needed_bytes=needed_bytes, now_ms=now_ms)
+                           object_digests=packet.get(
+                               "input_object_digests", ()),
+                           member_ids=packet.get("input_members", ()),
+                           needed_bytes=needed_bytes, now_ms=now_ms,
+                           revoked=self.revoked_grants)
 
     def probe(self):
         return {"worker_id": self.worker_id, "kind": self.kind,
@@ -376,6 +414,10 @@ class Coordinator:
         self._lock = threading.RLock()
         self.jobs = {}
         self.seals = {}
+        # Grant digests the coordinator has voided — terminal
+        # confirmation or a new attempt revokes; the relay's check_grant
+        # consults this issuer-published set.
+        self.revoked_grants = set()
         if self.state_dir:
             self.state_dir.mkdir(parents=True, exist_ok=True)
             self._load()
@@ -391,7 +433,8 @@ class Coordinator:
         document = {"record_type": "coordinator_runtime_state",
                     "format": 1,
                     "jobs": self.jobs,
-                    "seals": self.seals}
+                    "seals": self.seals,
+                    "revoked_grants": sorted(self.revoked_grants)}
         atomic_text(self._state_file, json.dumps(document, indent=2,
                                                  ensure_ascii=False) + "\n")
 
@@ -404,8 +447,14 @@ class Coordinator:
             raise FilmError("Not a coordinator runtime state file")
         self.jobs = document["jobs"]
         self.seals = document.get("seals", {})
+        self.revoked_grants = set(document.get("revoked_grants", ()))
         for job in self.jobs.values():
             job["sealing"] = False        # a crashed seal never held
+            if job["state"] == "SUBMITTING":
+                # 응답 불명: a persisted SUBMITTING never confirmed
+                # acceptance — it reloads as UNKNOWN and reconciles under
+                # the same job key / attempt / request id.
+                job["state"] = "UNKNOWN"
 
     # -- helpers ------------------------------------------------------------
     def _job(self, key):
@@ -414,14 +463,18 @@ class Coordinator:
             raise FilmError(f"Unknown job key: {key}")
         return job
 
-    @staticmethod
-    def _set_state(job, target, why):
+    def _set_state(self, job, target, why):
         allowed = TRANSITIONS.get(job["state"], set())
         if target not in allowed:
             raise FilmError(
                 f"Illegal job transition {job['state']} -> {target} "
                 f"({why})")
         job["state"] = target
+        # Completion, termination and failure confirmations void the
+        # attempt's grant — a relay reuse after them is denied.
+        if target in {"VERIFIED", "ARCHIVED", "CANCEL_CONFIRMED",
+                      "FAILED_CONFIRMED"} and job.get("grant_digest"):
+            self.revoked_grants.add(job["grant_digest"])
 
     def _fence_unknown(self, job, action):
         if action in UNKNOWN_FENCED and job["state"] in {
@@ -438,6 +491,15 @@ class Coordinator:
                           additional_charges_approved=
                           additional_charges_approved)
         sha = plan_sha(plan)
+        # The relay input scope the plan declares for workers — grants
+        # bind exactly these object digests / member ids and nothing else.
+        input_objects = sorted({e["object_digest"]
+                                for e in plan["transfer_edges"]
+                                if e["to_role"] == "WORKER"
+                                and e["object_digest"]})
+        input_members = sorted({m for e in plan["transfer_edges"]
+                                if e["to_role"] == "WORKER"
+                                for m in e["member_ids"]})
         made = []
         with self._lock:
             for operation in plan["operations"]:
@@ -456,6 +518,8 @@ class Coordinator:
                        "output_range": list(operation["output_range"]),
                        "route": operation["route"],
                        "worker_id": operation["worker"],
+                       "input_object_digests": input_objects,
+                       "input_member_ids": input_members,
                        "attempt_id": 0, "request_id": None, "nonce": None,
                        "grant_digest": None,
                        "attempts_used": 0, "max_attempts": max_attempts,
@@ -522,6 +586,9 @@ class Coordinator:
 
     # -- submit ----------------------------------------------------------------
     def _new_attempt(self, job):
+        if job.get("grant_digest"):
+            # Issuing a new attempt voids the previous grant.
+            self.revoked_grants.add(job["grant_digest"])
         job["attempt_id"] += 1
         job["attempts_used"] += 1
         job["request_id"] = f"req-{uuid.uuid4().hex[:16]}"
@@ -532,11 +599,12 @@ class Coordinator:
         grant = issue_grant(
             issuer="coordinator", audience=worker.worker_id,
             peer=worker.expected_peer,
-            connection_digest=hashlib.sha256(
-                f"conn-{self.now_ms()}".encode()).hexdigest(),
+            connection_digest=worker.connection_digest,
             credential_epoch=worker.credential_epoch,
             job_key=job["job_key"], attempt_id=job["attempt_id"],
             snapshot_digest=job["snapshot_digest"],
+            object_digests=job.get("input_object_digests", ()),
+            member_ids=job.get("input_member_ids", ()),
             ranges=[job["output_range"]] +
                    [list(r) for r in job["operation"]["halo_ranges"]],
             max_bytes=max(input_bytes, 1) + 8 * contract_buffer_bytes(
@@ -602,7 +670,10 @@ class Coordinator:
                       "grant": grant,
                       "endpoint": getattr(worker, "endpoint",
                                           worker.worker_id),
-                      "input_members": [],
+                      "input_members": list(
+                          job.get("input_member_ids", ())),
+                      "input_object_digests": list(
+                          job.get("input_object_digests", ())),
                       "output_range": job["output_range"],
                       "receipt_nonce": job["nonce"],
                       "input_bytes": input_bytes}
@@ -817,14 +888,22 @@ class Coordinator:
         with self._lock:
             self._drain(outcome.get("receipts", ()), worker)
             if job["state"] == "CANCEL_REQUESTED":
-                if outcome.get("outcome") in {"CANCELLED", "NOT_FOUND"}:
+                answered = outcome.get("outcome")
+                if answered in {"CANCELLED", "NOT_FOUND"}:
                     # 종료 또는 미접수 확인: termination or never-accepted
                     # is a confirmed cancel, not a refund record.
                     self._set_state(job, "CANCEL_CONFIRMED",
                                     "worker confirmed termination or "
                                     "never-accepted")
-                elif outcome.get("outcome") == "RUNNING":
-                    pass  # cancel still in flight; explicit reconcile
+                elif answered == "COMPLETED_FIRST" \
+                        and self._complete(job):
+                    # 완료가 먼저 확정: a completion confirmed before the
+                    # cancel is verified, never dropped — whether the
+                    # receipts just drained or were already collected.
+                    self._set_state(job, "OUTPUT_PENDING_VERIFY",
+                                    "completion was confirmed before the "
+                                    "cancel")
+                # RUNNING: cancel still in flight; explicit reconcile.
             self._persist()
             return job["state"]
 
@@ -838,8 +917,14 @@ class Coordinator:
         """
         with self._lock:
             job = self._job(key)
+            if job["state"] == "SUBMITTING":
+                # 응답 불명: acceptance was never confirmed — the existing
+                # identity reconciles as UNKNOWN, never a resubmit.
+                self._set_state(job, "UNKNOWN", "submission outcome "
+                                "unknown")
+                self._persist()
             if job["state"] not in {"UNKNOWN", "CANCEL_REQUESTED",
-                                    "RUNNING", "SUBMITTING"}:
+                                    "RUNNING", "OUTPUT_PENDING_VERIFY"}:
                 return job["state"]
             request_id = job["request_id"]
         if worker.worker_id != job["worker_id"]:
@@ -847,25 +932,47 @@ class Coordinator:
         try:
             report = worker.status(request_id)
         except ConnectionDropped:
-            return self._job(key)["state"]   # still UNKNOWN; keep fencing
+            with self._lock:
+                job = self._job(key)
+                # runtime 종료·상태 불명: unreachable moves RUNNING /
+                # OUTPUT_PENDING_VERIFY / CANCEL_REQUESTED to UNKNOWN and
+                # keeps the fence armed; nothing is resubmitted.
+                if job["state"] != "UNKNOWN":
+                    self._set_state(job, "UNKNOWN",
+                                    "worker unreachable; status unknown")
+                self._persist()
+                return job["state"]
         with self._lock:
             job = self._job(key)
             self._drain(report.get("receipts", ()), worker)
             state = report.get("state")
-            if job["state"] == "UNKNOWN":
-                if state == "RUNNING":
-                    self._set_state(job, "RUNNING",
-                                    "reconciled: existing job confirmed")
-                elif state == "NOT_FOUND":
-                    self._set_state(job, "FAILED_CONFIRMED",
+            current = job["state"]
+            if state == "COMPLETE":
+                # A COMPLETE statement promotes only on coverage confirmed
+                # by stored receipts — never on the worker's word alone.
+                if current in {"RUNNING", "UNKNOWN", "CANCEL_REQUESTED"} \
+                        and self._complete(job):
+                    self._set_state(job, "OUTPUT_PENDING_VERIFY",
+                                    "reconciled: existing completion "
+                                    "confirmed")
+            elif state == "NOT_FOUND":
+                if current == "CANCEL_REQUESTED":
+                    self._set_state(job, "CANCEL_CONFIRMED",
                                     "reconciled: never accepted")
-                elif state == "CANCELLED":
-                    self._set_state(job, "CANCEL_CONFIRMED",
-                                    "reconciled: existing cancel confirmed")
-            elif job["state"] == "CANCEL_REQUESTED":
-                if state == "CANCELLED":
-                    self._set_state(job, "CANCEL_CONFIRMED",
-                                    "reconciled: termination confirmed")
+                elif current in {"UNKNOWN", "RUNNING"}:
+                    self._set_state(job, "FAILED_CONFIRMED",
+                                    "reconciled: never accepted or lost")
+            elif state == "RUNNING" and current == "UNKNOWN":
+                self._set_state(job, "RUNNING",
+                                "reconciled: existing job confirmed")
+            elif state == "CANCELLED" and current in {
+                    "UNKNOWN", "CANCEL_REQUESTED"}:
+                self._set_state(job, "CANCEL_CONFIRMED",
+                                "reconciled: termination confirmed")
+            elif state == "FAILED" and current in {
+                    "RUNNING", "UNKNOWN", "OUTPUT_PENDING_VERIFY"}:
+                self._set_state(job, "FAILED_CONFIRMED",
+                                "reconciled: failure confirmed")
             self._persist()
             return job["state"]
 
@@ -894,7 +1001,10 @@ class Coordinator:
                 if other["state"] == "UNKNOWN":
                     raise FilmError("RESUME_REFUSED: an UNKNOWN job is "
                                     "still fenced")
-            job["state"] = "RESERVED"      # fresh attempt lifecycle
+            # §5.3: the explicit resume restarts the attempt lifecycle
+            # through the FAILED_CONFIRMED -> RESERVED edge only.
+            self._set_state(job, "RESERVED",
+                            "explicit user resume: new attempt")
             job["covered"] = []
             job["members"] = {}
             self._persist()

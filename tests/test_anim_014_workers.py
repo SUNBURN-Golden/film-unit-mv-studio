@@ -9,9 +9,10 @@ import threading
 
 import pytest
 
-from anim_014_kit import (CONTRACT, FRAMES, RECIPE, RECIPE_B, SNAPSHOT,
-                          coordinator, drive, local_plan, make_plan,
-                          members_for, operation, receipt_for, remote_plan)
+from anim_014_kit import (CONTRACT, FRAMES, INPUT_MEMBERS, OBJECT, RECIPE,
+                          RECIPE_B, SNAPSHOT, coordinator, drive,
+                          local_plan, make_plan, members_for, operation,
+                          receipt_for, remote_plan)
 
 from engine.core import FilmError
 from engine.execution_workers import (Coordinator, TRANSITIONS,
@@ -277,6 +278,87 @@ def test_unreachable_worker_keeps_unknown_fenced(tmp_path):
         c.submit(worker, keys[0], frame_contract=dict(CONTRACT))
 
 
+def test_dead_running_job_goes_unknown_then_reconciles(tmp_path):
+    """runtime 종료·상태 불명: a worker that dies mid-run moves the job to
+    UNKNOWN, the overlapping substitute stays fenced, and a later
+    COMPLETE status reconciles to OUTPUT_PENDING_VERIFY."""
+    c, worker, plan, keys = remote(tmp_path)
+    c.reserve(keys[0])
+    c.submit(worker, keys[0], frame_contract=dict(CONTRACT))
+    job = c.jobs[keys[0]]
+    assert job["state"] == "RUNNING"
+    worker.dead = True
+    assert c.reconcile(worker, keys[0]) == "UNKNOWN"
+    # the UNKNOWN fence blocks a substitute submit over the range
+    other_worker = FakeRemoteWorker("remote-2")
+    plan2 = make_plan(
+        [operation("sub-a", [0, 4], "REMOTE_CPU", "remote-2",
+                   recipe=RECIPE_B),
+         operation("sub-b", [4, 8], "REMOTE_CPU", "remote-2",
+                   recipe=RECIPE_B)])
+    keys2 = c.plan_jobs(plan2)
+    c.reserve(keys2[0])
+    with pytest.raises(FilmError, match="UNKNOWN_FENCED"):
+        c.submit(other_worker, keys2[0], frame_contract=dict(CONTRACT))
+    # the original attempt actually finished; reconcile confirms it
+    worker.revive()
+    worker.complete(job["request_id"])
+    assert c.reconcile(worker, keys[0]) == "OUTPUT_PENDING_VERIFY"
+    assert c.verify_outputs(keys[0]) == "VERIFIED"
+
+
+def test_dead_pending_verify_job_goes_unknown(tmp_path):
+    """OUTPUT_PENDING_VERIFY -> UNKNOWN on an unreachable worker; the
+    already-confirmed coverage reconciles straight back."""
+    c, worker, plan, keys = remote(tmp_path)
+    worker.auto_complete = True
+    drive(c, worker, keys[0], plan, verify=False)
+    assert c.jobs[keys[0]]["state"] == "OUTPUT_PENDING_VERIFY"
+    worker.dead = True
+    assert c.reconcile(worker, keys[0]) == "UNKNOWN"
+    worker.revive()
+    assert c.reconcile(worker, keys[0]) == "OUTPUT_PENDING_VERIFY"
+    assert c.verify_outputs(keys[0]) == "VERIFIED"
+
+
+def test_restart_with_submitting_job_reloads_as_unknown(tmp_path):
+    """A coordinator that dies after the submission intent was persisted
+    reloads the job as UNKNOWN and reconciles the same job key, attempt
+    id and request id — never a re-key, never a resubmit."""
+    c, worker, plan, keys = remote(tmp_path)
+    c.reserve(keys[0])
+    real_submit = worker.submit
+
+    def crash(packet, now_ms=0):
+        real_submit(packet, now_ms=now_ms)   # worker accepted the job
+        raise FilmError("coordinator died mid-submit")
+
+    worker.submit = crash
+    try:
+        c.submit(worker, keys[0], frame_contract=dict(CONTRACT))
+    except FilmError:
+        pass
+    finally:
+        worker.submit = real_submit
+    job = c.jobs[keys[0]]
+    assert job["state"] == "SUBMITTING"
+    # restart: the persisted SUBMITTING reloads as UNKNOWN
+    c2 = Coordinator(tmp_path / "state")
+    job2 = c2.jobs[keys[0]]
+    assert job2["state"] == "UNKNOWN"
+    assert job2["job_key"] == job["job_key"]
+    assert job2["attempt_id"] == job["attempt_id"]
+    assert job2["request_id"] == job["request_id"]
+    # the attempt was actually accepted; reconcile confirms the same job
+    assert c2.reconcile(worker, keys[0]) == "RUNNING"
+    worker.complete(job2["request_id"])
+    assert c2.reconcile(worker, keys[0]) == "OUTPUT_PENDING_VERIFY"
+    job2 = c2.jobs[keys[0]]
+    assert job2["attempt_id"] == job["attempt_id"]
+    assert job2["request_id"] == job["request_id"]
+    assert c2.verify_outputs(keys[0]) == "VERIFIED"
+
+
 # -- cancel -------------------------------------------------------------------
 
 def test_cancel_before_submit_confirms_immediately(tmp_path):
@@ -293,6 +375,24 @@ def test_completion_confirmed_before_cancel_goes_to_verify(tmp_path):
     # completion was already confirmed on the worker when cancel landed
     assert c.request_cancel(worker, keys[0]) == "OUTPUT_PENDING_VERIFY"
     assert c.verify_outputs(keys[0]) == "VERIFIED"
+    c.seal(keys[0])
+    assert c.jobs[keys[0]]["state"] == "ARCHIVED"
+
+
+def test_cancel_after_receipts_collected_returns_to_verify(tmp_path):
+    """The completion was already drained into OUTPUT_PENDING_VERIFY when
+    the cancel landed; COMPLETED_FIRST moves it back so the confirmed
+    output is verified and sealed, never stranded in CANCEL_REQUESTED."""
+    c, worker, plan, keys = remote(tmp_path)
+    worker.auto_complete = True
+    c.reserve(keys[0])
+    c.submit(worker, keys[0], frame_contract=dict(CONTRACT))
+    c.collect(worker, keys[0])
+    assert c.jobs[keys[0]]["state"] == "OUTPUT_PENDING_VERIFY"
+    assert c.request_cancel(worker, keys[0]) == "OUTPUT_PENDING_VERIFY"
+    assert c.verify_outputs(keys[0]) == "VERIFIED"
+    c.seal(keys[0])
+    assert c.jobs[keys[0]]["state"] == "ARCHIVED"
 
 
 def test_running_cancel_confirms_termination(tmp_path):
@@ -532,6 +632,74 @@ def test_scope_outside_grant_is_denied(tmp_path):
         worker.submit(oversized, now_ms=0)
 
 
+def test_grant_binds_objects_members_and_connection(tmp_path):
+    """§17 / evolution §2.1.1: the grant pins the exact input object
+    digests / member ids and the connection; a request outside any of
+    them is denied."""
+    c, worker, plan, keys = remote(tmp_path)
+    packet = captured_packet(c, worker, keys[0])
+    grant = packet["grant"]
+    assert grant["object_digests"] == [OBJECT]
+    assert grant["member_ids"] == sorted(INPUT_MEMBERS)
+    assert grant["connection_digest"] == worker.connection_digest
+    # a request naming an object outside the grant is denied
+    forged = dict(packet, input_object_digests=[RECIPE])
+    with pytest.raises(FilmError, match="RELAY_AUTH_DENIED"):
+        worker.submit(forged, now_ms=0)
+    # a request naming a member outside the grant is denied
+    forged = dict(packet, input_members=["not-a-granted-member"])
+    with pytest.raises(FilmError, match="RELAY_AUTH_DENIED"):
+        worker.submit(forged, now_ms=0)
+    # the same packet on a different connection is denied
+    other_conn = FakeRemoteWorker("remote-1", connection_digest=RECIPE_B)
+    with pytest.raises(FilmError, match="RELAY_AUTH_DENIED"):
+        other_conn.submit(packet, now_ms=0)
+    # the bound request still passes
+    assert worker.submit(packet, now_ms=0)
+
+
+def test_grant_revoked_after_completion(tmp_path):
+    """Completion voids the grant: relay reuse after VERIFIED is denied."""
+    c, worker, plan, keys = remote(tmp_path)
+    worker.revoked_grants = c.revoked_grants
+    packet = captured_packet(c, worker, keys[0])
+    assert worker.submit(packet, now_ms=0)          # grant live
+    worker.complete(packet["request_id"])
+    assert c.reconcile(worker, keys[0]) == "OUTPUT_PENDING_VERIFY"
+    assert c.verify_outputs(keys[0]) == "VERIFIED"
+    with pytest.raises(FilmError, match="RELAY_AUTH_DENIED"):
+        worker.submit(packet, now_ms=0)
+
+
+def test_grant_revoked_after_cancel_confirmation(tmp_path):
+    """Cancel confirmation voids the grant: relay reuse is denied."""
+    c, worker, plan, keys = remote(tmp_path)
+    worker.revoked_grants = c.revoked_grants
+    packet = captured_packet(c, worker, keys[0])
+    assert worker.submit(packet, now_ms=0)
+    assert c.request_cancel(worker, keys[0]) == "CANCEL_CONFIRMED"
+    with pytest.raises(FilmError, match="RELAY_AUTH_DENIED"):
+        worker.submit(packet, now_ms=0)
+
+
+def test_new_attempt_revokes_prior_grant(tmp_path):
+    """A new attempt voids the previous grant: the old packet never
+    authenticates again."""
+    c, worker, plan, keys = remote(tmp_path)
+    worker.revoked_grants = c.revoked_grants
+    packet = captured_packet(c, worker, keys[0])
+    assert worker.submit(packet, now_ms=0)
+    worker.fail(packet["request_id"])
+    assert c.reconcile(worker, keys[0]) == "FAILED_CONFIRMED"
+    with pytest.raises(FilmError, match="RELAY_AUTH_DENIED"):
+        worker.submit(packet, now_ms=0)
+    assert c.resume_failed(worker, keys[0], user_continued=True,
+                           plan=plan) == "RUNNING"
+    # the superseded grant stays void under the new attempt
+    with pytest.raises(FilmError, match="RELAY_AUTH_DENIED"):
+        worker.submit(packet, now_ms=0)
+
+
 def test_grant_digest_is_secret_free_binding():
     grant = issue_grant(issuer="coordinator", audience="remote-1",
                         peer="coordinator-user-desktop",
@@ -541,7 +709,7 @@ def test_grant_digest_is_secret_free_binding():
                         max_bytes=1024, expires_at_ms=1000, nonce="n")
     assert "token" not in " ".join(grant.keys())
     assert len(grant["grant_digest"]) == 64
-    worker = FakeRemoteWorker()
+    worker = FakeRemoteWorker(connection_digest=SNAPSHOT)
     assert check_grant(grant, worker=worker, job_key=RECIPE, attempt_id=1,
                        snapshot_digest=SNAPSHOT, output_range=[0, 4],
                        needed_bytes=512, now_ms=500)
@@ -557,9 +725,13 @@ def test_state_machine_allows_only_listed_transitions():
                 "UNKNOWN", "CANCEL_REQUESTED", "CANCEL_CONFIRMED",
                 "OUTPUT_PENDING_VERIFY", "FAILED_CONFIRMED", "VERIFIED",
                 "ARCHIVED"}
-    terminal = {"CANCEL_CONFIRMED", "FAILED_CONFIRMED", "ARCHIVED"}
+    terminal = {"CANCEL_CONFIRMED", "ARCHIVED"}
+    # §5.3 text: the only edge out of FAILED_CONFIRMED is the explicit
+    # user resume — a new attempt, never an automatic retry.
+    assert TRANSITIONS["FAILED_CONFIRMED"] == {"RESERVED"}
     assert not TRANSITIONS.keys() - {
         "PLANNED", "RESERVED", "WAITING_USER", "SUBMITTING", "RUNNING",
-        "OUTPUT_PENDING_VERIFY", "CANCEL_REQUESTED", "UNKNOWN", "VERIFIED"}
+        "OUTPUT_PENDING_VERIFY", "CANCEL_REQUESTED", "UNKNOWN",
+        "VERIFIED", "FAILED_CONFIRMED"}
     for state in terminal:
         assert state not in TRANSITIONS or not TRANSITIONS[state]

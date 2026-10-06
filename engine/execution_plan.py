@@ -410,7 +410,6 @@ def job_key(plan, operation):
     _sha(plan.get("snapshot_digest"), "plan.snapshot_digest")
     return hashlib.sha256(canon_bytes({
         "snapshot_digest": plan["snapshot_digest"],
-        "plan_revision": plan["plan_revision"],
         "operation_id": operation["operation_id"],
         "kind": operation["kind"],
         "output_range": operation["output_range"],

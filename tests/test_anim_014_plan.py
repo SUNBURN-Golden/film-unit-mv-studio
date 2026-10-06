@@ -158,6 +158,10 @@ def test_job_key_binds_snapshot_range_recipe_and_runtime():
     assert job_key(r4, r4["operations"][0]) != key
     # different operation in the same plan is a different job
     assert job_key(plan, plan["operations"][1]) != key
+    # §13 keys on snapshot/operation/range/recipe/runtime only — the plan
+    # revision lives in the job record, not the key
+    r5 = remote_plan(revision=2)
+    assert job_key(r5, r5["operations"][0]) == key
 
 
 def test_local_plan_needs_no_relay_edges():

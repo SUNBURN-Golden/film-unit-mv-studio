@@ -16,15 +16,19 @@ SNAPSHOT = hashlib.sha256(b"anim-014-snapshot").hexdigest()
 RECIPE = hashlib.sha256(b"anim-014-recipe").hexdigest()
 RECIPE_B = hashlib.sha256(b"anim-014-recipe-b").hexdigest()
 CONN = hashlib.sha256(b"anim-014-connection").hexdigest()
+OBJECT = hashlib.sha256(b"anim-014-input-object").hexdigest()
+INPUT_MEMBERS = ["input-member-0", "input-member-1"]
 
 WIDTH, HEIGHT, FRAMES = 8, 6, 8
 CONTRACT = make_contract(WIDTH, HEIGHT, frame_range=[0, FRAMES])
 
 
-def edge(edge_id, from_role, to_role, snapshot=SNAPSHOT):
+def edge(edge_id, from_role, to_role, snapshot=SNAPSHOT,
+         object_digest=None, member_ids=(), byte_ranges=()):
     return {"edge_id": edge_id, "from_role": from_role, "to_role": to_role,
-            "snapshot_digest": snapshot, "object_digest": None,
-            "index_digest": None, "member_ids": [], "byte_ranges": [],
+            "snapshot_digest": snapshot, "object_digest": object_digest,
+            "index_digest": None, "member_ids": list(member_ids),
+            "byte_ranges": [list(r) for r in byte_ranges],
             "verification": "UPLOADED_UNVERIFIED",
             "max_inflight_bytes": 1 << 20, "spool_limit_bytes": 1 << 20,
             "evidence_ref": None, "measured_at": None,
@@ -58,7 +62,12 @@ def make_plan(ops, *, policy="FIXED_ROUTE", evidence_required=False,
     if edges is None:
         edges = []
         if any(o["route"] != "LOCAL_NATIVE" for o in ops):
-            edges = [edge("e-in", "COORDINATOR", "WORKER"),
+            # The inbound edge declares the exact input object/members the
+            # relay may push — grants bind to this scope.
+            edges = [edge("e-in", "COORDINATOR", "WORKER",
+                          object_digest=OBJECT,
+                          member_ids=INPUT_MEMBERS,
+                          byte_ranges=[[0, 4096]]),
                      edge("e-out", "WORKER", "COORDINATOR",
                           )]
     return make_execution_plan(
