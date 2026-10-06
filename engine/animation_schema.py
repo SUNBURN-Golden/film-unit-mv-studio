@@ -39,6 +39,7 @@ DOCUMENT_SCHEMAS = {
     "subscription_packet": 1,
     "subscription_result": 1,
     "capability_measurement": 1,
+    "render_manifest": 1,
 }
 
 TIMELINE_FIELDS = {"document_type", "schema_version", "target_frames", "entries"}

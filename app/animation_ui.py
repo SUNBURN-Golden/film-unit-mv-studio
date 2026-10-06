@@ -409,6 +409,8 @@ def _fix(p, shot_id, locks, reviews):
         st.info("아직 검수되지 않은 대상: " + "; ".join(missing))
     else:
         st.success("모든 검수와 LOCK이 현재 버전을 가리킵니다.")
+    with st.expander("교체 영향 미리보기 (rebuild-plan)", expanded=False):
+        _replacement_projection(p, shot_id)
     seq = st.file_uploader("교체 프레임 PNG 묶음", type=["png"],
                            accept_multiple_files=True, key="an_fix_files")
     if st.button("이 컷 교체 (새 리비전 import)", key="an_fix_import",
@@ -416,6 +418,32 @@ def _fix(p, shot_id, locks, reviews):
         _do(lambda: _sequence_import(p, shot_id, seq),
             f"{shot_id}를 새 리비전으로 교체했습니다 — 묶여 있던 검수는 "
             "재검수가 필요합니다")
+
+
+def _replacement_projection(p, shot_id):
+    """ANIM-020 stale-approval projection for the fix panel's actual edit —
+    a whole-sequence replacement of this shot (rebuild-plan, nothing runs)."""
+    from engine.render_provenance import plan_rebuild
+    try:
+        iid = next((e["instance_id"] for e in load_animation_timeline(p)
+                    ["entries"] if e["shot_id"] == shot_id), None)
+        if iid is None:
+            st.caption(f"{shot_id}는 타임라인에 없습니다.")
+            return
+        plan = plan_rebuild(p, [{"class": "SEQUENCE", "instance_id": iid}])
+    except FilmError as exc:
+        st.caption(f"영향 예측을 만들 수 없습니다: {exc}")
+        return
+    closure, projection = plan["closure"], plan["stale_approval_projection"]
+    st.caption(f"{iid} 전체 교체 시 재합성 {len(closure['dirty_frames'])}프레임 "
+               f"(범위 {closure['compose_ranges']}), 읽을 멤버 "
+               f"{sum(len(v) for v in closure['needed_members'].values())}개 "
+               f"(halo {sum(len(v) for v in closure['halo_members'].values())}개), "
+               f"재인코딩 {', '.join(closure['encode_roles']) or '없음'}")
+    if projection["stale"]:
+        st.warning("낡아지는 검수·LOCK: " + ", ".join(projection["stale"]))
+    if projection["kept"]:
+        st.caption("유지: " + ", ".join(projection["kept"]))
 
 
 def _waves(p, entries):
