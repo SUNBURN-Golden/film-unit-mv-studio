@@ -418,6 +418,12 @@ def composite_shot(project, shot_id, *, instance_id=None, progress=None):
         width, height = fmt["width"], fmt["height"]
         plan = load_shot_plan(p, shot_id, length=length,
                               canvas={"width": width, "height": height})
+        if any(s["path"] != "C" for s in plan["segments"]):
+            raise FilmError(
+                "composite_shot renders path-C segments only; this plan "
+                "uses " + ", ".join(sorted(
+                    {s["path"] for s in plan["segments"] if s["path"] != "C"}))
+                + " — A-path frames come from the imported draft sequence")
         plan_sha256 = digest(safe_path(p, plan_path(shot_id)))
         registry = load_registry(p)
         rig_record, _rig_paths = _resolve_member(

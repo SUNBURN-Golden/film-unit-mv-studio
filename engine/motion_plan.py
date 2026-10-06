@@ -1,10 +1,13 @@
-"""FRAME_ANIMATION_V1 shot plans (ANIM-008, schema section 5, design 8.4).
+"""FRAME_ANIMATION_V1 shot plans (ANIM-008/ANIM-009, schema section 5,
+design 8).
 
 `animation/shots/<shot_id>/plan.json` is the `animation_shot_plan` schema 1
-document (CANON_JSON_V1). For the v1 native path it declares the shot's
-C-path: the adopted RIG_SPEC pin, the artwork assets the cut consumes, the
-contiguous path segments (only `"C"` is implemented — A/B stay declared
-unsupported), and the layer/camera schedules.
+document (CANON_JSON_V1). It declares the shot's contiguous path segments
+and the assets each path consumes: path `"C"` needs the RIG_SPEC pin and
+layer tracks the compositor binds, while path `"A"` (image-based frame
+production, ANIM-009) consumes master/layout/control/mask/replacement pins
+through the work packet and its imported draft sequence. `"B"` stays
+declared but unimplemented.
 
 Tracks follow the ExposureSchedule contract from `engine/exposure.py`: a
 layer's `exposure` tiles `[0, cut_length)` and each slot's `drawing` indexes
@@ -41,10 +44,15 @@ CAMERA_FIELDS = {"pivot", "transform"}
 LAYER_TRACK_FIELDS = {"drawings", "exposure", "transform", "mask"}
 PREP_FIELDS = {"work", "creator", "reviewer", "revision_scope"}
 
-ASSET_ROLES = {"layer", "mask", "replacement"}
+ASSET_ROLES = {"layer", "mask", "replacement", "master", "layout",
+               "control"}
+# Plan-asset roles that only make sense with a segment of the given path.
+ROLES_NEEDING_C = {"layer"}
+ROLES_NEEDING_A = {"master", "layout", "control"}
 EVENT_TYPES = {"CONTACT", "DIRECTION_CHANGE", "OCCLUSION", "REAPPEARANCE",
                "NOTE"}
 MOTION_INTENTS = {"STATIC", "ANIMATED"}
+KEYPOSE_KINDS = {"KEYPOSE", "BREAKDOWN", "POSE"}
 
 CURVES = {"STEP", "LINEAR"}
 TRANSFORM_CHANNELS = {"translate", "rotate", "scale", "opacity"}
@@ -54,11 +62,16 @@ NATIVE_C_CAPABILITIES = {"RGBA_LAYER", "PARENT_TRANSFORM", "PIVOT",
                          "TRANSLATE", "ROTATE", "SCALE", "OPACITY",
                          "Z_ORDER", "MASK", "REPLACEMENT_DRAWING",
                          "CAMERA_TRANSFORM", "CURVE_STEP", "CURVE_LINEAR"}
+# A-path scope (design 8.2): the inputs a hand-driven image tool can
+# actually consume for image-based frame production.
+A_PATH_CAPABILITIES = {"REFERENCE_IMAGES", "LAYOUT_GUIDE", "POSE_GUIDE",
+                       "MASK_REGION", "START_END_IMAGES", "ALPHA_OUTPUT",
+                       "PREVIOUS_FRAME_AUX"}
 # Named in the design as explicitly out of v1 scope; a plan declaring one is
 # refused with the unsupported name surfaced, not silently dropped.
 UNSUPPORTED_V1_CAPABILITIES = {"MESH_DEFORMATION", "INVERSE_KINEMATICS",
                                "3D_TRANSFORM", "AUTO_LIP_SYNC"}
-UNIMPLEMENTED_PATHS = {"A", "B"}
+UNIMPLEMENTED_PATHS = {"B"}
 
 
 def _int(value, what, minimum=0):
@@ -162,7 +175,7 @@ def validate_transform_track(track, length, what="transform"):
     return track
 
 
-def _check_assets(assets):
+def _check_assets(assets, paths):
     if type(assets) is not list:
         raise FilmError("assets must be a list")
     for index, item in enumerate(assets):
@@ -174,6 +187,12 @@ def _check_assets(assets):
             raise FilmError(f"{what} kind must be a non-empty string")
         if item["role"] not in ASSET_ROLES:
             raise FilmError(f"{what} role must be one of {sorted(ASSET_ROLES)}")
+        if item["role"] in ROLES_NEEDING_C and "C" not in paths:
+            raise FilmError(f"{what} role {item['role']} needs a path-C "
+                            "segment")
+        if item["role"] in ROLES_NEEDING_A and "A" not in paths:
+            raise FilmError(f"{what} role {item['role']} needs a path-A "
+                            "segment")
         if item["layout"] is not None:
             _point(item["layout"], f"{what} layout")
 
@@ -193,16 +212,19 @@ def _check_events(events):
             raise FilmError(f"events[{index}] note must be a string")
 
 
-def _check_keyposes(keyposes):
+def _check_keyposes(keyposes, length):
     if type(keyposes) is not list:
         raise FilmError("keyposes must be a list")
     for index, pose in enumerate(keyposes):
         if type(pose) is not dict or set(pose.keys()) != KEYPOSE_FIELDS:
             raise FilmError(f"keyposes[{index}] must hold "
                             f"{sorted(KEYPOSE_FIELDS)}")
-        if type(pose["kind"]) is not str or not pose["kind"]:
-            raise FilmError(f"keyposes[{index}] kind must be a non-empty string")
+        if pose["kind"] not in KEYPOSE_KINDS:
+            raise FilmError(f"keyposes[{index}] kind must be one of "
+                            f"{sorted(KEYPOSE_KINDS)}")
         _int(pose["frame"], f"keyposes[{index}] frame")
+        if pose["frame"] >= length:
+            raise FilmError(f"keyposes[{index}] sits outside [0, {length})")
         if pose["ref"] is not None and type(pose["ref"]) is not str:
             raise FilmError(f"keyposes[{index}] ref must be a string or null")
 
@@ -222,10 +244,11 @@ def _check_segments(segments, length):
         cursor = end
         path = segment["path"]
         if path in UNIMPLEMENTED_PATHS:
-            raise FilmError(f"Path {path} is declared in the contract but not "
-                            "implemented in v1; only path C composites")
-        if path != "C":
-            raise FilmError(f"Unknown production path {path}; v1 implements C")
+            raise FilmError(f"Path {path} is declared in the contract but "
+                            "not implemented in v1")
+        if path not in {"A", "C"}:
+            raise FilmError(f"Unknown production path {path}; v1 implements "
+                            "A and C")
         paths.append(path)
         capabilities = segment["capabilities"]
         if type(capabilities) is not list \
@@ -237,13 +260,15 @@ def _check_segments(segments, length):
         if unsupported:
             raise FilmError("Capabilities declared unsupported in v1: "
                             + ", ".join(sorted(unsupported)))
-        unknown = [c for c in capabilities
-                   if c not in NATIVE_C_CAPABILITIES]
+        allowed = A_PATH_CAPABILITIES if path == "A" \
+            else NATIVE_C_CAPABILITIES
+        unknown = [c for c in capabilities if c not in allowed]
         if unknown:
-            raise FilmError("Unknown capabilities: "
+            raise FilmError(f"Unknown path-{path} capabilities: "
                             + ", ".join(sorted(unknown)))
     if cursor != length:
         raise FilmError(f"Path segments must cover [0, {length}) exactly")
+    return set(paths)
 
 
 def _check_tracks(tracks, length):
@@ -323,12 +348,19 @@ def validate_shot_plan(document, *, length, shot_id=None, canvas=None):
             or any(type(v) is not int or not 0 <= v <= 255
                    for v in background)):
         raise FilmError("background must be three 0..255 integers")
-    _pin(document["rig"], "rig")
-    _check_assets(document["assets"])
+    paths = _check_segments(document["segments"], length)
+    rig = document["rig"]
+    if "C" in paths:
+        _pin(rig, "rig")
+    elif rig is not None:
+        raise FilmError("rig must be null when no segment uses path C")
+    _check_assets(document["assets"], paths)
     _check_events(document["events"])
-    _check_keyposes(document["keyposes"])
-    _check_segments(document["segments"], length)
+    _check_keyposes(document["keyposes"], length)
     layers = _check_tracks(document["tracks"], length)
+    if layers and "C" not in paths:
+        raise FilmError("tracks.layers must be empty when no segment uses "
+                        "path C")
     preparation = document["preparation"]
     if type(preparation) is not dict or set(preparation.keys()) != PREP_FIELDS:
         raise FilmError(f"preparation must hold {sorted(PREP_FIELDS)}")

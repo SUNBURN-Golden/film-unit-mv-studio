@@ -435,10 +435,15 @@ def test_plan_rejects_unsupported_paths_curves_and_gaps(tmp_path):
                       subject=_track(translate=("LINEAR",
                                                 [(0, [10, 16]),
                                                  (23, [40, 16])])))
-    # Only path C exists in v1.
+    # Path A is implemented (ANIM-009); B stays declared but unimplemented.
+    bad = copy.deepcopy(plan)
+    bad["segments"][0]["path"] = "B"
+    with pytest.raises(FilmError, match="Path B"):
+        validate_shot_plan(bad, length=FRAMES)
+    # An A segment takes no rig or C layers.
     bad = copy.deepcopy(plan)
     bad["segments"][0]["path"] = "A"
-    with pytest.raises(FilmError, match="Path A"):
+    with pytest.raises(FilmError, match="rig must be null"):
         validate_shot_plan(bad, length=FRAMES)
     # Declared-unsupported capabilities fail with their name surfaced.
     bad = copy.deepcopy(plan)
@@ -449,7 +454,7 @@ def test_plan_rejects_unsupported_paths_curves_and_gaps(tmp_path):
     with pytest.raises(FilmError, match="AUTO_LIP_SYNC"):
         validate_shot_plan(bad, length=FRAMES)
     bad["segments"][0]["capabilities"] = ["SOMETHING_ELSE"]
-    with pytest.raises(FilmError, match="Unknown capabilities"):
+    with pytest.raises(FilmError, match="Unknown path-C capabilities"):
         validate_shot_plan(bad, length=FRAMES)
     # Only step and linear curves exist.
     bad = copy.deepcopy(plan)

@@ -30,6 +30,8 @@ DOCUMENT_SCHEMAS = {
     "composite_recipe": 1,
     "encode_recipe": 1,
     "capability_evidence": 1,
+    "animation_work_packet": 1,
+    "animation_draft_frames": 1,
 }
 
 TIMELINE_FIELDS = {"document_type", "schema_version", "target_frames", "entries"}
