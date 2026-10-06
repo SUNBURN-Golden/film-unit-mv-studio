@@ -80,6 +80,8 @@ with models_tab:
 with web_tab:
     from app.handoff_ui import render_connection
     render_connection(p)
+    from app.archive_ui import render_archive
+    render_archive(p)
 
 with tabs[0]:
     st.subheader("음원 분석")
