@@ -74,6 +74,8 @@ def main(argv=None):
     asset.add_argument("--note", default="")
     listing_anim = sub.add_parser("animation-assets", help="List registered animation assets and shot assignments")
     listing_anim.add_argument("project")
+    check_anim = sub.add_parser("animation-validate", help="FRAME_ANIMATION_V1: check the edit timeline and per-shot sequence coverage")
+    check_anim.add_argument("project")
     packets = sub.add_parser("packets", help="Write per-shot prompts and import commands for making media by hand in subscription apps; no provider calls")
     packets.add_argument("project")
     packets.add_argument("--shots", help="Comma-separated shot IDs; default all shots")
@@ -174,6 +176,9 @@ def main(argv=None):
         elif a.command == "animation-assets":
             from .animation_assets import asset_status
             result = asset_status(a.project)
+        elif a.command == "animation-validate":
+            from .frame_sequence import animation_validate
+            result = animation_validate(a.project)
         elif a.command == "builds":
             from .builds import list_builds
             result = list_builds(a.project)
