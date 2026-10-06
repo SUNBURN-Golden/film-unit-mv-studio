@@ -239,6 +239,10 @@ def bounded_read(operation, retry, sleep_fn=_sleep_ms):
             if failures >= max_retries:
                 raise
             after = getattr(e, "retry_after_ms", None)
+            if after is not None and after > cap_ms:
+                raise FilmError(
+                    "TRANSPORT_RETRY_EXHAUSTED: the provider's Retry-After "
+                    "exceeds the policy's max_backoff_ms") from e
             wait = after if after is not None \
                 else min(cap_ms, base_ms * (2 ** failures))
             if max_elapsed is not None:

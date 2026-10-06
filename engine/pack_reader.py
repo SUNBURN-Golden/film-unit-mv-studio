@@ -88,8 +88,17 @@ class PackReader:
                     "RANGE_FALLBACK_DENIED: the backend answered a range "
                     "request with an undeclared whole pack; refusing the "
                     "unbounded body")
-            if result.total_length is not None \
-                    and result.total_length != pack_length:
+            if result.total_length is None:
+                # No declared total: only usable when the pinned pack
+                # length sits inside the declared cap and the body is
+                # exactly that long — anything else is refused.
+                if pack_length > self.whole_pack_cap \
+                        or len(result.body) != pack_length:
+                    raise FilmError(
+                        "INPUT_MISMATCH: a whole-body response without a "
+                        "declared total length must equal the pinned "
+                        "pack_byte_length inside the declared cap")
+            elif result.total_length != pack_length:
                 raise FilmError(
                     "INPUT_MISMATCH: whole-body response total length "
                     "does not match the pinned pack_byte_length")

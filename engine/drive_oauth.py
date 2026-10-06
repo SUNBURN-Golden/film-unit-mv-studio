@@ -43,7 +43,8 @@ class FakeOAuthFlow:
 
     `deny=True` models the user refusing consent; `expires_in` models token
     lifetime; `granted_object_ids` is the explicit file selection the fake
-    account authorized (None = every object, the test's folder-level grant).
+    account authorized (None = an empty selection: drive.file never grants
+    pre-existing objects the user did not explicitly pick).
     """
 
     def __init__(self, account="account-a", granted_object_ids=None,
@@ -58,8 +59,7 @@ class FakeOAuthFlow:
         if self.deny:
             raise AuthError("AUTH_DENIED",
                             "The user declined the Google consent screen")
-        granted = (sorted(self.granted_object_ids)
-                   if self.granted_object_ids is not None else None)
+        granted = sorted(self.granted_object_ids or [])
         return {"account_id": self.account,
                 "token": {"access_token": f"fake-access-{uuid.uuid4().hex}",
                           "refresh_token": f"fake-refresh-{uuid.uuid4().hex}",
@@ -212,12 +212,11 @@ class _AuthorizedBackend:
     def list_objects(self):
         self._session._check()
         ids = self._session.backend.list_objects()
-        if self._session.granted_object_ids is None:
-            return ids
         # drive.file scope: only the explicit grant plus objects this app
         # created in this credential epoch are visible — listing must not
         # widen the scope to the whole store.
-        visible = set(self._session.granted_object_ids) | self._session._owned
+        visible = set(self._session.granted_object_ids or ()) \
+            | self._session._owned
         return [i for i in ids if i in visible]
 
     def put_object(self, object_id, data):
@@ -301,11 +300,19 @@ class DriveSession:
             raise AuthError("AUTH_EXPIRED", "The connection token expired")
 
     def _accessible(self, object_id):
-        """drive.file scope: app-created objects + the user's explicit grant."""
-        if self.granted_object_ids is None:
-            return True
-        return object_id in self._owned \
-            or object_id in self.granted_object_ids
+        """drive.file scope: app-created objects + the user's explicit grant.
+
+        An omitted grant is an empty explicit selection, never allow-all:
+        a pre-existing object is reachable only when the user explicitly
+        selected it — choosing a folder does not widen the grant.
+        """
+        granted = self.granted_object_ids or ()
+        return object_id in self._owned or object_id in granted
+
+    def covers(self, object_id):
+        """Public grant probe: picker UIs check whether an explicit file
+        selection (a new consent) is needed before a read or restore."""
+        return self._accessible(object_id)
 
     def _close(self, reason):
         self.token_store.revoke(self.connection_id)

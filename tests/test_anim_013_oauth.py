@@ -39,8 +39,51 @@ def test_minimum_scope_is_drive_file_only():
 def test_connected_session_reads_within_its_grant():
     backend = fake_backend()
     backend.put_object("obj-1", b"data")
-    session = connect(backend)
+    session = connect(backend, granted_object_ids=["obj-1"])
     assert session.authorized.get_object("obj-1").body == b"data"
+
+
+def test_default_grant_is_an_empty_explicit_selection():
+    # An omitted grant selects nothing: an object written before this
+    # credential epoch is not readable, listable or reusable — choosing
+    # the app never widens drive.file into a folder-level grant.
+    backend = fake_backend()
+    backend.put_object("obj-1", b"data")
+    session = connect(backend)
+    with pytest.raises(ArchiveRequestError) as e:
+        session.authorized.get_object("obj-1")
+    assert e.value.status == 403 and e.value.reason == "permission_denied"
+    assert session.authorized.list_objects() == []
+    with pytest.raises(ArchiveRequestError) as e:
+        session.authorized.put_object("obj-1", b"data")
+    assert e.value.status == 403
+    s = session.authorized.create_upload_session("obj-1", 4)
+    session.authorized.upload_chunk(s, 0, b"data")
+    with pytest.raises(ArchiveRequestError) as e:
+        session.authorized.complete_upload(s)
+    assert e.value.status == 403
+
+
+def test_explicit_selection_authorizes_a_preexisting_object():
+    backend = fake_backend()
+    backend.put_object("obj-1", b"data")
+    session = connect(backend, granted_object_ids=["obj-1"])
+    assert session.authorized.get_object("obj-1").body == b"data"
+    assert session.authorized.list_objects() == ["obj-1"]
+    assert session.authorized.put_object("obj-1", b"data")["reused"] is True
+
+
+def test_objects_created_in_this_epoch_stay_accessible():
+    backend = fake_backend()
+    backend.put_object("obj-1", b"data")
+    session = connect(backend)                # empty explicit selection
+    session.authorized.put_object("obj-new", b"n")
+    assert session.authorized.get_object("obj-new").body == b"n"
+    assert session.authorized.list_objects() == ["obj-new"]
+    # The pre-existing, never-selected object stays outside the grant.
+    with pytest.raises(ArchiveRequestError) as e:
+        session.authorized.get_object("obj-1")
+    assert e.value.status == 403
 
 
 def test_expired_token_blocks_every_operation():
@@ -48,7 +91,8 @@ def test_expired_token_blocks_every_operation():
     backend = fake_backend()
     backend.put_object("obj-1", b"data")
     session = connect_drive(
-        FakeOAuthFlow(expires_in=60, now_fn=lambda: clock["now"]),
+        FakeOAuthFlow(expires_in=60, now_fn=lambda: clock["now"],
+                      granted_object_ids=["obj-1"]),
         MemoryTokenStore(), backend, now_fn=lambda: clock["now"])
     assert session.authorized.get_object("obj-1").body == b"data"
     clock["now"] += 120

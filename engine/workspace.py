@@ -238,11 +238,13 @@ class RestoreStage:
         if self._closed:
             raise FilmError("Restore stage is closed")
         dest_dir = Path(dest_dir)
-        if dest_dir.is_symlink():
-            self.abort()
-            raise FilmError(
-                "RESTORE_PATH_REJECTED: destination is a symlink; "
-                "staged bytes are never written through one")
+        for node in (dest_dir, *dest_dir.parents):
+            if node.is_symlink():
+                self.abort()
+                raise FilmError(
+                    "RESTORE_PATH_REJECTED: destination or an existing "
+                    "ancestor is a symlink; staged bytes are never "
+                    "written through one")
         staged = sorted(f for f in self.dir.iterdir() if f.is_file())
         for f in staged:
             target = dest_dir / f.name

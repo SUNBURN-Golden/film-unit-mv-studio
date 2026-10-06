@@ -133,6 +133,19 @@ def _archive(session):
                        f"sha {result['archive_sha256'][:16]}…")
 
 
+def _selected_session(session, doc):
+    """drive.file needs an explicit selection for objects another epoch
+    created — the archive picked in this panel is that selection, so the
+    fake consent re-runs granting exactly the manifest's object ids."""
+    needed = sorted(o["object_id"] for o in doc["objects"])
+    if all(session.covers(object_id) for object_id in needed):
+        return session
+    session = connect_drive(FakeOAuthFlow(granted_object_ids=needed),
+                            MemoryTokenStore(), _backend(), home=_home())
+    st.session_state[SESSION_KEY] = session
+    return session
+
+
 def _restore(session):
     st.markdown("**복원 / 캐시 상태**")
     manifests = sorted(f.stem for f in _manifest_dir().glob("*.json"))
@@ -152,16 +165,18 @@ def _restore(session):
         doc = _guarded(lambda: _load_manifest(pick))
         if doc:
             st.json(_guarded(lambda: archive_status(
-                session.authorized if session else _backend(), doc)))
+                _selected_session(session, doc).authorized
+                if session else _backend(), doc)))
     if session is not None and dest.strip() \
             and st.button("아카이브 복원", key="arc_restore"):
         def run():
             doc = _load_manifest(pick)
+            active = _selected_session(session, doc)
             # Never pre-resolve the destination: the restore gate must see
             # the path the user typed, and the allowed root is the fixed
             # drive home — not something derived from the destination.
             target = Path(dest).expanduser()
-            return restore_archive(session.authorized, doc, workspace,
+            return restore_archive(active.authorized, doc, workspace,
                                    target, allowed_root=_home(),
                                    whole_pack_cap=int(cache_cap))
         result = _guarded(run)

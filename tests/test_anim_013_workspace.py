@@ -132,12 +132,18 @@ def test_symlink_destination_is_not_followed(tmp_path):
     target.mkdir()
     link = tmp_path / "link"
     link.symlink_to(target)
+    # A symlinked destination is refused…
     stage = ws.begin_restore()
     stage.write_member("F_000001.png", b"x")
-    # The symlinked path resolves to `real/F_000001.png`; os.replace writes
-    # inside the real dir. Only a direct symlinked FILE is blocked by the
-    # commit check — the caller (drive_archive) rejects symlinked roots.
-    assert link.is_symlink()
+    with pytest.raises(FilmError, match="RESTORE_PATH_REJECTED"):
+        stage.commit(link)
+    # …and so is a fresh destination under a symlinked ancestor — nothing
+    # may be written through the link into `real`.
+    stage = ws.begin_restore()
+    stage.write_member("F_000001.png", b"x")
+    with pytest.raises(FilmError, match="RESTORE_PATH_REJECTED"):
+        stage.commit(link / "out")
+    assert list(target.iterdir()) == []
 
 
 def test_surviving_entries_reattach_across_workspace_instances(tmp_path):
