@@ -8,6 +8,7 @@ FAKE/UNQUALIFIED — no real provider call, no paid generation, no artwork
 approval and no production authorization is created or implied.
 """
 import json
+import os
 from fractions import Fraction
 from pathlib import Path
 
@@ -18,14 +19,15 @@ from engine import cli
 from engine.animation_assets import (import_draft_image, import_layer_rgba,
                                      import_mask, load_registry,
                                      resolve_shot_sequence)
-from engine.animation_schema import read_canon
+from engine.animation_schema import read_canon, write_canon
 from engine.compositor import composite_shot
-from engine.core import FilmError, read
+from engine.core import FilmError, read, write
 from engine.frame_sequence import (animation_validate,
                                    normalize_shot_sequence)
 from engine.motion_plan import load_shot_plan, save_shot_plan
 from engine.segment_fake import configure_fake, fake_state, make_adapter
-from engine.segment_gen import (JOURNAL_TYPE, commit_segment_sequence,
+from engine.segment_gen import (JOURNAL_TYPE, TRANSITIONS,
+                                commit_segment_sequence,
                                 import_segment_control, load_job_journal,
                                 segment_import, segment_jobs, segment_quote,
                                 segment_reconcile, segment_retry,
@@ -556,6 +558,124 @@ def test_stale_plan_jobs_do_not_count(tmp_path):
     save_shot_plan(p, plan)
     with pytest.raises(FilmError, match="SEGMENT_NOT_PRODUCED"):
         commit_segment_sequence(p, "S001")
+
+
+def test_commit_refuses_stale_inputs_and_commits_new_job(tmp_path):
+    p, _, anchor, _ = b_scene(tmp_path)
+    old_job = _run_to_verified(p)
+    segment_import(p, old_job)
+    # Revising the start anchor on the same asset id re-pins the segment
+    # input; the older VERIFIED job's key no longer matches the current
+    # spec, so it must not be assembled even when it is the only job.
+    revised = import_segment_control(
+        p, "S001", _png(tmp_path / "start2.png", 41), role="keypose",
+        frame=0, asset_id=anchor["asset_id"])
+    assert revised["asset_pin"]["asset_id"] == anchor["asset_id"]
+    assert revised["asset_pin"]["revision"] == anchor["revision"] + 1
+    with pytest.raises(FilmError, match="SEGMENT_STALE_INPUTS") as exc:
+        commit_segment_sequence(p, "S001")
+    assert anchor["asset_id"] in str(exc.value)
+    # A job produced for the new pins supplies the committed frames.
+    new_job = _run_to_verified(p)
+    assert new_job != old_job
+    segment_import(p, new_job)
+    result = commit_segment_sequence(p, "S001")
+    registry = load_registry(p)
+    record = registry["assets"][result["asset_id"]]["revisions"][
+        str(result["revision"])]
+    staged = {m["member_index"]: m["sha256"]
+              for m in _job_record(p, new_job)["import"]["members"]}
+    assert [f["sha256"] for f in record["files"]] == \
+        [staged[i] for i in range(FRAMES)]
+    # Provenance lists only the job that actually supplied frames.
+    assert record["provenance"]["jobs"] == [new_job]
+    assert {m["job_id"] for m in record["provenance"]["source_maps"]} == \
+        {new_job}
+
+
+def test_commit_with_used_range_offset_and_handles(tmp_path):
+    p, _, _, _ = b_scene(tmp_path)
+    timeline = read_canon(p / "timeline/edit.json")
+    timeline["entries"][0]["used_source_range"] = [4, 4 + FRAMES]
+    timeline["entries"][0]["unused_handles"] = {"before": 2, "after": 3}
+    write_canon(p / "timeline/edit.json", timeline)
+    job_id = _run_to_verified(p)
+    segment_import(p, job_id)
+    # Members stage at absolute indices [4, 28); the lead-in and declared
+    # handle positions reuse the nearest staged member, so commit does not
+    # fail with MISSING_FRAMES.
+    result = commit_segment_sequence(p, "S001")
+    assert result["frames"] == 4 + FRAMES + 3
+    record = load_registry(p)["assets"][result["asset_id"]]["revisions"][
+        str(result["revision"])]
+    staged = {m["member_index"]: m["sha256"]
+              for m in _job_record(p, job_id)["import"]["members"]}
+    expected = ([staged[4]] * 4
+                + [staged[i] for i in range(4, 4 + FRAMES)]
+                + [staged[4 + FRAMES - 1]] * 3)
+    assert [f["sha256"] for f in record["files"]] == expected
+    norm = normalize_shot_sequence(p, "S001")
+    assert [row["member"] for row in norm["entries"][0]["member_map"]] == \
+        list(range(4, 4 + FRAMES))
+    assert animation_validate(p)["ok"] is True
+
+
+def test_submit_reject_and_retry_use_allowed_edges(tmp_path):
+    p, _, _, _ = b_scene(tmp_path)
+    quote = segment_quote(p, "S001", 0, FRAMES)
+    configure_fake(p, behaviors={"reject": True})
+    result = _submit(p, quote=quote, max_retries=1)
+    assert result["status"] == "FAILED_CONFIRMED"
+    job = _job_record(p, result["job_id"])
+    edges = [(h["from"], h["to"]) for h in job["history"]]
+    # A definite reject has no SUBMITTING -> FAILED_CONFIRMED edge in the
+    # schema-13 table; it goes through UNKNOWN -> FAILED_CONFIRMED.
+    assert edges[-2:] == [("SUBMITTING", "UNKNOWN"),
+                          ("UNKNOWN", "FAILED_CONFIRMED")]
+    # An explicit continuation takes the journaled edge back to RESERVED.
+    configure_fake(p, behaviors={"reject": False})
+    quote = segment_quote(p, "S001", 0, FRAMES)
+    retry = segment_retry(p, result["job_id"], approver="reviewer",
+                          quote_id=quote["quote_id"])
+    assert retry["status"] == "RUNNING" and retry["attempt"] == 2
+    job = _job_record(p, result["job_id"])
+    assert ("FAILED_CONFIRMED", "RESERVED") in \
+        [(h["from"], h["to"]) for h in job["history"]]
+    for h in job["history"]:
+        assert h["to"] in TRANSITIONS[h["from"]]
+
+
+def test_segment_cap_and_project_budget_are_separate(tmp_path):
+    p, _, _, _ = b_scene(tmp_path)
+    # --cap approves the segment quote; the ledger-wide limit is the
+    # project budget, not the per-segment cap.
+    config = read(p / "project.yaml")
+    config["budget"]["max_credits"] = 10
+    write(p / "project.yaml", config)
+    quote = segment_quote(p, "S001", 0, FRAMES)
+    with pytest.raises(FilmError, match="cap reached"):
+        _submit(p, quote=quote)  # per-segment cap 10000 approves; budget 10
+    ledger = read(p / "render/ledger.json", {"jobs": {}})
+    assert ledger["jobs"] == {}
+
+
+def test_segment_jobs_refuse_symlinked_dirs(tmp_path):
+    p, _, _, _ = b_scene(tmp_path)
+    _run_to_verified(p)
+    moved = tmp_path / "moved_jobs"
+    (p / "animation/segment_jobs/S001").rename(moved)
+    os.symlink(moved, p / "animation/segment_jobs/S001",
+               target_is_directory=True)
+    with pytest.raises(FilmError, match="SEGMENT_JOBS_SYMLINK"):
+        segment_jobs(p)
+    with pytest.raises(FilmError, match="SEGMENT_JOBS_SYMLINK"):
+        segment_jobs(p, "S001")
+    root_moved = tmp_path / "moved_root"
+    (p / "animation/segment_jobs").rename(root_moved)
+    os.symlink(root_moved, p / "animation/segment_jobs",
+               target_is_directory=True)
+    with pytest.raises(FilmError, match="SEGMENT_JOBS_SYMLINK"):
+        segment_jobs(p)
 
 
 def test_segment_control_rules_and_no_member_fill(tmp_path):

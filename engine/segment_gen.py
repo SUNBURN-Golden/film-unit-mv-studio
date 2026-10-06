@@ -43,6 +43,7 @@ access and no paid generation.
 """
 import hashlib
 import json
+import math
 import uuid
 from fractions import Fraction
 from pathlib import Path
@@ -67,9 +68,12 @@ JOURNAL_EVENTS = {"SUBMIT_INTENT", "SUBMIT_ACCEPTED", "SUBMIT_LOST",
                   "SUBMIT_REJECTED", "STATUS_QUERY", "STATUS_OBSERVED",
                   "IMPORT_INTENT", "IMPORT_OBSERVED", "RETRY_INTENT"}
 
-# WorkerProtocol 1 states (schema 13) plus the one edge a synchronous
-# definitive refusal needs: an observed rejection is a confirmed failure, not
-# ambiguity, so SUBMITTING may go straight to FAILED_CONFIRMED.
+# WorkerProtocol 1 states and allowed edges (schema 13). A definitive
+# refusal observed while SUBMITTING has no direct edge in the table, so it
+# is recorded as UNKNOWN (the submit's acceptance was not confirmed) and
+# then confirmed FAILED_CONFIRMED — the only allowed path. The one edge the
+# table omits but its prose defines is FAILED_CONFIRMED -> RESERVED: the
+# next attempt starts only on an explicit, journaled user continuation.
 JOB_STATES = {"PLANNED", "RESERVED", "WAITING_USER", "SUBMITTING", "RUNNING",
               "UNKNOWN", "CANCEL_REQUESTED", "CANCEL_CONFIRMED",
               "OUTPUT_PENDING_VERIFY", "FAILED_CONFIRMED", "VERIFIED",
@@ -78,8 +82,7 @@ TRANSITIONS = {
     "PLANNED": {"RESERVED"},
     "RESERVED": {"WAITING_USER", "SUBMITTING", "CANCEL_CONFIRMED"},
     "WAITING_USER": {"SUBMITTING", "CANCEL_CONFIRMED"},
-    "SUBMITTING": {"RUNNING", "UNKNOWN", "CANCEL_REQUESTED",
-                   "FAILED_CONFIRMED"},
+    "SUBMITTING": {"RUNNING", "UNKNOWN", "CANCEL_REQUESTED"},
     "UNKNOWN": {"RUNNING", "FAILED_CONFIRMED", "OUTPUT_PENDING_VERIFY",
                 "CANCEL_CONFIRMED"},
     "RUNNING": {"OUTPUT_PENDING_VERIFY", "FAILED_CONFIRMED", "UNKNOWN",
@@ -89,6 +92,9 @@ TRANSITIONS = {
     "CANCEL_REQUESTED": {"CANCEL_CONFIRMED", "OUTPUT_PENDING_VERIFY",
                          "UNKNOWN"},
     "VERIFIED": {"ARCHIVED"},
+    # The schema-13 retry prose ("다음 attempt ... 명시적으로 이어할 때만")
+    # needs this edge; segment_retry journals RETRY_INTENT before taking it.
+    "FAILED_CONFIRMED": {"RESERVED"},
 }
 # States in which a submission identity is in flight or ambiguous: no new
 # attempt and no resubmission; reconcile is the only way forward.
@@ -152,6 +158,12 @@ def _save_job(p, job):
 
 
 def _list_job_files(p, shot_id=None):
+    # safe_path resolves the root, so a symlinked job store has to be
+    # refused on the unresolved path before it.
+    base = Path(p) / "animation/segment_jobs"
+    if base.is_symlink():
+        raise FilmError("SEGMENT_JOBS_SYMLINK: animation/segment_jobs is a "
+                        "symlink; the job store must be a real directory")
     root = safe_path(p, "animation/segment_jobs")
     if not root.is_dir():
         return []
@@ -159,6 +171,10 @@ def _list_job_files(p, shot_id=None):
     for shot_dir in sorted(root.iterdir()):
         if shot_id is not None and shot_dir.name != shot_id:
             continue
+        if shot_dir.is_symlink():
+            raise FilmError(f"SEGMENT_JOBS_SYMLINK: {shot_dir.name} is a "
+                            "symlink; the job store must be a real "
+                            "directory")
         if shot_dir.is_dir():
             files.extend(sorted(shot_dir.glob("seg-*.json")))
     return files
@@ -469,6 +485,22 @@ def _quote_id(job_key, quote):
                         "detail": quote.get("detail")})
 
 
+def _project_budget_cap(p, unit):
+    """The ledger-wide spending cap for a billing unit from project.yaml.
+
+    `--cap` is a per-segment approval ceiling checked against the quote;
+    the ledger's `max_amount` limit is the project budget
+    (`budget.max_credits`/`budget.max_usd`), checked separately here.
+    """
+    config = read(p / "project.yaml")
+    cap = (config.get("budget") or {}).get(
+        "max_usd" if unit == "USD" else "max_credits", 0)
+    if not math.isfinite(cap) or cap < 0:
+        raise FilmError("Project budget cap must be a finite nonnegative "
+                        "amount")
+    return cap
+
+
 def segment_quote(project, shot_id, start, end, *, adapter_id="fake_segment"):
     """Preflight + quote for one B segment; writes the durable job record.
 
@@ -520,6 +552,12 @@ def _submit_once(p, adapter, job, spec):
         from .segment_fake import SegmentLostAck, SegmentRejected
         if isinstance(exc, SegmentRejected):
             _journal(p, job, "SUBMIT_REJECTED", {"detail": str(exc)})
+            # Schema 13 gives SUBMITTING no direct FAILED_CONFIRMED edge:
+            # the request was never confirmed accepted, and the provider's
+            # definitive refusal is then a confirmed failure of it.
+            _transition(p, job, "UNKNOWN",
+                        "submit was not accepted; refusal still has to be "
+                        "confirmed")
             _transition(p, job, "FAILED_CONFIRMED",
                         "provider definitively rejected before acceptance")
             job["failure"] = {"reason": "SUBMISSION_REJECTED",
@@ -597,7 +635,7 @@ def segment_submit(project, shot_id, start, end, *, adapter_id="fake_segment",
         estimate = {"estimate_id": f"segest-{current[:24]}",
                     "billing_unit": fresh["unit"],
                     "worst_case_amount": fresh["amount"] * (1 + max_retries),
-                    "max_amount": cap}
+                    "max_amount": _project_budget_cap(p, fresh["unit"])}
         attempt_no = job["attempt"] if job["attempt_id"] \
             else job["attempt"] + 1
         ledger_key = f"{job['job_id']}#a{attempt_no}"
@@ -712,7 +750,7 @@ def segment_retry(project, job_id, *, adapter_id="fake_segment", approver=None,
                     "billing_unit": fresh["unit"],
                     "worst_case_amount": fresh["amount"]
                     * (1 + approval["max_retries"]),
-                    "max_amount": approval["cap"]}
+                    "max_amount": _project_budget_cap(p, fresh["unit"])}
         ledger_key = f"{job_id}#a{job['attempt'] + 1}"
         budget.reserve(p, ledger_key, fresh["amount"], estimate)
         job["reservation"] = {"ledger_key": ledger_key,
@@ -729,9 +767,12 @@ def segment_retry(project, job_id, *, adapter_id="fake_segment", approver=None,
         job["request_id"] = f"req-{uuid.uuid4().hex[:16]}"
         job["operation_id"] = None
         job["failure"] = None
-        # A fresh attempt re-enters SUBMITTING from its confirmed terminal
-        # state only through an explicit, journaled user continuation.
-        job["status"] = "RESERVED"
+        # A fresh attempt re-enters the submission flow from its confirmed
+        # terminal state only through the explicit, journaled user
+        # continuation edge — never a direct assignment.
+        _transition(p, job, "RESERVED",
+                    "explicit user continuation after confirmed failure")
+        _save_job(p, job)  # new attempt/request ids durable before intent
         _submit_once(p, adapter, job, spec)
         return {"job_id": job["job_id"], "status": job["status"],
                 "attempt": job["attempt"], "request_id": job["request_id"],
@@ -896,16 +937,51 @@ def _verified_jobs(p, shot_id):
             yield job
 
 
+def _spec_pin_index(inputs):
+    """Flatten a spec's input groups to {group: {asset_id: (rev, sha)}}."""
+    flat = {}
+    for name, group in inputs.items():
+        items = group if type(group) is list else [group]
+        flat[name] = {item["pin"]["asset_id"]:
+                      (item["pin"]["revision"],
+                       item["pin"]["content_sha256"])
+                      for item in items if item is not None}
+    return flat
+
+
+def _changed_pins(old_inputs, new_inputs):
+    """Readable pin differences between a stored and a recomputed spec."""
+    old, new = _spec_pin_index(old_inputs), _spec_pin_index(new_inputs)
+    diffs = []
+    for name in sorted(set(old) | set(new)):
+        before, after = old.get(name, {}), new.get(name, {})
+        for asset_id in sorted(set(before) | set(after)):
+            if asset_id not in before:
+                diffs.append(f"{name}: {asset_id} "
+                             f"r{after[asset_id][0]} added")
+            elif asset_id not in after:
+                diffs.append(f"{name}: {asset_id} "
+                             f"r{before[asset_id][0]} removed")
+            elif before[asset_id] != after[asset_id]:
+                change = (f"r{before[asset_id][0]}->r{after[asset_id][0]}"
+                          if before[asset_id][0] != after[asset_id][0]
+                          else "content changed")
+                diffs.append(f"{name}: {asset_id} {change}")
+    return diffs
+
+
 def commit_segment_sequence(project, shot_id, *, asset_id=None, note=""):
     """Assemble verified B-segment imports into a DRAFT FRAME_SEQUENCE.
 
     Every member the shot needs — `[0, used_end + after)` — must be covered
-    exactly once by a VERIFIED job built against the current plan; gaps and
-    overlaps refuse. The result flows through the ordinary resolver,
-    normalize/validate and draft Preview paths unchanged.
+    exactly once by a VERIFIED job whose job key still matches the current
+    plan and registry pins; gaps and overlaps refuse. The result flows
+    through the ordinary resolver, normalize/validate and draft Preview
+    paths unchanged.
     """
     p = Path(project)
     with project_mutex(p):
+        from .segment_fake import make_adapter
         config = require_animation_profile(p)
         if not SHOT_ID.fullmatch(shot_id if type(shot_id) is str else ""):
             raise FilmError("shot_id must be an S001-style identifier")
@@ -932,16 +1008,51 @@ def commit_segment_sequence(project, shot_id, *, asset_id=None, note=""):
         dependencies = []
         seen = set()
         for seg in plan["segments"]:
+            start, end = seg["start"], seg["end"]
             candidates = [j for j in jobs
-                          if j["segment"] == {"start": seg["start"],
-                                              "end": seg["end"]}
+                          if j["segment"] == {"start": start, "end": end}
                           and j["plan_sha256"] == plan_sha]
             if not candidates:
                 raise FilmError(
                     "SEGMENT_NOT_PRODUCED: no verified import covers "
-                    f"[{seg['start']}, {seg['end']}); stale jobs from an "
-                    "older plan revision do not count")
-            job = candidates[0]
+                    f"[{start}, {end}); stale jobs from an older plan "
+                    "revision do not count")
+            # A candidate must match the current spec: recompute the
+            # segment's job key from the current plan and registry pins —
+            # the same function the submit path uses — and accept only a
+            # VERIFIED job whose stored key equals it. Revising a control
+            # or anchor on the same asset id changes the pin and therefore
+            # the key, retiring the older verified job.
+            eligible, stale = [], []
+            specs = {}
+            for job in candidates:
+                adapter_id = job["adapter"]
+                if adapter_id not in specs:
+                    specs[adapter_id] = build_segment_spec(
+                        p, shot_id, start, end,
+                        make_adapter(p, adapter_id))
+                spec, current_key = specs[adapter_id]
+                if job["job_key"] == current_key:
+                    eligible.append(job)
+                else:
+                    stale.append((job, spec))
+            if not eligible:
+                job, spec = stale[0]
+                diffs = _changed_pins(job["spec"]["inputs"],
+                                      spec["inputs"])
+                detail = "; ".join(diffs) if diffs else \
+                    "the segment's input identity changed"
+                raise FilmError(
+                    f"SEGMENT_STALE_INPUTS: verified job {job['job_id']} "
+                    f"covers [{start}, {end}) but was built against "
+                    f"superseded inputs ({detail}); produce and verify a "
+                    "new segment job for the current pins")
+            # Deterministic pick, never filename order: the latest verified
+            # attempt of the current key (highest attempt, then latest
+            # import, then job id).
+            job = max(eligible, key=lambda j: (j["attempt"],
+                                               j["import"]["imported_at"],
+                                               j["job_id"]))
             for member in job["import"]["members"]:
                 index = member["member_index"]
                 if index in coverage:
@@ -961,14 +1072,23 @@ def commit_segment_sequence(project, shot_id, *, asset_id=None, note=""):
                     if key not in seen:
                         seen.add(key)
                         dependencies.append(dict(pin))
-        needed = range(0, used_end + entry["unused_handles"]["after"])
-        missing = [m for m in needed if m not in coverage]
+        # Segment imports stage exactly [used_start, used_end); lead-in and
+        # declared handle members reuse the nearest staged member — the
+        # same clamp the compositor applies when it renders handle
+        # positions — so a non-zero used-range start or unused handles do
+        # not fail with MISSING_FRAMES.
+        handles = entry["unused_handles"]
+        needed = range(0, used_end + handles["after"])
+        missing = [m for m in range(used_start, used_end)
+                   if m not in coverage]
         if missing:
             raise FilmError("MISSING_FRAMES: no verified segment job "
                             f"produced members {missing}")
         members = []
+        contributors = {}
         for index in needed:
-            job, member = coverage[index]
+            staged_index = min(max(index, used_start), used_end - 1)
+            job, member = coverage[staged_index]
             path = safe_path(p, member["member"])
             if path.is_symlink() or not path.is_file():
                 raise FilmError(f"DRAFT_MEMBER_MISSING: {member['member']}")
@@ -976,16 +1096,28 @@ def commit_segment_sequence(project, shot_id, *, asset_id=None, note=""):
                 raise FilmError(f"DRAFT_MEMBER_CHANGED: {member['member']}")
             members.append({"source": path, "sha256": member["sha256"],
                             "byte_length": path.stat().st_size,
-                            "source_name": f"{job['job_id']}/{index:06d}"})
+                            "source_name": f"{job['job_id']}/"
+                                           f"{staged_index:06d}"})
+            contributors[job["job_id"]] = job
+        contributing = [contributors[job_id] for job_id in sorted(contributors)]
         provenance = {"type": "SEGMENT_GENERATION",
                       "via": "b_path_adapter",
-                      "adapters": sorted({j["adapter"] for j in jobs}),
-                      "jobs": sorted(j["job_id"] for j in jobs),
+                      "adapters": sorted({j["adapter"]
+                                          for j in contributing}),
+                      # Only jobs that actually supplied frames are listed.
+                      "jobs": [j["job_id"] for j in contributing],
                       "provider_class": "FAKE",
+                      "job_selection": "latest verified attempt of the "
+                                       "current job key (highest attempt, "
+                                       "then latest import, then job id); "
+                                       "never filename order",
+                      "members": {"first": 0, "count": len(members),
+                                  "used": [used_start, used_end],
+                                  "handles": dict(handles)},
                       "source_maps": [
                           {"job_id": j["job_id"], "segment": j["segment"],
                            "normalization": j["import"]["normalization"]}
-                          for j in jobs],
+                          for j in contributing],
                       "assembled_at": now(), "note": note.strip()}
         result = _register_frame_sequence(
             p, shot_id, members,
