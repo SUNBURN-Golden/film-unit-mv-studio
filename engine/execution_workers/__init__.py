@@ -273,6 +273,9 @@ def make_receipt(*, actor, job_key, attempt_id, request_id,
                  grant_digest, members=(), evidence):
     if kind not in RECEIPT_KINDS:
         raise FilmError(f"Unknown receipt kind: {kind}")
+    # Receipts carry the request nonce's sha256 digest — never the raw
+    # nonce.
+    _sha(nonce, "receipt nonce")
     return {"receipt_id": f"rcpt-{uuid.uuid4().hex[:16]}",
             "actor": actor, "job_key": job_key, "attempt_id": attempt_id,
             "request_id": request_id, "snapshot_digest": snapshot_digest,
@@ -298,8 +301,7 @@ def check_receipt(receipt):
     if type(receipt["plan_revision"]) is not int \
             or receipt["plan_revision"] < 1:
         raise FilmError("receipt.plan_revision must be a positive integer")
-    if type(receipt["nonce"]) is not str or not receipt["nonce"]:
-        raise FilmError("receipt.nonce must be a non-empty string")
+    _sha(receipt["nonce"], "receipt.nonce")
     if type(receipt["members"]) is not list:
         raise FilmError("receipt.members must be a list")
     for member in receipt["members"]:
@@ -329,7 +331,7 @@ class Worker:
 
     def __init__(self, worker_id, *, expected_peer="coordinator-user-desktop",
                  trusted_issuers=("coordinator",), credential_epoch=1,
-                 endpoint=None, connection_digest=None, revoked_grants=None):
+                 endpoint=None, connection_digest=None, revocations=None):
         self.worker_id = worker_id
         self.expected_peer = expected_peer
         self.trusted_issuers = set(trusted_issuers)
@@ -341,17 +343,21 @@ class Worker:
         # grant bound to any other connection is void.
         self.connection_digest = connection_digest or hashlib.sha256(
             f"conn:{worker_id}:{self.endpoint}".encode()).hexdigest()
-        # The issuer-published revocation view the relay consults; the
-        # coordinator adds a grant digest on terminal confirmation or a
-        # new attempt.
-        self.revoked_grants = revoked_grants \
-            if revoked_grants is not None else set()
+        # The issuer-published RevocationRegistry the relay consults —
+        # injected when a coordinator attaches this worker, never
+        # hand-assembled per job.
+        self.revocations = revocations
 
     def authenticate(self, packet, needed_bytes, now_ms):
         check_packet(packet)
         if packet["endpoint"] != self.endpoint:
             raise FilmError("RELAY_AUTH_DENIED: cross-host redirect refused; "
                             "packets go only to the pinned endpoint")
+        if self.revocations is None:
+            # Fail closed: a worker not bound to its issuer's revocation
+            # registry cannot tell whether a grant was revoked.
+            raise FilmError("RELAY_AUTH_DENIED: worker is not bound to the "
+                            "issuer's revocation registry")
         return check_grant(packet["grant"], worker=self,
                            job_key=packet["job_key"],
                            attempt_id=packet["attempt_id"],
@@ -361,7 +367,7 @@ class Worker:
                                "input_object_digests", ()),
                            member_ids=packet.get("input_members", ()),
                            needed_bytes=needed_bytes, now_ms=now_ms,
-                           revoked=self.revoked_grants)
+                           revoked=self.revocations)
 
     def probe(self):
         return {"worker_id": self.worker_id, "kind": self.kind,
@@ -400,6 +406,41 @@ def _new_nonce():
     return uuid.uuid4().hex
 
 
+def _nonce_digest(nonce):
+    """Receipts, grants and runtime_state.json carry only this digest;
+    the raw nonce stays in memory for the live attempt."""
+    return hashlib.sha256(nonce.encode("utf-8")).hexdigest()
+
+
+class RevocationRegistry:
+    """The issuer-published grant revocation view (RELAY-AUTH).
+
+    One registry object is shared between the issuing coordinator and
+    every attached worker: a revocation is visible to the relay the
+    moment the coordinator records it — no per-worker push and no
+    hand-assembled aliasing. `_load` replaces the contents in place so
+    worker bindings survive a coordinator restart.
+    """
+
+    def __init__(self, digests=()):
+        self._digests = set(digests)
+
+    def add(self, digest):
+        self._digests.add(digest)
+
+    def restore(self, digests):
+        self._digests = set(digests)
+
+    def __contains__(self, digest):
+        return digest in self._digests
+
+    def __iter__(self):
+        return iter(self._digests)
+
+    def __len__(self):
+        return len(self._digests)
+
+
 class Coordinator:
     """Serializes job selection, receipts, coverage and the seal.
 
@@ -414,10 +455,17 @@ class Coordinator:
         self._lock = threading.RLock()
         self.jobs = {}
         self.seals = {}
-        # Grant digests the coordinator has voided — terminal
-        # confirmation or a new attempt revokes; the relay's check_grant
-        # consults this issuer-published set.
-        self.revoked_grants = set()
+        # Grant digests the coordinator has voided — completion,
+        # termination, failure confirmation or a new attempt revokes;
+        # the relay's check_grant consults this issuer-published
+        # registry, shared with every attached worker.
+        self.revoked_grants = RevocationRegistry()
+        # Workers bound to this coordinator's revocation registry —
+        # attached on the first protocol call and re-bound after _load.
+        self.workers = {}
+        # Raw request nonces for live attempts, keyed by job key —
+        # memory only; persisted jobs and receipts carry digests.
+        self._nonces = {}
         if self.state_dir:
             self.state_dir.mkdir(parents=True, exist_ok=True)
             self._load()
@@ -447,7 +495,11 @@ class Coordinator:
             raise FilmError("Not a coordinator runtime state file")
         self.jobs = document["jobs"]
         self.seals = document.get("seals", {})
-        self.revoked_grants = set(document.get("revoked_grants", ()))
+        # In-place restore keeps the registry object — every attached
+        # worker sees the revocations that survived the restart.
+        self.revoked_grants.restore(document.get("revoked_grants", ()))
+        for worker in self.workers.values():
+            worker.revocations = self.revoked_grants
         for job in self.jobs.values():
             job["sealing"] = False        # a crashed seal never held
             if job["state"] == "SUBMITTING":
@@ -470,11 +522,14 @@ class Coordinator:
                 f"Illegal job transition {job['state']} -> {target} "
                 f"({why})")
         job["state"] = target
-        # Completion, termination and failure confirmations void the
+        # Completion confirmation (exec/storage §3.1, evolution
+        # §2.1.1), termination and failure confirmations void the
         # attempt's grant — a relay reuse after them is denied.
-        if target in {"VERIFIED", "ARCHIVED", "CANCEL_CONFIRMED",
+        if target in {"OUTPUT_PENDING_VERIFY", "VERIFIED", "ARCHIVED",
+                      "CANCEL_CONFIRMED",
                       "FAILED_CONFIRMED"} and job.get("grant_digest"):
             self.revoked_grants.add(job["grant_digest"])
+            self._nonces.pop(job["job_key"], None)
 
     def _fence_unknown(self, job, action):
         if action in UNKNOWN_FENCED and job["state"] in {
@@ -482,6 +537,17 @@ class Coordinator:
             raise FilmError(
                 f"UNKNOWN_FENCED: {action} is refused while the job is "
                 f"{job['state']}; reconcile the existing identity first")
+
+    def _attach(self, worker):
+        """Bind the worker to this coordinator's revocation registry.
+
+        The relay consults the issuer-published set itself — a revoke is
+        enforced the moment it is recorded, and re-binding on every
+        protocol call lets a restarted coordinator take over the same
+        workers without any manual set aliasing.
+        """
+        self.workers[worker.worker_id] = worker
+        worker.revocations = self.revoked_grants
 
     # -- planning -------------------------------------------------------------
     def plan_jobs(self, plan, *, evidence=None,
@@ -592,7 +658,11 @@ class Coordinator:
         job["attempt_id"] += 1
         job["attempts_used"] += 1
         job["request_id"] = f"req-{uuid.uuid4().hex[:16]}"
-        job["nonce"] = _new_nonce()
+        # The raw nonce stays in memory for the live attempt; the job,
+        # grant, packet and receipts carry only its sha256 digest.
+        raw_nonce = _new_nonce()
+        self._nonces[job["job_key"]] = raw_nonce
+        job["nonce"] = _nonce_digest(raw_nonce)
         job["grant_digest"] = None
 
     def _issue_grant(self, job, worker, input_bytes):
@@ -628,6 +698,7 @@ class Coordinator:
     def collect(self, worker, key):
         """Explicit drain of the worker's pending receipts — one call,
         no standing poll."""
+        self._attach(worker)
         job = self._job(key)
         self._drain(worker.collect_receipts(job["request_id"]), worker)
         return self._job(key)["state"]
@@ -641,6 +712,7 @@ class Coordinator:
         """
         with self._lock:
             job = self._job(key)
+            self._attach(worker)
             self._fence_unknown(job, "submit")
             if worker.worker_id != job["worker_id"]:
                 raise FilmError("SUBSTITUTE_WORKER_FENCED: the plan binds "
@@ -697,6 +769,7 @@ class Coordinator:
         """Bind and gate one callback. Out-of-order is fine; forged is not."""
         check_receipt(receipt)
         with self._lock:
+            self._attach(worker)
             job = self._job(receipt["job_key"])
             if receipt["actor"] != worker.worker_id:
                 raise FilmError("RECEIPT_REJECTED: actor is not the "
@@ -808,6 +881,11 @@ class Coordinator:
                 if job["members"].get(str(index)) != expected:
                     ok = False
                     break
+            if not ok:
+                # Verification ran and failed the confirmed output — a
+                # later resume re-runs the range; the coverage is not a
+                # completion still pending verification.
+                job["verify_failed"] = True
             self._set_state(job, "VERIFIED" if ok else "FAILED_CONFIRMED",
                             "coordinator re-derived frame digests")
             self._persist()
@@ -864,6 +942,7 @@ class Coordinator:
         """
         with self._lock:
             job = self._job(key)
+            self._attach(worker)
             if job["state"] == "PLANNED":
                 raise FilmError("Cannot cancel a PLANNED job; reserve and "
                                 "submit boundaries have not started")
@@ -917,6 +996,7 @@ class Coordinator:
         """
         with self._lock:
             job = self._job(key)
+            self._attach(worker)
             if job["state"] == "SUBMITTING":
                 # 응답 불명: acceptance was never confirmed — the existing
                 # identity reconciles as UNKNOWN, never a resubmit.
@@ -959,6 +1039,13 @@ class Coordinator:
                 if current == "CANCEL_REQUESTED":
                     self._set_state(job, "CANCEL_CONFIRMED",
                                     "reconciled: never accepted")
+                elif current == "UNKNOWN" and self._complete(job):
+                    # The job fell back from OUTPUT_PENDING_VERIFY and
+                    # already holds full stored coverage — a NOT_FOUND
+                    # answer cannot discard a confirmed completion.
+                    self._set_state(job, "OUTPUT_PENDING_VERIFY",
+                                    "reconciled: stored completion "
+                                    "coverage kept for verification")
                 elif current in {"UNKNOWN", "RUNNING"}:
                     self._set_state(job, "FAILED_CONFIRMED",
                                     "reconciled: never accepted or lost")
@@ -986,6 +1073,7 @@ class Coordinator:
         """
         with self._lock:
             job = self._job(key)
+            self._attach(worker)
             if job["state"] != "FAILED_CONFIRMED":
                 raise FilmError("resume_failed requires FAILED_CONFIRMED")
             if not user_continued:
@@ -1001,12 +1089,20 @@ class Coordinator:
                 if other["state"] == "UNKNOWN":
                     raise FilmError("RESUME_REFUSED: an UNKNOWN job is "
                                     "still fenced")
+            if self._complete(job) and not job.get("verify_failed"):
+                # A confirmed completion still pending verification is
+                # never discarded — reconcile keeps it under
+                # OUTPUT_PENDING_VERIFY and a resume cannot erase it.
+                raise FilmError("RESUME_REFUSED: the job holds a "
+                                "confirmed completion pending "
+                                "verification")
             # §5.3: the explicit resume restarts the attempt lifecycle
             # through the FAILED_CONFIRMED -> RESERVED edge only.
             self._set_state(job, "RESERVED",
                             "explicit user resume: new attempt")
             job["covered"] = []
             job["members"] = {}
+            job.pop("verify_failed", None)
             self._persist()
         return self.submit(worker, key)
 

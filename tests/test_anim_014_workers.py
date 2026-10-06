@@ -5,6 +5,7 @@ auth boundary (schema §13, exec/storage §5.3-5.4, evolution §2.1.1).
 All remote execution is the explicit fake — no network, no credentials.
 Fake receipts are labelled FAKE_REMOTE and the route stays UNQUALIFIED.
 """
+import hashlib
 import threading
 
 import pytest
@@ -201,6 +202,26 @@ def test_receipts_bound_to_snapshot_revision_nonce_and_actor(tmp_path):
                                       grant=SNAPSHOT), worker)
 
 
+def test_request_nonce_stored_only_as_digest(tmp_path):
+    """Receipts and runtime_state.json carry only the request nonce's
+    sha256 digest — the raw nonce stays in memory for the live
+    attempt."""
+    c, worker, plan, keys = remote(tmp_path)
+    c.reserve(keys[0])
+    c.submit(worker, keys[0], frame_contract=dict(CONTRACT))
+    job = c.jobs[keys[0]]
+    raw = c._nonces[keys[0]]
+    digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+    assert job["nonce"] == digest and job["nonce"] != raw
+    worker.complete(job["request_id"])
+    c.collect(worker, keys[0])
+    for receipt in job["receipts"]:
+        assert receipt["nonce"] == digest
+    text = (tmp_path / "state" / "runtime_state.json").read_text()
+    assert raw not in text
+    assert digest in text
+
+
 def test_unknown_job_key_cannot_be_rekeyed(tmp_path):
     c, worker, plan, keys = remote(tmp_path)
     worker.drop_submit_ack = True
@@ -319,6 +340,62 @@ def test_dead_pending_verify_job_goes_unknown(tmp_path):
     worker.revive()
     assert c.reconcile(worker, keys[0]) == "OUTPUT_PENDING_VERIFY"
     assert c.verify_outputs(keys[0]) == "VERIFIED"
+
+
+def test_reconcile_not_found_keeps_pending_verify_coverage(tmp_path):
+    """An UNKNOWN job holding a confirmed completion (it fell back from
+    OUTPUT_PENDING_VERIFY) keeps its stored coverage when the worker
+    answers NOT_FOUND — it returns to OUTPUT_PENDING_VERIFY, never
+    FAILED_CONFIRMED, and a resume cannot discard the coverage."""
+    c, worker, plan, keys = remote(tmp_path)
+    worker.auto_complete = True
+    drive(c, worker, keys[0], plan, verify=False)
+    job = c.jobs[keys[0]]
+    assert job["state"] == "OUTPUT_PENDING_VERIFY"
+    worker.dead = True
+    assert c.reconcile(worker, keys[0]) == "UNKNOWN"
+    worker.revive()
+    worker.lose(job["request_id"])            # runtime forgot the job
+    assert c.reconcile(worker, keys[0]) == "OUTPUT_PENDING_VERIFY"
+    assert job["covered"] == [job["output_range"]]
+    with pytest.raises(FilmError, match="FAILED_CONFIRMED"):
+        c.resume_failed(worker, keys[0], user_continued=True, plan=plan)
+    assert job["covered"] == [job["output_range"]]
+    assert c.verify_outputs(keys[0]) == "VERIFIED"
+
+
+def test_resume_never_discards_pending_verify_coverage(tmp_path):
+    """A failure confirmed after the completion was confirmed leaves the
+    stored coverage pending verification — resume_failed refuses rather
+    than clearing it."""
+    c, worker, plan, keys = remote(tmp_path)
+    worker.auto_complete = True
+    drive(c, worker, keys[0], plan, verify=False)
+    job = c.jobs[keys[0]]
+    worker.fail(job["request_id"])
+    c.collect(worker, keys[0])
+    assert job["state"] == "FAILED_CONFIRMED"
+    assert job["covered"] == [job["output_range"]]
+    with pytest.raises(FilmError, match="RESUME_REFUSED"):
+        c.resume_failed(worker, keys[0], user_continued=True, plan=plan)
+    assert job["covered"] == [job["output_range"]]
+
+
+def test_verify_failed_attempt_resume_clears_coverage(tmp_path):
+    """Coverage whose verification already failed is not a pending
+    completion — the bounded resume re-runs the range."""
+    c, worker, plan, keys = remote(tmp_path)
+    job = c.jobs[keys[0]]
+    c.reserve(keys[0])
+    c.submit(worker, keys[0], frame_contract=dict(CONTRACT))
+    bad = [{"frame_index": i, "sha256": RECIPE}
+           for i in range(*job["output_range"])]
+    c.receive_receipt(receipt_for(job, "COMPLETE", job["output_range"],
+                                  members=bad), worker)
+    assert c.verify_outputs(keys[0]) == "FAILED_CONFIRMED"
+    assert c.resume_failed(worker, keys[0], user_continued=True,
+                           plan=plan) == "RUNNING"
+    assert job["covered"] == [] and job["members"] == {}
 
 
 def test_restart_with_submitting_job_reloads_as_unknown(tmp_path):
@@ -658,10 +735,24 @@ def test_grant_binds_objects_members_and_connection(tmp_path):
     assert worker.submit(packet, now_ms=0)
 
 
-def test_grant_revoked_after_completion(tmp_path):
-    """Completion voids the grant: relay reuse after VERIFIED is denied."""
+def test_grant_revoked_at_completion_confirmation(tmp_path):
+    """exec/storage §3.1 / evolution §2.1.1: the grant is voided the
+    moment completion is confirmed — the transition into
+    OUTPUT_PENDING_VERIFY, not only at terminal states."""
     c, worker, plan, keys = remote(tmp_path)
-    worker.revoked_grants = c.revoked_grants
+    packet = captured_packet(c, worker, keys[0])
+    assert worker.submit(packet, now_ms=0)          # grant live
+    worker.complete(packet["request_id"])
+    assert c.reconcile(worker, keys[0]) == "OUTPUT_PENDING_VERIFY"
+    with pytest.raises(FilmError, match="RELAY_AUTH_DENIED"):
+        worker.submit(packet, now_ms=0)
+
+
+def test_grant_revoked_after_completion(tmp_path):
+    """Completion voids the grant: relay reuse after VERIFIED is denied.
+    The worker consults the issuer's registry bound at submit — no
+    manual set aliasing."""
+    c, worker, plan, keys = remote(tmp_path)
     packet = captured_packet(c, worker, keys[0])
     assert worker.submit(packet, now_ms=0)          # grant live
     worker.complete(packet["request_id"])
@@ -674,7 +765,6 @@ def test_grant_revoked_after_completion(tmp_path):
 def test_grant_revoked_after_cancel_confirmation(tmp_path):
     """Cancel confirmation voids the grant: relay reuse is denied."""
     c, worker, plan, keys = remote(tmp_path)
-    worker.revoked_grants = c.revoked_grants
     packet = captured_packet(c, worker, keys[0])
     assert worker.submit(packet, now_ms=0)
     assert c.request_cancel(worker, keys[0]) == "CANCEL_CONFIRMED"
@@ -686,7 +776,6 @@ def test_new_attempt_revokes_prior_grant(tmp_path):
     """A new attempt voids the previous grant: the old packet never
     authenticates again."""
     c, worker, plan, keys = remote(tmp_path)
-    worker.revoked_grants = c.revoked_grants
     packet = captured_packet(c, worker, keys[0])
     assert worker.submit(packet, now_ms=0)
     worker.fail(packet["request_id"])
@@ -696,6 +785,25 @@ def test_new_attempt_revokes_prior_grant(tmp_path):
     assert c.resume_failed(worker, keys[0], user_continued=True,
                            plan=plan) == "RUNNING"
     # the superseded grant stays void under the new attempt
+    with pytest.raises(FilmError, match="RELAY_AUTH_DENIED"):
+        worker.submit(packet, now_ms=0)
+
+
+def test_revocation_rebinds_after_coordinator_restart(tmp_path):
+    """A restarted coordinator reloads the issuer's revocation set from
+    the state file and the worker re-binds to it through the normal
+    protocol surface — the old packet stays denied."""
+    c, worker, plan, keys = remote(tmp_path)
+    packet = captured_packet(c, worker, keys[0])
+    assert worker.submit(packet, now_ms=0)
+    worker.complete(packet["request_id"])
+    assert c.reconcile(worker, keys[0]) == "OUTPUT_PENDING_VERIFY"
+    assert c.verify_outputs(keys[0]) == "VERIFIED"
+    # coordinator restart: a fresh instance reloads the same identity
+    # and the persisted revocations
+    c2 = Coordinator(tmp_path / "state")
+    assert c2.reconcile(worker, keys[0]) == "VERIFIED"
+    assert worker.revocations is c2.revoked_grants
     with pytest.raises(FilmError, match="RELAY_AUTH_DENIED"):
         worker.submit(packet, now_ms=0)
 
