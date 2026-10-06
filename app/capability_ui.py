@@ -14,6 +14,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import streamlit as st
 
 from engine import capability_registry, settings
+from engine.core import read
+from engine.core import production_profile
 
 _STATE_TEXT = {
     "QUALIFIED_FOR_SCOPE": "실제 probe가 이 scope를 확인했습니다 — 그 scope 안에서만 유효합니다.",
@@ -81,6 +83,104 @@ def render_capabilities(project=None, state_dir=None):
     facets = status["facets"]
     st.caption("qualification: **{q}** · acceptance: **{a}** · release: "
                "**{r}** — fixture/fake 성공은 실제 자격이 아닙니다".format(
+                   q=facets["qualification_state"],
+                   a=facets["acceptance_state"],
+                   r=facets["release_state"]))
+
+
+# --- film-resource-forecast ---------------------------------------------------
+
+def _lv(line):
+    """A forecast line's display value (UNKNOWN stays literal)."""
+    return line["value"] if type(line) is dict else line
+
+
+def render_forecast(project=None, state_dir=None):
+    """Read-only pre-execution resource forecast panel.
+
+    Shows the ExecutionPlan preview's per-candidate resource breakdown —
+    every number labelled with the measurement it came from or UNKNOWN —
+    plus refusal reasons and proposed alternatives. The panel never
+    executes, submits or charges anything.
+    """
+    st.divider()
+    st.subheader("실행 전 자원 예측 · resource forecast")
+    st.caption("작업 시작 전 예상 CPU·메모리·디스크·전송·구독 사용량과 "
+               "불확실성을 봅니다 — 어떤 것도 실행하거나 청구하지 않습니다.")
+    p = Path(project) if project else None
+    if p is None:
+        st.info("프로젝트를 선택하면 자원 예측을 표시합니다.")
+        return
+    try:
+        if production_profile(read(p / "project.yaml")) \
+                != "FRAME_ANIMATION_V1":
+            st.caption("자원 예측은 FRAME_ANIMATION_V1 실행 계획이 있는 "
+                       "프로젝트에서 사용할 수 있습니다.")
+            return
+        from engine.resource_forecast import resource_forecast_command
+        forecast = resource_forecast_command(p, state_dir=state_dir)
+    except Exception as exc:
+        st.error(f"자원 예측을 만들지 못했습니다: {exc}")
+        return
+    st.caption(f"계획 `{forecast['plan']['plan_sha'][:12]}…` · 정책 "
+               f"{forecast['plan']['policy']} · route "
+               f"{forecast['plan']['transfer_route']} · "
+               "미리보기 전용 — 실행되지 않습니다")
+    rows = []
+    for r in forecast["operations"]:
+        rows.append({
+            "candidate": r["candidate_id"],
+            "route": r["route"] or r["driver"] or "-",
+            "state": r["registry_state"],
+            "선택가능": "O" if r["selectable"] else "X",
+            "cold_ms": _lv(r["time_ms"]["cold"]),
+            "warm_ms": _lv(r["time_ms"]["warm"]),
+            "RAM_B": _lv(r["peaks"]["ram_bytes"]),
+            "disk_B": _lv(r["peaks"]["disk_bytes"]),
+            "VRAM_B": _lv(r["peaks"]["vram_bytes"]),
+            "읽기_B": _lv(r["transfer"]["read_bytes"]),
+            "쓰기_B": _lv(r["transfer"]["write_bytes"]),
+            "요청": _lv(r["transfer"]["requests"]),
+            "출처": r["time_ms"]["cold"]["basis"]})
+    st.dataframe(rows, use_container_width=True, hide_index=True)
+    for r in forecast["operations"]:
+        provenance = (r["time_ms"]["cold"].get("source")
+                      or r["peaks"]["ram_bytes"].get("source"))
+        if provenance or r["reasons"]:
+            with st.expander(f"{r['candidate_id']} — 측정 출처 · 사유",
+                             expanded=False):
+                st.json({"registry_state": r["registry_state"],
+                         "source": provenance or "없음 (UNKNOWN)",
+                         "requested_scope": r["requested_scope"],
+                         "reasons": r["reasons"]})
+    totals = forecast["totals"]
+    st.caption(
+        "합계 — cold {c} ms · 전송 {rb} B 읽기 / {wb} B 쓰기 / {rq} 요청 · "
+        "출력 {ob} B".format(
+            c=_lv(totals["cpu_ms"]), rb=_lv(totals["transfer"]["read_bytes"]),
+            wb=_lv(totals["transfer"]["write_bytes"]),
+            rq=_lv(totals["transfer"]["requests"]),
+            ob=_lv(totals["output"]["encoded_bytes"])))
+    for check in forecast["workspace"]["reservations"]:
+        if check["sufficient"] is False:
+            st.warning(f"디스크 부족 — {check['location']}: "
+                       f"필요 {_lv(check['needed_bytes'])} B, "
+                       f"여유 {_lv(check['free_bytes'])} B")
+    for service, sub in forecast["subscription"].items():
+        st.markdown(f"**구독** `{service}` — 포함: "
+                    f"**{sub['inclusion']}** · 청구 판정: "
+                    f"**{sub['charge']['verdict']}** · quote: "
+                    f"**{sub['quote']['status']}**")
+        if sub["charge"].get("reason"):
+            st.caption(sub["charge"]["reason"])
+    for refusal in forecast["refusals"]:
+        st.warning(f"거부 사유 {refusal['code']}: {refusal['reason']}")
+    for alt in forecast["alternatives"]:
+        st.info(f"대안 제안 {alt['kind']}: {alt['reason']} — "
+                "제안일 뿐 자동 실행되지 않습니다")
+    facets = forecast["facets"]
+    st.caption("qualification: **{q}** · acceptance: **{a}** · release: "
+               "**{r}** — 예측은 실행·승인·qualification이 아닙니다".format(
                    q=facets["qualification_state"],
                    a=facets["acceptance_state"],
                    r=facets["release_state"]))
