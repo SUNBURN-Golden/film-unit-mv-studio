@@ -499,6 +499,9 @@ class Coordinator:
         # Raw request nonces for live attempts, keyed by job key —
         # memory only; persisted jobs and receipts carry digests.
         self._nonces = {}
+        # True when a fenced journal established nothing and the intact
+        # runtime_state.json snapshot was restored instead.
+        self.snapshot_fallback = False
         # The durable append-only journal (ANIM-021). When present it is
         # the source of truth; runtime_state.json is a derived snapshot.
         self._journal = DurableJournal(
@@ -581,20 +584,29 @@ class Coordinator:
                 log.error("coordinator journal is fenced: %s",
                           self._journal.tail_reason
                           or self._journal.fence_reason)
+                if not self.jobs and not self.seals:
+                    # The valid prefix established nothing (e.g. a torn
+                    # first STATE_SNAPSHOT migration): the intact
+                    # pre-journal snapshot still holds the in-flight
+                    # identities. Restore them; the journal stays fenced
+                    # so no new side effect runs until reconciled.
+                    try:
+                        if self._load_snapshot():
+                            self.snapshot_fallback = True
+                            log.error("restored job identities from "
+                                      "runtime_state.json; journal stays "
+                                      "fenced until reconciled")
+                            return
+                    except (FilmError, ValueError, KeyError,
+                            AttributeError) as e:
+                        log.error("runtime_state.json fallback refused: "
+                                  "%s", e)
+                        self.jobs, self.seals = {}, {}
+                        self.revoked_grants.restore(())
             self._finish_load(pending)
             return
-        path = self._state_file
-        if not path.exists():
+        if not self._load_snapshot():
             return
-        document = json.loads(path.read_text(encoding="utf-8"))
-        if document.get("record_type") != "coordinator_runtime_state":
-            raise FilmError("Not a coordinator runtime state file")
-        self.jobs = document["jobs"]
-        self.seals = document.get("seals", {})
-        # In-place restore keeps the registry object — every attached
-        # worker sees the revocations that survived the restart.
-        self.revoked_grants.restore(document.get("revoked_grants", ()))
-        self._finish_load()
         if self._journal is not None and not self._journal.records:
             # Migrate the pre-journal snapshot into the chain once so the
             # next restart rebuilds from durable history.
@@ -602,6 +614,23 @@ class Coordinator:
                                  {"jobs": self.jobs, "seals": self.seals,
                                   "revoked_grants":
                                   sorted(self.revoked_grants)})
+
+    def _load_snapshot(self):
+        """Load runtime_state.json; False when there is none."""
+        path = self._state_file
+        if not path.exists():
+            return False
+        document = json.loads(path.read_text(encoding="utf-8"))
+        if type(document) is not dict \
+                or document.get("record_type") != "coordinator_runtime_state":
+            raise FilmError("Not a coordinator runtime state file")
+        self.jobs = document["jobs"]
+        self.seals = document.get("seals", {})
+        # In-place restore keeps the registry object — every attached
+        # worker sees the revocations that survived the restart.
+        self.revoked_grants.restore(document.get("revoked_grants", ()))
+        self._finish_load()
+        return True
 
     def _replay(self, records):
         """Replay verified journal records into jobs/seals/revocations.
@@ -688,6 +717,14 @@ class Coordinator:
                     for member in receipt["members"]:
                         target_job["members"][str(member["frame_index"])] = \
                             member["sha256"]
+                if self._completion_confirmed(target_job) \
+                        and target_job["state"] != "OUTPUT_PENDING_VERIFY":
+                    # Completion-confirmed-first is a consequence of the
+                    # receipt itself: a crash before the following STATE
+                    # record must not leave the job RUNNING/UNKNOWN.
+                    target_job["state"] = "OUTPUT_PENDING_VERIFY"
+                    revoke(target_job)
+                    pending.pop(key, None)
             elif event == "LATE_RECEIPT":
                 target_job = job(key, event)
                 target_job.setdefault("late_receipts", []).append(
@@ -1093,7 +1130,11 @@ class Coordinator:
                 # (Pre-journal migrated jobs may carry neither field.)
                 "quote": dict(job.get("quote") or {}),
                 "reservations": [dict(r)
-                                 for r in job.get("reservations", ())]})
+                                 for r in job.get("reservations", ())],
+                # 사용권: the entitlement the attempt runs under. Without a
+                # registered subscription entitlement this is the fake
+                # local route — never a qualified entitlement.
+                "entitlement": self._entitlement_binding(worker)})
             packet = {"job_key": job["job_key"],
                       "attempt_id": job["attempt_id"],
                       "request_id": job["request_id"],
@@ -1148,6 +1189,18 @@ class Coordinator:
             self.receive_receipt(receipt, worker)
             self._persist()
             return job["state"]
+
+    @staticmethod
+    def _entitlement_binding(worker):
+        """Secret-free entitlement reference for SUBMIT_INTENT."""
+        entitlement = getattr(worker, "entitlement", None)
+        entitlement_id = entitlement.get("entitlement_id") \
+            if isinstance(entitlement, dict) else None
+        return {"basis": ("SUBSCRIPTION_ENTITLEMENT" if entitlement_id
+                          else "FAKE_LOCAL_ONLY"),
+                "entitlement_id": entitlement_id,
+                "credential_epoch": worker.credential_epoch,
+                "qualification_state": "UNQUALIFIED"}
 
     # -- receipts --------------------------------------------------------------
     def receive_receipt(self, receipt, worker):
@@ -1535,8 +1588,10 @@ class Coordinator:
         report = {"journal": (self._journal.status()
                               if self._journal is not None else None),
                   "fenced": self.journal_fenced,
+                  "snapshot_fallback": self.snapshot_fallback,
                   "jobs": [],
-                  "unresolved": []}
+                  "unresolved": [],
+                  "pending_verify": []}
         for key in sorted(self.jobs):
             job = self.jobs[key]
             entry = {"job_key": key, "state": job["state"],
@@ -1553,6 +1608,10 @@ class Coordinator:
                     {"job_key": key, "state": job["state"],
                      "request_id": job["request_id"],
                      "needs": "reconcile"})
+            elif job["state"] == "OUTPUT_PENDING_VERIFY":
+                report["pending_verify"].append(
+                    {"job_key": key, "request_id": job["request_id"],
+                     "needs": "verify_outputs"})
         return report
 
     def facet_report(self):

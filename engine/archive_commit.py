@@ -89,6 +89,17 @@ def manifest_object_id(build_id, manifest_sha256):
     return f"{MANIFEST_PREFIX}{build_id}-{manifest_sha256[:16]}"
 
 
+def manifest_build_id(object_id):
+    """Build id of a well-formed `manifest-{build_id}-{16 hex}`, else None."""
+    if not object_id.startswith(MANIFEST_PREFIX):
+        return None
+    build_id, _, tail = object_id[len(MANIFEST_PREFIX):].rpartition("-")
+    if not build_id or len(tail) != 16 \
+            or any(c not in "0123456789abcdef" for c in tail):
+        return None
+    return build_id
+
+
 def validate_archive_seal(document):
     """The `archive_seal` 1 manifest contract (schema §16)."""
     check_document(document, SEAL_TYPE)
@@ -407,20 +418,14 @@ class ArchiveCommitter:
         if commit["state"] in {"MANIFEST_INTENT", "SEAL_UNKNOWN"}:
             return self.reconcile(commit_key)
         objects = self._objects_for(commit, artifacts)
+        cap = commit["verification_profile"].get("readback_cap_bytes")
         if commit["state"] == "OBJECTS_PENDING":
-            profile = commit["verification_profile"]
-            cap = profile.get("readback_cap_bytes")
             for artifact in commit["artifacts"]:
                 for pin in artifact["objects"]:
                     if pin["object_id"] not in commit["verified"]:
                         obj = objects[pin["object_id"]]
                         self.tracker.put(pin["object_id"], obj["data"])
-                    level = self._verify_pinned(pin, cap)
-                    if _level_rank(level) < _level_rank(pin["min_level"]):
-                        raise FilmError(
-                            f"OBJECT_LEVEL_INSUFFICIENT: "
-                            f"{pin['object_id']} reached {level} below "
-                            f"{pin['min_level']}")
+                    level = self._check_pinned(pin, cap)
                     if pin["object_id"] in commit["verified"]:
                         # The journaled checkpoint still stands — the
                         # live re-check above is what makes it reusable.
@@ -432,9 +437,25 @@ class ArchiveCommitter:
                     commit["verified"][pin["object_id"]] = level
             self._j("OBJECTS_VERIFIED", {"commit_key": commit_key})
             commit["state"] = "OBJECTS_VERIFIED"
+        elif commit["state"] == "OBJECTS_VERIFIED":
+            # Resumed after OBJECTS_VERIFIED but before MANIFEST_INTENT:
+            # the journaled levels alone never publish a completion
+            # manifest — every pin is re-checked live first (§9.1).
+            for artifact in commit["artifacts"]:
+                for pin in artifact["objects"]:
+                    self._check_pinned(pin, cap)
         if commit["state"] == "OBJECTS_VERIFIED":
             return self._publish(commit)
         return {"commit_key": commit_key, "state": commit["state"]}
+
+    def _check_pinned(self, pin, cap):
+        """Live verification that must still meet the pin's minimum."""
+        level = self._verify_pinned(pin, cap)
+        if _level_rank(level) < _level_rank(pin["min_level"]):
+            raise FilmError(
+                f"OBJECT_LEVEL_INSUFFICIENT: {pin['object_id']} reached "
+                f"{level} below {pin['min_level']}")
+        return level
 
     def _verify_pinned(self, pin, cap):
         """Live verification for one pinned object — run every time.
@@ -575,11 +596,15 @@ class ArchiveCommitter:
 
     # -- reconciliation --------------------------------------------------------------
     def _manifest_candidates(self, commit):
+        # Delimiter-safe: a well-formed manifest id of another build
+        # (build `ab-extra` vs `ab`) is not a candidate; a malformed id
+        # under this build's prefix still is — refused, never ignored.
         prefix = f"{MANIFEST_PREFIX}{commit['build_id']}-"
         return [oid for oid in
                 bounded_read(lambda: self.backend.list_objects(),
                              self.retry, self.sleep)
-                if oid.startswith(prefix)]
+                if oid.startswith(prefix)
+                and manifest_build_id(oid) in (None, commit["build_id"])]
 
     def reconcile(self, commit_key):
         """Explicitly resolve MANIFEST_INTENT / SEAL_UNKNOWN.

@@ -219,6 +219,11 @@ def test_submit_intent_records_the_binding_before_side_effects(tmp_path):
         "execution": plan["execution"], "workspace": plan["workspace"],
         "resource_reservations":
             plan["resource_reservations"]})).hexdigest()
+    # 사용권 is explicit even on the fake route — never implied qualified.
+    assert data["entitlement"] == {
+        "basis": "FAKE_LOCAL_ONLY", "entitlement_id": None,
+        "credential_epoch": worker.credential_epoch,
+        "qualification_state": "UNQUALIFIED"}
     # The raw nonce never persists; only its digest does.
     text = (tmp_path / "state" / "job_journal.jsonl").read_text()
     assert job["nonce"] in text
@@ -449,6 +454,68 @@ def test_empty_journal_migrates_the_runtime_snapshot_once(tmp_path):
     c3 = Coordinator(legacy)                          # now journal-built
     assert c3.jobs[key]["state"] == "RUNNING"
     assert [r["event"] for r in c3.journal.records] == ["STATE_SNAPSHOT"]
+
+
+def test_torn_first_journal_append_restores_the_runtime_snapshot(tmp_path):
+    """A torn first STATE_SNAPSHOT migration (empty valid prefix) must not
+    drop the intact pre-journal identities: they are restored from
+    runtime_state.json while the journal stays fenced — no new side
+    effect until the operator reconciles."""
+    c, worker, plan, key = running(tmp_path)
+    job = c.jobs[key]
+    identity = {f: job[f] for f in
+                ("request_id", "attempt_id", "nonce", "grant_digest")}
+    legacy = tmp_path / "legacy"
+    legacy.mkdir()
+    state_bytes = (tmp_path / "state" / "runtime_state.json").read_bytes()
+    (legacy / "runtime_state.json").write_bytes(state_bytes)
+    torn = b'{"data": {"jobs": {'                  # torn first append
+    (legacy / "job_journal.jsonl").write_bytes(torn)
+    c2 = Coordinator(legacy)
+    assert c2.journal_fenced and c2.journal.records == []
+    assert c2.journal.status()["tail"] == TAIL_TRUNCATED
+    assert c2.snapshot_fallback is True
+    job2 = c2.jobs[key]
+    assert job2["state"] == "RUNNING"
+    assert {f: job2[f] for f in identity} == identity
+    for call in (lambda: c2.plan_jobs(plan),
+                 lambda: c2.submit(worker, key,
+                                   frame_contract=dict(CONTRACT)),
+                 lambda: c2.reconcile(worker, key),
+                 lambda: c2.collect(worker, key)):
+        with pytest.raises(FilmError,
+                           match="JOURNAL_RECONCILIATION_REQUIRED"):
+            call()
+    assert len(worker._jobs) == 1                 # never re-submitted
+    report = journal_reconcile(legacy)
+    assert report["state_file_written"] is False
+    assert report["snapshot_fallback"] is True
+    assert report["jobs"][0]["request_id"] == identity["request_id"]
+    # Evidence is preserved byte for byte.
+    assert (legacy / "job_journal.jsonl").read_bytes() == torn
+    assert (legacy / "runtime_state.json").read_bytes() == state_bytes
+
+
+def test_receipt_replay_applies_completion_first(tmp_path):
+    """Crash after the COMPLETE RECEIPT record but before its STATE record:
+    replay still lands the job in OUTPUT_PENDING_VERIFY."""
+    c, worker, plan, key = running(tmp_path)
+    job = c.jobs[key]
+    receipt = receipt_for(job, "COMPLETE", job["output_range"],
+                          members=members_for(c, job, job["output_range"]))
+    crash_on_event(c.journal, "STATE")
+    with pytest.raises(RuntimeError):
+        c.receive_receipt(receipt, worker)
+    assert events(c.journal)[-1] == "RECEIPT"
+    c2 = Coordinator(tmp_path / "state")
+    job2 = c2.jobs[key]
+    assert job2["state"] == "OUTPUT_PENDING_VERIFY"
+    assert job2["grant_digest"] in c2.revoked_grants
+    assert c2.journal_status()["pending_verify"] == [
+        {"job_key": key, "request_id": job2["request_id"],
+         "needs": "verify_outputs"}]
+    assert c2.collect(worker, key) == "OUTPUT_PENDING_VERIFY"
+    assert c2.verify_outputs(key) == "VERIFIED"
 
 
 def test_tampered_checkpoint_fences_on_semantic_replay(tmp_path):
@@ -889,6 +956,52 @@ def test_deleted_verified_object_refuses_the_checkpoint(tmp_path):
         c2.run(key, artifacts())
     assert c2.commits[key]["state"] == "OBJECTS_PENDING"
     assert not [o for o in backend._objects if o.startswith("manifest-")]
+
+
+@pytest.mark.parametrize("damage", ["delete", "truncate", "replace"])
+def test_objects_verified_resume_reverifies_before_publish(tmp_path, damage):
+    """Crash after OBJECTS_VERIFIED, before MANIFEST_INTENT: a resumed run
+    re-checks every pin live — a deleted or altered object refuses and no
+    completion manifest is published from the journaled levels."""
+    c, backend, key = begun(tmp_path)
+    crash_on_event(c.journal, "MANIFEST_INTENT")
+    with pytest.raises(RuntimeError):
+        c.run(key)
+    assert c.commits[key]["state"] == "OBJECTS_VERIFIED"
+    oid = sorted(c.commits[key]["verified"])[0]
+    original = backend._objects[oid]
+    if damage == "delete":
+        del backend._objects[oid]
+    elif damage == "truncate":
+        backend._objects[oid] = original[:-1]
+    else:
+        backend._objects[oid] = bytes([original[0] ^ 1]) + original[1:]
+    c2, _ = committer(tmp_path, backend, name="commit")
+    assert c2.commits[key]["state"] == "OBJECTS_VERIFIED"
+    with pytest.raises(FilmError):
+        c2.run(key, artifacts())
+    assert c2.commits[key]["state"] == "OBJECTS_VERIFIED"
+    assert "MANIFEST_INTENT" not in events(c2.journal)
+    assert not [o for o in backend._objects if o.startswith("manifest-")]
+    backend._objects[oid] = original              # restored: now it seals
+    assert c2.run(key, artifacts())["state"] == "SEALED"
+
+
+def test_manifest_candidates_match_the_exact_build_id(tmp_path):
+    """Build `ab` never sees build `ab-extra`'s manifest as its own."""
+    backend = FakeDriveBackend(provider_checksum="sha256")
+    states = {}
+    for build_id, seed in (("ab-extra", 21), ("ab", 22)):
+        c, _ = committer(tmp_path, backend, name=f"commit-{build_id}")
+        key = c.begin_commit(build_id, [{"kind": "preview",
+                                         "data": make_png(seed)}],
+                             snapshot_digest=SNAP, recipe_digest=RECIPE,
+                             toolchain_digest=TOOLCHAIN,
+                             required_kinds=("preview",))
+        states[build_id] = c.run(key)["state"]
+    assert states == {"ab-extra": "SEALED", "ab": "SEALED"}
+    assert len([o for o in backend._objects
+                if o.startswith("manifest-")]) == 2
 
 
 def test_crash_before_manifest_publish_republishes_same_intent(tmp_path):
