@@ -37,6 +37,7 @@ DOCUMENT_SCHEMAS = {
     "subscription_entitlement": 1,
     "subscription_packet": 1,
     "subscription_result": 1,
+    "capability_measurement": 1,
 }
 
 TIMELINE_FIELDS = {"document_type", "schema_version", "target_frames", "entries"}
@@ -343,6 +344,51 @@ def validate_capability_evidence(document):
     if document["registry_state"] not in REGISTRY_STATES:
         raise FilmError(f"Unknown registry_state: "
                         f"{document['registry_state']}")
+    if type(document["observed_at"]) is not str \
+            or not document["observed_at"]:
+        raise FilmError("observed_at is required")
+    return document
+
+
+MEASUREMENT_FIELDS = {"document_type", "schema_version", "measurement_id",
+                      "evidence_id", "evidence_digest", "input_digest",
+                      "quality_digest", "scope", "cold", "warm",
+                      "stage_timeline", "shared_edge", "peaks", "transfer",
+                      "cache", "manual", "usage", "samples", "observed_at"}
+
+
+def validate_capability_measurement(document):
+    """Structural contract of `capability_measurement` 1 (ANIM-019
+    CAP-MEASURE, execution design 7.2.1/8.1).
+
+    A measurement is only meaningful bound: evidence_id and
+    evidence_digest pin the exact CapabilityEvidence the timed runs used
+    (a record that drifts from that digest is unusable), input_digest and
+    quality_digest pin what ran, and scope records the measured scope —
+    never a wider claim. Every section is a required container, but which
+    pieces must be filled before an estimate is usable is decided by the
+    registry: a partial record stays UNKNOWN, never an implied number.
+    """
+    check_document(document, "capability_measurement")
+    if set(document.keys()) != MEASUREMENT_FIELDS:
+        raise FilmError("capability_measurement must hold exactly the "
+                        "contracted fields")
+    for key in ("measurement_id", "evidence_id"):
+        if type(document[key]) is not str or not document[key]:
+            raise FilmError(f"{key} must be a non-empty string")
+    for key in ("evidence_digest", "input_digest", "quality_digest"):
+        value = document[key]
+        if type(value) is not str or not re.fullmatch(r"[0-9a-f]{64}",
+                                                      value):
+            raise FilmError(f"{key} must be a sha256 hex digest")
+    if type(document["scope"]) is not dict:
+        raise FilmError("scope must record the measured scope")
+    for key in ("cold", "warm", "shared_edge", "peaks", "transfer",
+                "cache", "manual", "usage", "samples"):
+        if type(document[key]) is not dict:
+            raise FilmError(f"{key} must be an object")
+    if type(document["stage_timeline"]) is not list:
+        raise FilmError("stage_timeline must be a list of {stage, ms}")
     if type(document["observed_at"]) is not str \
             or not document["observed_at"]:
         raise FilmError("observed_at is required")
