@@ -46,9 +46,14 @@ from .animation_schema import (canon_bytes, load_animation_timeline,
                                read_canon, require_animation_profile)
 from .builds import allocate_build, capture, seal_build, verify_build
 from .compiler import media_check
-from .core import (FilmError, digest, ffmpeg, now, project_mutex,
+from .core import (FilmError, digest, now, project_mutex,
                    read, safe_path, write)
+from .encoder_backends import (FrameSource, encode_delivery,
+                               make_encode_recipe)
 from .frame_clock import frame_filename
+from .media_mux import prepare_audio_track
+from .media_verify import (VERIFY_CONTRACT, frame_pixel_sha256,
+                           image_pixel_sha256, sequence_root)
 from .frame_sequence import member_map_for_entry
 from .lyrics import export_subtitles, validate_lyrics
 from .transitions import (attach_frame_outputs, audit_timeline,
@@ -66,26 +71,6 @@ def _fit(image, width, height):
     canvas.paste(source, ((width - source.width) // 2,
                           (height - source.height) // 2))
     return canvas
-
-
-def image_pixel_sha256(image):
-    """Digest of decoded RGB pixels — encoder-independent frame identity."""
-    rgb = image.convert("RGB")
-    return hashlib.sha256(
-        f"{rgb.width}x{rgb.height}:".encode() + rgb.tobytes()).hexdigest()
-
-
-def frame_pixel_sha256(path):
-    with Image.open(path) as im:
-        return image_pixel_sha256(im)
-
-
-def sequence_root(role, digests):
-    """One digest over the ordered (frame_index, pixel sha256) list."""
-    return hashlib.sha256(canon_bytes(
-        {"role": role,
-         "frames": [{"frame_index": index, "sha256": value}
-                    for index, value in enumerate(digests)]})).hexdigest()
 
 
 def _check_frame_sequence(frames_dir, count):
@@ -184,28 +169,27 @@ def _burn_frames(frames_dir, out_dir, build_dir, fps):
     return out_dir
 
 
-def _encode_master(frames_dir, count, fmt, master, target, seconds):
-    """image2 encode with the contracted explicit framerate/start number."""
+def _encode_master(frames_dir, count, fmt, master, target, seconds,
+                   audio_track=None, role="subbed"):
+    """Encode one delivery MP4 through the ANIM-015 pipeline.
+
+    The FFMPEG driver produces timed H.264 codec packets from the exact
+    FrameSource contract (explicit framerate/start number, no encoder
+    defaults), the muxer stream-copies them with the already-verified AAC
+    track — prepared once per build, never re-encoded per output — and the
+    encoder-independent MediaVerifier runs the full MV_H264_AAC_V1 check.
+    Returns (target, encode result).
+    """
     target = Path(target)
-    pending = target.with_suffix(".pending.mp4")
-    ffmpeg(["-xerror", "-framerate", str(fmt["fps"]), "-start_number", "1",
-            "-i", str(Path(frames_dir) / "F_%06d.png"), "-map", "0:v:0",
-            "-an", "-r", str(fmt["fps"]), "-c:v", "libx264",
-            "-preset", "veryfast", "-crf", str(fmt["crf"]),
-            "-pix_fmt", "yuv420p", "-threads", "2", pending])
-    media_check(pending, count, fmt)
-    muxed = target.with_suffix(".mux.mp4")
-    ffmpeg(["-xerror", "-i", pending, "-i", master,
-            "-map", "0:v:0", "-map", "1:a:0", "-c:v", "copy",
-            "-c:a", "aac", "-b:a", "320k", "-t", f"{seconds:.3f}",
-            "-map_metadata", "-1", "-movflags", "+faststart", muxed])
-    info = media_check(muxed, count, fmt, audio=True)
-    sound = next(s for s in info["streams"] if s["codec_type"] == "audio")
-    if abs(float(sound.get("duration", 0)) - seconds) > .1:
-        raise FilmError("Master audio does not cover the animation timeline")
-    muxed.replace(target)
-    pending.unlink(missing_ok=True)
-    return target
+    with tempfile.TemporaryDirectory(prefix=".encode-",
+                                     dir=target.parent) as work:
+        frames = FrameSource(frames_dir, fmt["fps"], fmt["width"],
+                             fmt["height"], expected_count=count)
+        recipe = make_encode_recipe("FFMPEG", fmt)
+        result = encode_delivery(frames, recipe, target,
+                                 audio_track=audio_track, master=master,
+                                 work_dir=work, role=role)
+    return target, result
 
 
 def _check_delivery(path, fmt, output_frames, seconds):
@@ -367,12 +351,22 @@ def compile_final_candidate(project, exposure=None, progress=None):
             attach_frame_outputs(rows, final_dir)
             map_path = write_frame_map(folder / "frame_map.jsonl", rows)
             verify_frame_map(rows, document, complete=True)
-            clean = _encode_master(clean_dir, output_frames, fmt, master,
-                                   folder / "MASTER_CLEAN.mp4", seconds)
+            # ANIM-015: the verified AAC track is prepared once and
+            # stream-copied into both deliveries — never re-encoded.
+            encode_work = Path(tempfile.mkdtemp(prefix=".encode-",
+                                                dir=folder))
+            audio_track = prepare_audio_track(master, seconds, encode_work)
+            clean, clean_encode = _encode_master(
+                clean_dir, output_frames, fmt, master,
+                folder / "MASTER_CLEAN.mp4", seconds,
+                audio_track=audio_track, role="clean")
             _check_delivery(clean, fmt, output_frames, seconds)
-            subbed = _encode_master(final_dir, output_frames, fmt, master,
-                                    folder / "MASTER_SUBBED.mp4", seconds)
+            subbed, subbed_encode = _encode_master(
+                final_dir, output_frames, fmt, master,
+                folder / "MASTER_SUBBED.mp4", seconds,
+                audio_track=audio_track, role="subbed")
             _check_delivery(subbed, fmt, output_frames, seconds)
+            shutil.rmtree(encode_work)
             if digest(master) != config["audio"]["sha256"]:
                 raise FilmError("Master changed during Final compile")
             shutil.rmtree(clean_dir)
@@ -407,6 +401,22 @@ def compile_final_candidate(project, exposure=None, progress=None):
                           "sha256": digest(clean)},
                 "subbed": {"file": "MASTER_SUBBED.mp4",
                            "sha256": digest(subbed)}}
+            record["encoding"] = {
+                "pipeline": "FrameSource -> Encoder -> Muxer -> "
+                            "MediaVerifier (ANIM-015)",
+                "driver": "FFMPEG",
+                "delivery_profile": "MV_H264_AAC_V1",
+                "recipe": subbed_encode["recipe"],
+                "verify_contract": VERIFY_CONTRACT,
+                "audio_track": subbed_encode["audio_track"],
+                "clean": {"encode_digest": clean_encode["encode_digest"],
+                          "verification":
+                              clean_encode["verification"]},
+                "subbed": {"encode_digest": subbed_encode["encode_digest"],
+                           "verification":
+                               subbed_encode["verification"]},
+                "no_ffmpeg_encoding": "NOT_DEMONSTRATED",
+                "no_ffmpeg_runtime": "NOT_DEMONSTRATED"}
             record["candidate_state"] = "FINAL_CANDIDATE_READY"
             record["warnings"].append(
                 "Final candidate: cut/transition reviews bound the current "
@@ -531,11 +541,14 @@ def replay_local_full(build_dir, out, record):
                 != record["sequences"]["subbed_sequence_root"]:
             raise FilmError("Stored delivery sequence does not match the "
                             "sealed subbed_sequence_root")
-        subbed = _encode_master(final_dir, output_frames, fmt, master,
-                                out / "MASTER_SUBBED.mp4", seconds)
+        audio_track = prepare_audio_track(master, seconds, work)
+        subbed, _ = _encode_master(final_dir, output_frames, fmt, master,
+                                   out / "MASTER_SUBBED.mp4", seconds,
+                                   audio_track=audio_track, role="subbed")
         _check_delivery(subbed, fmt, output_frames, seconds)
-        clean = _encode_master(clean_dir, output_frames, fmt, master,
-                               out / "MASTER_CLEAN.mp4", seconds)
+        clean, _ = _encode_master(clean_dir, output_frames, fmt, master,
+                                  out / "MASTER_CLEAN.mp4", seconds,
+                                  audio_track=audio_track, role="clean")
         _check_delivery(clean, fmt, output_frames, seconds)
     finally:
         shutil.rmtree(work, ignore_errors=True)
@@ -558,3 +571,70 @@ def replay_local_full(build_dir, out, record):
               "output": str(subbed), "clean": str(clean)}
     write(out / "replay.json", result)
     return result
+
+
+def encode_build_delivery(build_dir, driver_name, output, import_path=None):
+    """ANIM-015: encode and verify a sealed Build 2 delivery with a driver.
+
+    The archived `final_frames` supply the exact frame index/PTS contract
+    and their pixel digests must still equal the sealed
+    `subbed_sequence_root`. `--driver` picks the encoder; QUALIFIED_SERVICE
+    is protocol-only — without `--import-packets` it writes a manual
+    export packet and reports WAITING_MANUAL_IMPORT; with it, the returned
+    packets are muxed and verified by the same MediaVerifier.
+    """
+    from .animation_schema import write_canon
+    from .encoder_backends import (ManualExportRequired, get_driver)
+    build = Path(build_dir)
+    record = read(build / "build.json")
+    if record.get("document_type") != "animation_build" \
+            or record.get("schema_version") != 2:
+        raise FilmError("encode-build applies to sealed Build 2 "
+                        "animation_build records")
+    if record.get("status") != "COMPLETE":
+        raise FilmError("The build is not COMPLETE")
+    if not verify_build(build)["valid"]:
+        raise FilmError("Build 2 archive failed its inventory check")
+    fmt = record["format"]
+    fps, width, height = fmt["fps"], fmt["width"], fmt["height"]
+    output_frames = record["output_frames"]
+    seconds = output_frames / fps
+    final_dir = build / "final_frames"
+    _check_frame_sequence(final_dir, output_frames)
+    audio_rel = (record.get("audio") or {}).get("path")
+    master = safe_path(build, audio_rel)
+    if not master.is_file():
+        raise FilmError("Archived master audio is missing")
+    out = Path(output).resolve()
+    out.parent.mkdir(parents=True, exist_ok=True)
+    frames = FrameSource(final_dir, fps, width, height,
+                         expected_count=output_frames)
+    sealed_root = (record.get("sequences") or {}).get("subbed_sequence_root")
+    if sequence_root("subbed", frames.pixel_digests()) != sealed_root:
+        raise FilmError("Archived delivery frames no longer match the "
+                        "sealed subbed_sequence_root")
+    work = Path(tempfile.mkdtemp(prefix=".encode-", dir=out.parent))
+    try:
+        recipe = make_encode_recipe(driver_name, fmt)
+        write_canon(out.parent / "encode_recipe.json", recipe)
+        audio_track = prepare_audio_track(master, seconds, work)
+        try:
+            result = encode_delivery(
+                frames, recipe, out, driver=get_driver(driver_name),
+                audio_track=audio_track, work_dir=work, role="subbed",
+                sequence_root_value=sealed_root, import_path=import_path)
+        except ManualExportRequired as e:
+            packet_path = out.parent / "manual_export_packet.json"
+            write_canon(packet_path, e.packet)
+            return {"status": "WAITING_MANUAL_IMPORT",
+                    "driver": "QUALIFIED_SERVICE",
+                    "export_packet": str(packet_path),
+                    "no_ffmpeg_encoding": "NOT_DEMONSTRATED",
+                    "qualification_state": "UNQUALIFIED",
+                    "import": "encode-build <build> --driver "
+                              "QUALIFIED_SERVICE --output <mp4> "
+                              "--import-packets <returned file>"}
+        return {**result, "build_id": record["build_id"],
+                "frames": output_frames}
+    finally:
+        shutil.rmtree(work, ignore_errors=True)

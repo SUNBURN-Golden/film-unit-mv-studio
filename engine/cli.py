@@ -181,6 +181,16 @@ def main(argv=None):
     replay = sub.add_parser("replay-build")
     replay.add_argument("build_dir")
     replay.add_argument("--output", required=True)
+    encoders = sub.add_parser("encoders", help="ANIM-015: probe encoder drivers and report capability evidence; absent hardware is UNAVAILABLE, never fabricated")
+    encoders.add_argument("--driver", help="Probe one driver")
+    encode_build = sub.add_parser("encode-build", help="ANIM-015: encode+verify a sealed Build 2 build's delivery frames with a chosen driver")
+    encode_build.add_argument("build_dir")
+    encode_build.add_argument("--driver", required=True,
+        choices=["FFMPEG", "GSTREAMER", "NVIDIA_NATIVE",
+                 "VIDEOTOOLBOX_NATIVE", "QUALIFIED_SERVICE"])
+    encode_build.add_argument("--output", required=True)
+    encode_build.add_argument("--import-packets", dest="import_path",
+        help="QUALIFIED_SERVICE: packet file returned by the external encode")
     for name in ["analyze", "package", "lock", "estimate", "approve", "compile", "import-frame", "economy-init", "work-status", "edit-take", "claim-job"]:
         p = sub.add_parser(name, help="Legacy shot generation/resume (may call paid renderers); use compile-preview for a local full-song build" if name == "compile" else None)
         p.add_argument("project")
@@ -411,6 +421,13 @@ def main(argv=None):
         elif a.command == "replay-build":
             from .builds import replay_build
             result = replay_build(a.build_dir, a.output)
+        elif a.command == "encoders":
+            from .encoder_backends import probe_all, probe_driver
+            result = probe_driver(a.driver) if a.driver else probe_all()
+        elif a.command == "encode-build":
+            from .animation_compiler import encode_build_delivery
+            result = encode_build_delivery(a.build_dir, a.driver, a.output,
+                                           import_path=a.import_path)
         elif a.command == "import-asset":
             from .compiler import import_asset
             result = import_asset(a.project, a.shot, a.source, kind=a.kind,
