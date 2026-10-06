@@ -29,7 +29,8 @@ MP4, project size, 24/1 CFR, recipe-fixed colour, original-audio policy.
 """
 from pathlib import Path
 import hashlib
-import json
+import subprocess
+import threading
 from fractions import Fraction
 
 import numpy as np
@@ -167,24 +168,83 @@ def check_video_packets(path, fps, width, height, frames_expected,
     return info
 
 
+def _stream_decode(argv):
+    """Spawn a decode/probe process for streaming reads of its stdout.
+
+    stderr is drained concurrently into a bounded 64 KiB tail so a
+    talkative decoder can never deadlock the pipe, and the process is
+    always reaped by `_reap` (or the caller's finally kill).
+    """
+    proc = subprocess.Popen([str(a) for a in argv],
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    tail = bytearray()
+
+    def _drain():
+        while True:
+            chunk = proc.stderr.read(1 << 16)
+            if not chunk:
+                return
+            tail.extend(chunk)
+            del tail[:-65536]
+
+    reader = threading.Thread(target=_drain, daemon=True)
+    reader.start()
+    return proc, tail, reader
+
+
+def _reap(proc, tail, reader, timeout=600):
+    """Wait for the process, kill it if it overruns, join the stderr
+    drain thread, and return (returncode, stderr_tail_bytes)."""
+    try:
+        code = proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        code = proc.wait()
+    reader.join(timeout=30)
+    return code, bytes(tail)
+
+
 def check_video_pts(path, fps, frames_expected):
     """Rational PTS check on every video packet of a finished MP4.
 
     Packet order is decode order; the display PTS set must be exactly
     `0, 1/fps, 2/fps, ...` and every packet duration must equal `1/fps`.
+    Packet rows are streamed line by line — only scalar PTS/duration
+    values are kept, never a whole-stream capture.
     """
-    raw = run(["ffprobe", "-v", "error", "-select_streams", "v:0",
-               "-show_entries", "packet=pts,duration",
-               "-of", "json", str(path)])
-    packets = json.loads(raw).get("packets", [])
-    if len(packets) != frames_expected:
-        raise FilmError(f"{Path(path).name}: {len(packets)} video packets "
-                        f"decoded, expected {frames_expected}")
     info = probe(path)
     v = next(s for s in info["streams"] if s["codec_type"] == "video")
     time_base = Fraction(v["time_base"])
     step = Fraction(1, check_fps(fps))
-    pts_sorted = sorted(int(p["pts"]) for p in packets)
+    proc, tail, reader = _stream_decode(
+        ["ffprobe", "-v", "error", "-select_streams", "v:0",
+         "-show_entries", "packet=pts,duration",
+         "-of", "compact=p=0:nk=1", str(path)])
+    pts_sorted, durations = [], []
+    try:
+        for line in proc.stdout:
+            fields = line.decode(errors="replace").strip().split("|")
+            try:
+                pts, duration = int(fields[0]), int(fields[1])
+            except (IndexError, ValueError):
+                raise FilmError(f"{Path(path).name}: unparseable packet "
+                                f"row {line!r}")
+            pts_sorted.append(pts)
+            durations.append(duration)
+        code, stderr = _reap(proc, tail, reader)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+            reader.join(timeout=30)
+    if code != 0:
+        raise FilmError(f"{Path(path).name}: ffprobe failed: "
+                        f"{stderr.decode(errors='replace')[-2000:]}")
+    if len(pts_sorted) != frames_expected:
+        raise FilmError(f"{Path(path).name}: {len(pts_sorted)} video "
+                        f"packets decoded, expected {frames_expected}")
+    pts_sorted.sort()
+    durations.sort()
     if pts_sorted[0] != 0:
         raise FilmError(f"{Path(path).name}: first PTS is "
                         f"{pts_sorted[0]}, not 0")
@@ -194,13 +254,12 @@ def check_video_pts(path, fps, frames_expected):
                 f"{Path(path).name}: packet {index} displays at "
                 f"{pts * time_base}, the frame clock requires "
                 f"{step * index}")
-    last_end = pts_sorted[-1] * time_base + \
-        sorted(int(p["duration"]) for p in packets)[-1] * time_base
+    last_end = pts_sorted[-1] * time_base + durations[-1] * time_base
     if last_end != last_exposure_end(frames_expected, fps):
         raise FilmError(f"{Path(path).name}: last exposure ends at "
                         f"{last_end}, not {last_exposure_end(frames_expected, fps)}")
-    for packet in packets:
-        if int(packet["duration"]) * time_base != step:
+    for duration in durations:
+        if duration * time_base != step:
             raise FilmError(f"{Path(path).name}: a packet duration is not "
                             f"exactly {step}s — not CFR")
     return pts_sorted
@@ -233,47 +292,90 @@ def check_audio_track(path, seconds, expect_present=True):
     return sound
 
 
-def _decoded_pcm(path, stream_selector="a:0"):
-    """Decode one audio stream to s16le PCM; returns (bytes, sample_rate,
-    channels)."""
-    raw = run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin",
-               "-i", str(path), "-map", f"0:{stream_selector}",
-               "-f", "s16le", "-"])
+def _pcm_stream(path, stream_selector="a:0"):
+    """Open the s16le decode of one audio stream for chunked reading;
+    returns (proc, tail, reader, sample_rate, channels)."""
     info = probe(path)
     sound = next(s for s in info["streams"] if s["codec_type"] == "audio")
-    return raw, int(sound["sample_rate"]), int(sound.get("channels", 1))
+    proc, tail, reader = _stream_decode(
+        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin",
+         "-i", str(path), "-map", f"0:{stream_selector}",
+         "-f", "s16le", "-"])
+    return proc, tail, reader, int(sound["sample_rate"]), \
+        int(sound.get("channels", 1))
 
 
 def check_audio_samples(path, seconds, reference=None):
     """Decoded audio sample count must cover the timeline; when a reference
     audio track (the already-verified mux input) is given, the decoded PCM
     must match it sample-for-sample within a small epsilon — a different or
-    truncated audio track is rejected, not re-encoded around.
+    truncated audio track is rejected, not re-encoded around. Both decodes
+    are streamed in fixed-size chunks, so memory stays O(chunk) however
+    long the programme is.
     """
-    pcm, rate, channels = _decoded_pcm(path)
-    samples = len(pcm) // (2 * channels)
+    proc, tail, reader, rate, channels = _pcm_stream(path)
+    ref = _pcm_stream(reference) if reference is not None else None
+    if ref is not None:
+        ref_proc, ref_tail, ref_reader, ref_rate, ref_channels = ref
+        if ref_rate != rate or ref_channels != channels:
+            for p, t, r in ((proc, tail, reader), ref[:3]):
+                if p.poll() is None:
+                    p.kill()
+                    p.wait()
+                r.join(timeout=30)
+            raise FilmError("Audio track rate/channels differ from the "
+                            "verified reference track")
+    else:
+        ref_proc = ref_reader = None
+    chunk = 1 << 20
+    elements, ref_elements, max_abs = 0, 0, 0
+    try:
+        while True:
+            buf = proc.stdout.read(chunk)
+            rbuf = ref_proc.stdout.read(chunk) if ref_proc else b""
+            if not buf and not rbuf:
+                break
+            elements += len(buf) // 2
+            if ref_proc:
+                ref_elements += len(rbuf) // 2
+                a = np.frombuffer(buf, dtype=np.int16).astype(np.int64)
+                b = np.frombuffer(rbuf, dtype=np.int16).astype(np.int64)
+                shared = min(len(a), len(b))
+                if shared:
+                    max_abs = max(max_abs,
+                                  int(np.abs(a[:shared] - b[:shared])
+                                      .max()))
+        code, stderr = _reap(proc, tail, reader)
+        if ref_proc:
+            ref_code, ref_stderr = _reap(ref_proc, ref_tail, ref_reader)
+        else:
+            ref_code, ref_stderr = 0, b""
+    finally:
+        for p, t, r in ((proc, tail, reader),
+                        (ref_proc, ref_tail, ref_reader) if ref_proc
+                        else ()):
+            if p.poll() is None:
+                p.kill()
+                p.wait()
+            r.join(timeout=30)
+    if code != 0 or ref_code != 0:
+        raise FilmError(f"{Path(path).name}: audio decode failed: "
+                        f"{(stderr + ref_stderr).decode(errors='replace')[-2000:]}")
+    samples = elements // channels
     if abs(samples / rate - seconds) > .1:
         raise FilmError(f"{Path(path).name}: decoded audio has "
                         f"{samples} samples ({samples / rate:.3f}s), "
                         f"the timeline requires {seconds:.3f}s")
     report = {"decoded_samples": samples, "sample_rate": rate,
               "channels": channels}
-    if reference is not None:
-        ref_pcm, ref_rate, ref_channels = _decoded_pcm(reference)
-        if ref_rate != rate or ref_channels != ref_channels:
-            raise FilmError("Audio track rate/channels differ from the "
+    if ref_proc is not None:
+        # AAC priming may differ by a fraction of a frame; compare the
+        # shared stream after allowing a small length skew.
+        if abs(elements - ref_elements) > rate * channels // 10:
+            raise FilmError("Decoded audio length differs from the "
                             "verified reference track")
-        a = np.frombuffer(pcm, dtype=np.int16).astype(np.int64)
-        b = np.frombuffer(ref_pcm, dtype=np.int16).astype(np.int64)
-        # AAC priming may differ by a fraction of a frame; compare the shared
-        # prefix after allowing a small length skew.
-        shared = min(len(a), len(b))
-        if abs(len(a) - len(b)) > rate * channels // 10:
-            raise FilmError("Decoded audio length differs from the verified "
-                            "reference track")
-        diff = np.abs(a[:shared] - b[:shared])
-        report["reference_max_abs"] = int(diff.max()) if shared else 0
-        if report["reference_max_abs"] > 64:
+        report["reference_max_abs"] = max_abs
+        if max_abs > 64:
             raise FilmError("Decoded audio differs from the verified "
                             "reference track — a substituted track is not "
                             "the original master")
@@ -298,27 +400,56 @@ def compare_decoded_frames(path, frame_source, tolerance):
     `frame_source` exposes `width`, `height`, `count` and `rgb_bytes(index)`.
     Returns the worst per-frame errors observed. The same `tolerance`
     (`mean_abs_x1000`, `p95_abs`) applies identically to every driver.
+
+    The decode is streamed through `Popen` stdout exactly one frame
+    (`width*height*3` bytes) at a time and each source frame is loaded on
+    demand — memory stays O(one frame) however long the film is. A stream
+    that yields too few, too many or a partial frame is rejected, and the
+    decoder process is always reaped, including on error.
     """
     width, height = frame_source.width, frame_source.height
     count = frame_source.count
-    raw = run(["ffmpeg", "-v", "error", "-nostdin", "-i", str(path),
-               "-map", "0:v:0", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"])
     stride = width * height * 3
-    if len(raw) != stride * count:
-        raise FilmError(f"{Path(path).name}: decoded to "
-                        f"{len(raw) // stride} frames, expected {count}")
-    worst_mean, worst_p95 = 0.0, 0.0
-    for index in range(count):
-        decoded = np.frombuffer(raw[index * stride:(index + 1) * stride],
-                                dtype=np.uint8).astype(np.int16)
-        source = np.frombuffer(frame_source.rgb_bytes(index),
-                               dtype=np.uint8).astype(np.int16)
-        if source.size != decoded.size:
-            raise FilmError(f"Source frame {index} does not have the "
-                            "contracted dimensions")
-        diff = np.abs(decoded - source)
-        worst_mean = max(worst_mean, float(diff.mean()))
-        worst_p95 = max(worst_p95, float(np.percentile(diff, 95)))
+    proc, tail, reader = _stream_decode(
+        ["ffmpeg", "-v", "error", "-nostdin", "-i", str(path),
+         "-map", "0:v:0", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"])
+    decoded_count, worst_mean, worst_p95 = 0, 0.0, 0.0
+    try:
+        while True:
+            buf = proc.stdout.read(stride)
+            if not buf:
+                break
+            if len(buf) != stride:
+                raise FilmError(
+                    f"{Path(path).name}: truncated decode — "
+                    f"{len(buf)} trailing bytes after {decoded_count} "
+                    f"frames, expected {count} full frames")
+            if decoded_count >= count:
+                raise FilmError(
+                    f"{Path(path).name}: decoded more frames than the "
+                    f"contracted {count}")
+            decoded = np.frombuffer(buf, dtype=np.uint8).astype(np.int16)
+            source = np.frombuffer(frame_source.rgb_bytes(decoded_count),
+                                   dtype=np.uint8).astype(np.int16)
+            if source.size != decoded.size:
+                raise FilmError(f"Source frame {decoded_count} does not "
+                                "have the contracted dimensions")
+            diff = np.abs(decoded - source)
+            worst_mean = max(worst_mean, float(diff.mean()))
+            worst_p95 = max(worst_p95, float(np.percentile(diff, 95)))
+            decoded_count += 1
+        code, stderr = _reap(proc, tail, reader)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+            reader.join(timeout=30)
+    if code != 0:
+        raise FilmError(f"{Path(path).name}: frame decode failed: "
+                        f"{stderr.decode(errors='replace')[-2000:]}")
+    if decoded_count != count:
+        raise FilmError(f"{Path(path).name}: decoded {decoded_count} "
+                        f"frames, expected {count}")
     report = {"frames_compared": count,
               "worst_mean_abs_x1000": int(worst_mean * 1000),
               "worst_p95_abs": int(worst_p95),

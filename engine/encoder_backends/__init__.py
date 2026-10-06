@@ -29,6 +29,8 @@ fixture encode that passed the MediaVerifier on this host.
 video stream and the verifier passed. Fake drivers in tests are labelled
 FAKE/UNQUALIFIED and can never set it.
 """
+from collections import OrderedDict
+from fractions import Fraction
 from pathlib import Path
 import hashlib
 import tempfile
@@ -48,6 +50,44 @@ DRIVER_NAMES = ("FFMPEG", "NVIDIA_NATIVE", "VIDEOTOOLBOX_NATIVE",
                 "GSTREAMER", "QUALIFIED_SERVICE")
 REGISTRY_STATES = ("DOCUMENTED_ONLY", "QUALIFIED_FOR_SCOPE", "STALE",
                    "UNAVAILABLE")
+# Program reporting facets (ADR facet vocabulary) — kept strictly separate
+# from the capability registry states above.
+QUALIFICATION_STATES = ("NOT_REQUIRED", "UNQUALIFIED", "PARTIAL",
+                        "QUALIFIED")
+# Decoded source frames a FrameSource may keep at once (bounded LRU).
+_RGB_CACHE_LIMIT = 4
+
+
+def scope_covered(evidence_scope, requested_scope):
+    """Whether `requested_scope` stays inside the scope a probe actually
+    ran (ADR schemas section 15 / execution design 7.2.1).
+
+    Coverage requires the same codec, pixel format, resolution and
+    rational frame rate, and a frame count no larger than the tested one —
+    evidence never covers a scope it did not run, so a 64x48 8-frame
+    fixture does not cover a 1440x1080 film.
+    """
+    if not evidence_scope or not requested_scope:
+        return False
+    for key in ("width", "height", "codec", "pixel_format"):
+        if evidence_scope.get(key) != requested_scope.get(key):
+            return False
+
+    def _rate(value):
+        try:
+            return Fraction(int(value["num"]), int(value["den"]))
+        except (KeyError, TypeError, ValueError, ZeroDivisionError):
+            return None
+
+    if _rate(evidence_scope.get("fps")) is None \
+            or _rate(evidence_scope.get("fps")) \
+            != _rate(requested_scope.get("fps")):
+        return False
+    try:
+        return 0 < int(requested_scope["frames"]) \
+            <= int(evidence_scope["frames"])
+    except (KeyError, TypeError, ValueError):
+        return False
 
 
 class ManualExportRequired(FilmError):
@@ -83,7 +123,9 @@ class FrameSource:
                             f"expected {expected_count}")
         self.count = len(indices)
         self._paths = [self.dir / frame_filename(i) for i in range(self.count)]
-        self._rgb = [None] * self.count
+        # Bounded LRU of decoded frames — a verifier over a long film must
+        # never hold more than a few frames of decoded RGB at once.
+        self._rgb = OrderedDict()
 
     @property
     def seconds(self):
@@ -95,8 +137,12 @@ class FrameSource:
 
     def rgb_bytes(self, frame_index):
         """Decoded RGB24 bytes of one frame; the frame must already carry
-        the contracted canvas size."""
-        if self._rgb[frame_index] is None:
+        the contracted canvas size. At most `_RGB_CACHE_LIMIT` decoded
+        frames are retained — the verifier and the drivers read frames in
+        index order, so the cache stays O(a few frames).
+        """
+        cached = self._rgb.get(frame_index)
+        if cached is None:
             with Image.open(self._paths[frame_index]) as im:
                 rgb = im.convert("RGB")
             if (rgb.width, rgb.height) != (self.width, self.height):
@@ -104,8 +150,12 @@ class FrameSource:
                     f"Frame {frame_index + 1} is {rgb.width}x{rgb.height}; "
                     f"the contract is {self.width}x{self.height} — an "
                     "encoder may not silently rescale")
-            self._rgb[frame_index] = rgb.tobytes()
-        return self._rgb[frame_index]
+            cached = rgb.tobytes()
+        self._rgb[frame_index] = cached
+        self._rgb.move_to_end(frame_index)
+        while len(self._rgb) > _RGB_CACHE_LIMIT:
+            self._rgb.popitem(last=False)
+        return cached
 
     def pixel_digests(self):
         from ..media_verify import frame_pixel_sha256
@@ -287,6 +337,22 @@ def encode_delivery(frame_source, recipe, target, *, driver=None,
     prepared track is passed. `import_path` supplies the externally
     produced packet file for the manual QUALIFIED_SERVICE protocol.
     Returns the encode result record.
+
+    Reporting semantics (ADR schemas 15 / execution design 7.2.1): the
+    probe fixture qualifies only its own tested scope, recorded in the
+    `capability_evidence` record; `capability_scope` reports whether the
+    delivery stayed inside it (`COVERED` / `OUT_OF_PROBED_SCOPE`). The
+    FFMPEG baseline may encode outside the probed scope but never claims
+    fixture coverage for it. `NO_FFMPEG_ENCODING` is True only for a real,
+    locally probed non-FFmpeg driver — the consistent rule chosen here is
+    that a delivery which passed the full MediaVerifier at its own scope
+    is itself the capability evidence for that scope, so the flag requires
+    a QUALIFIED_FOR_SCOPE probe plus this delivery's successful
+    verification. `qualification_state` uses only the program facet values
+    NOT_REQUIRED/UNQUALIFIED/PARTIAL/QUALIFIED and stays UNQUALIFIED in
+    this repository — a box fixture is not product qualification; the
+    probe's registry state is kept separately in
+    `capability_registry_state`.
     """
     work = Path(work_dir) if work_dir else \
         Path(tempfile.mkdtemp(prefix=".encode-", dir=frame_source.dir.parent))
@@ -294,13 +360,15 @@ def encode_delivery(frame_source, recipe, target, *, driver=None,
     driver = driver or get_driver(recipe["driver"])
     if driver.name != recipe["driver"]:
         raise FilmError("Driver/recipe mismatch")
+    delivery_scope = {"width": frame_source.width,
+                      "height": frame_source.height,
+                      "fps": {"num": frame_source.fps, "den": 1},
+                      "frames": frame_source.count,
+                      "codec": PROFILE["video"]["codec"],
+                      "pixel_format": recipe["pixel_format"]}
     probe_state = None
     if gate_probe and driver.evidence_class == "REAL":
-        probe_state = driver.probe({"width": frame_source.width,
-                                    "height": frame_source.height,
-                                    "fps": {"num": frame_source.fps,
-                                            "den": 1},
-                                    "frames": frame_source.count})
+        probe_state = driver.probe(delivery_scope)
         if not getattr(driver, "manual_protocol", False) \
                 and probe_state["registry_state"] != "QUALIFIED_FOR_SCOPE":
             # A delivery runs only on a driver whose own real fixture
@@ -337,7 +405,10 @@ def encode_delivery(frame_source, recipe, target, *, driver=None,
     root = sequence_root_value or sequence_root(
         role, frame_source.pixel_digests())
     # NO_FFMPEG_ENCODING is demonstrated only when a real, locally probed
-    # non-FFmpeg driver produced the video stream on this host. A manually
+    # non-FFmpeg driver produced the video stream on this host and this
+    # delivery passed the MediaVerifier at its full scope — reaching this
+    # point means it did, and a verified delivery is itself the capability
+    # evidence for the scope it ran at (see the docstring). A manually
     # imported service export cannot prove which encoder made it, so it is
     # reported as unverified external evidence, never as a demonstration.
     real_non_ffmpeg = driver.evidence_class == "REAL" \
@@ -355,10 +426,14 @@ def encode_delivery(frame_source, recipe, target, *, driver=None,
         "status": "COMPLETE",
         "driver": driver.name,
         "evidence_class": driver.evidence_class,
-        "qualification_state": "UNQUALIFIED"
-            if driver.evidence_class == "FAKE"
-            else (probe_state or {}).get("registry_state",
-                                         "NOT_EVALUATED"),
+        # Program facet vocabulary only — no real qualification exists in
+        # this repository, so deliveries always report UNQUALIFIED.
+        "qualification_state": "UNQUALIFIED",
+        "capability_registry_state": (probe_state or {}).get(
+            "registry_state", "NOT_EVALUATED"),
+        "capability_scope": "COVERED" if scope_covered(
+            (probe_state or {}).get("scope"), delivery_scope)
+            else "OUT_OF_PROBED_SCOPE",
         "output": str(target),
         "sha256": digest(target),
         "delivery_profile": PROFILE["name"],

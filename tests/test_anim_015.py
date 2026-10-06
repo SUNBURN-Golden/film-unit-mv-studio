@@ -226,6 +226,12 @@ def test_ffmpeg_end_to_end_encode_mux_verify(tmp_path):
     assert result["status"] == "COMPLETE"
     assert result["driver"] == "FFMPEG"
     assert result["no_ffmpeg_encoding"] == "NOT_DEMONSTRATED"
+    # Facet vocabulary: qualification_state is always UNQUALIFIED here;
+    # the registry state lives in its own field, and this delivery (10
+    # frames) is outside the 8-frame fixture's tested scope.
+    assert result["qualification_state"] == "UNQUALIFIED"
+    assert result["capability_registry_state"] == "QUALIFIED_FOR_SCOPE"
+    assert result["capability_scope"] == "OUT_OF_PROBED_SCOPE"
     info = probe(out)
     video = next(s for s in info["streams"] if s["codec_type"] == "video")
     audio = next(s for s in info["streams"] if s["codec_type"] == "audio")
@@ -279,7 +285,12 @@ def test_ffmpeg_probe_qualifies_with_real_fixture():
     assert evidence["registry_state"] == "QUALIFIED_FOR_SCOPE"
     assert evidence["qualification"] == "real-fixture"
     assert evidence["fixture"]["output_sha256"]
-    assert evidence["scope"]["fps"] == {"num": 24, "den": 1}
+    # The evidence records exactly the scope the fixture tested.
+    assert evidence["scope"] == {"width": 64, "height": 48,
+                                 "fps": {"num": 24, "den": 1},
+                                 "frames": 8, "codec": "h264",
+                                 "pixel_format": "yuv420p",
+                                 "container": "mp4"}
 
 
 def test_absent_hardware_reports_unavailable():
@@ -351,6 +362,8 @@ def test_fake_driver_protocol_end_to_end(tmp_path):
     assert result["status"] == "COMPLETE"
     assert result["evidence_class"] == "FAKE"
     assert result["qualification_state"] == "UNQUALIFIED"
+    assert result["capability_registry_state"] == "NOT_EVALUATED"
+    assert result["capability_scope"] == "OUT_OF_PROBED_SCOPE"
     assert result["no_ffmpeg_encoding"] == "NOT_DEMONSTRATED"
     info = probe(tmp_path / "fake.mp4")
     video = next(s for s in info["streams"] if s["codec_type"] == "video")
@@ -388,6 +401,109 @@ def test_fake_driver_dropping_frame_is_rejected(tmp_path):
         encode_delivery(frames, recipe, tmp_path / "drop.mp4",
                         driver=DroppingFake(), master=master,
                         gate_probe=False)
+
+
+# --- streaming verifier + capability scope ----------------------------------
+
+def test_compare_decoded_frames_streams_one_frame_at_a_time(
+        tmp_path, monkeypatch):
+    """The verifier must never capture the whole decoded stream: the fake
+    process's stdout records every read() size, proving frame-granular
+    reads; the source fetches each frame on demand and keeps only a
+    bounded LRU; a stream with an extra or a missing frame is rejected.
+    """
+    import io
+    import engine.media_verify as media_verify
+    frames_dir = make_delivery_frames(tmp_path / "frames", 6)
+    frames = FrameSource(frames_dir, FPS, *SIZE)
+    stride = SIZE[0] * SIZE[1] * 3
+    payload = b"".join(frames.rgb_bytes(i) for i in range(frames.count))
+    tolerance = dict(DELIVERY_PROFILE_MV_H264_AAC_V1["pixel_tolerance"])
+    fetched = []
+
+    class CountingSource:
+        width, height, fps = SIZE[0], SIZE[1], FPS
+        count = frames.count
+
+        def rgb_bytes(self, index):
+            fetched.append(index)
+            return frames.rgb_bytes(index)
+
+    class _Stream:
+        def __init__(self, data):
+            self._io = io.BytesIO(data)
+            self.sizes = []
+
+        def read(self, n=-1):
+            self.sizes.append(n)
+            return self._io.read(n)
+
+    class _Proc:
+        def __init__(self, data):
+            self.stdout = _Stream(data)
+            self.stderr = io.BytesIO(b"")
+            self._code = None
+
+        def wait(self, timeout=None):
+            self._code = 0
+            return 0
+
+        def poll(self):
+            return self._code
+
+        def kill(self):
+            self._code = -9
+
+    procs = []
+
+    def fake_popen(argv, **kwargs):
+        procs.append(_Proc(payload))
+        return procs[-1]
+
+    monkeypatch.setattr(media_verify.subprocess, "Popen", fake_popen)
+    report = media_verify.compare_decoded_frames(
+        "delivered.mp4", CountingSource(), tolerance)
+    assert report["frames_compared"] == frames.count
+    # Source frames fetched on demand, in index order, once each.
+    assert fetched == list(range(frames.count))
+    # Every decode read asks for exactly one frame — no whole-stream
+    # capture; the last read hits EOF.
+    assert procs[-1].stdout.sizes == [stride] * (frames.count + 1)
+    # The FrameSource keeps no more than the bounded LRU of frames.
+    assert len(frames._rgb) <= 4
+    # Fewer decoded frames than contracted -> reject.
+    monkeypatch.setattr(media_verify.subprocess, "Popen",
+                        lambda *a, **k: _Proc(payload[:-stride]))
+    with pytest.raises(FilmError, match="expected"):
+        media_verify.compare_decoded_frames("few.mp4", frames, tolerance)
+    # More decoded frames than contracted -> reject.
+    monkeypatch.setattr(media_verify.subprocess, "Popen",
+                        lambda *a, **k: _Proc(payload + payload[:stride]))
+    with pytest.raises(FilmError, match="more frames than the contracted"):
+        media_verify.compare_decoded_frames("many.mp4", frames, tolerance)
+
+
+def test_scope_coverage_matches_only_the_probed_scope():
+    """ADR schemas 15 / execution design 7.2.1: evidence applies only
+    within the tested codec, format, resolution, rate and frame count."""
+    from engine.encoder_backends import scope_covered
+    fixture_scope = {"width": 64, "height": 48,
+                     "fps": {"num": 24, "den": 1}, "frames": 8,
+                     "codec": "h264", "pixel_format": "yuv420p"}
+    assert scope_covered(fixture_scope, dict(fixture_scope))
+    assert scope_covered(fixture_scope, {**fixture_scope, "frames": 4})
+    assert not scope_covered(fixture_scope, {**fixture_scope, "frames": 9})
+    assert not scope_covered(fixture_scope, {**fixture_scope,
+                                             "width": 320})
+    assert not scope_covered(fixture_scope,
+                             {**fixture_scope,
+                              "fps": {"num": 25, "den": 1}})
+    assert not scope_covered(fixture_scope, {**fixture_scope,
+                                             "pixel_format": "yuv422p"})
+    assert not scope_covered(fixture_scope, {**fixture_scope,
+                                             "codec": "hevc"})
+    assert not scope_covered(None, fixture_scope)
+    assert not scope_covered(fixture_scope, None)
 
 
 # --- verifier rejection paths ----------------------------------------------
@@ -669,10 +785,18 @@ def test_gstreamer_real_encode(tmp_path):
 
 def test_nothing_qualifies_from_names_alone(tmp_path):
     """The ADR rule: a documented name or an FFmpeg hwaccel flag is never
-    evidence. On this host every non-FFmpeg driver is DOCUMENTED_ONLY or
-    UNAVAILABLE — none can be QUALIFIED_FOR_SCOPE by naming."""
+    evidence. Drivers without a real probed encode path are DOCUMENTED_ONLY
+    or UNAVAILABLE; a host with a real GStreamer toolchain may legitimately
+    reach QUALIFIED_FOR_SCOPE — by a real fixture run, never by naming."""
     evidence = probe_all()
-    for name in ("NVIDIA_NATIVE", "VIDEOTOOLBOX_NATIVE", "GSTREAMER",
+    for name in ("NVIDIA_NATIVE", "VIDEOTOOLBOX_NATIVE",
                  "QUALIFIED_SERVICE"):
         state = evidence[name]["registry_state"]
         assert state in {"UNAVAILABLE", "DOCUMENTED_ONLY"}
+    gst = evidence["GSTREAMER"]["registry_state"]
+    if shutil.which("gst-launch-1.0") is None:
+        assert gst == "UNAVAILABLE"
+    else:
+        assert gst in {"QUALIFIED_FOR_SCOPE", "UNAVAILABLE"}
+        if gst == "QUALIFIED_FOR_SCOPE":
+            assert evidence["GSTREAMER"]["fixture"]["output_sha256"]

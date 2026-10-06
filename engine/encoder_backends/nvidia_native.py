@@ -28,10 +28,13 @@ def _nvenc_environment():
         return env
     try:
         # Real capability: create + close an H.264 encoder session on a
-        # small NV12 surface. No session, no qualification.
+        # small NV12 surface with the same settings encode() claims
+        # (const-QP rate control, B-frames off). No session, no
+        # qualification.
         encoder = nv.CreateEncoder(width=64, height=48, fmt="NV12",
                                    codec="H264", gpuId=0,
-                                   fps=24, profile="HIGH",
+                                   fps=24, profile="HIGH", bf="0",
+                                   rc="constqp", constqp="27,27,27",
                                    useconstantsize=False)
         env["encoder_session"] = "created-and-closed"
         del encoder
@@ -46,7 +49,8 @@ class NvidiaNativeDriver(EncoderDriver):
     def codec_contract(self, fmt):
         return "pynvvideocodec:nvenc", {
             "mode": "rate_control_constqp",
-            "value": int(fmt["crf"]) + 9}  # NVENC QP, not ffmpeg CRF
+            "value": int(fmt["crf"]) + 9,  # NVENC QP, not ffmpeg CRF
+            "b_frames": 0}
 
     def probe(self, scope=None):
         env = _nvenc_environment()
@@ -85,11 +89,14 @@ class NvidiaNativeDriver(EncoderDriver):
         import numpy as np
         work_dir = Path(work_dir)
         es = work_dir / "video_packets.h264"
-        # Raw H.264 elementary stream, B-frames disabled so packet order
-        # equals presentation order; the muxer stamps the contracted PTS.
+        # Raw H.264 elementary stream; the recipe's const-QP mode and
+        # B-frames-off setting are passed to the session so packet order
+        # equals presentation order — the muxer stamps the contracted PTS.
+        qp = int(recipe["rate_control"]["value"])
         encoder = nv.CreateEncoder(
             width=frames.width, height=frames.height, fmt="NV12",
             codec="H264", gpuId=0, fps=frames.fps, profile="HIGH",
+            bf="0", rc="constqp", constqp=f"{qp},{qp},{qp}",
             useconstantsize=False)
         try:
             with es.open("wb") as f:

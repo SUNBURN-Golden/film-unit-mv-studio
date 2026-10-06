@@ -65,17 +65,16 @@ class VideoToolboxDriver(EncoderDriver):
                     "qualification": "hardware-unverified",
                     "reason": "VideoToolbox framework/compression session "
                               "not usable on this host"}
-        from .ffmpeg import run_fixture_encode
-        try:
-            outcome = run_fixture_encode(self)
-        except FilmError as e:
-            return {**evidence, "registry_state": "UNAVAILABLE",
-                    "qualification": "fixture-failed",
-                    "reason": str(e)[-400:]}
-        return {**evidence, "registry_state": "QUALIFIED_FOR_SCOPE",
-                "qualification": "real-fixture",
-                "reason": "real VideoToolbox session + fixture "
-                          "encode+mux+verify passed on this host", **outcome}
+        # The framework may be present, but this driver has no working
+        # VTCompressionSession encode path — that is an explicit
+        # encode_not_implemented, not a hardware failure, and it never
+        # qualifies a fixture.
+        return {**evidence, "registry_state": "UNAVAILABLE",
+                "qualification": "hardware-unverified",
+                "reason": "encode_not_implemented: the VideoToolbox "
+                          "framework resolves, but no VTCompressionSession "
+                          "encode path is implemented in this driver — "
+                          "unimplemented encoder, not a hardware failure"}
 
     def encode(self, frames: FrameSource, recipe, work_dir):
         if platform.system() != "Darwin":
@@ -86,8 +85,8 @@ class VideoToolboxDriver(EncoderDriver):
         # A real macOS path would push CMSampleBuffers through a
         # VTCompressionSession and collect an H.264 elementary stream with
         # B-frames disabled so packet order equals presentation order; the
-        # muxer then stamps the contracted PTS. Not implemented where the
-        # hardware cannot be probed.
+        # muxer then stamps the contracted PTS.
         raise FilmError(
-            "VIDEOTOOLBOX_NATIVE encode requires a probed VideoToolbox "
-            "session; none exists here")
+            "VIDEOTOOLBOX_NATIVE encode_not_implemented: no "
+            "VTCompressionSession encode path exists in this driver — "
+            "refusing to fabricate output")

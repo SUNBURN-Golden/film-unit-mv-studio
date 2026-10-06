@@ -11,6 +11,7 @@ imported result becomes QUALIFIED_FOR_SCOPE evidence only after the
 verifier actually passed it.
 """
 from pathlib import Path
+import shutil
 
 from ..animation_schema import write_canon
 from ..core import FilmError, digest
@@ -87,6 +88,7 @@ class QualifiedServiceDriver(EncoderDriver):
             raise FilmError("Imported service result must contain an "
                             "H.264 video stream")
         dest = work_dir / "imported_packets.mp4"
-        dest.write_bytes(source.read_bytes())
+        # Streamed copy — never hold a whole packet file in memory.
+        shutil.copyfile(source, dest)
         return {"path": dest, "timed": True, "container": "mp4",
                 "packets": "h264", "import_sha256": digest(source)}

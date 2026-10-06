@@ -14,6 +14,7 @@ never evidence.
 from pathlib import Path
 import shutil
 import subprocess
+import threading
 
 from ..core import FilmError
 from . import EncoderDriver, FrameSource
@@ -51,11 +52,23 @@ class GStreamerDriver(EncoderDriver):
         return None
 
     def codec_contract(self, fmt):
-        # gst x264enc `pass=quant` + `quantizer`; openh264enc
-        # `rate-control=quality`. The recipe value is this driver's own
-        # parameter — it never pretends to be the same as ffmpeg CRF.
-        return "gst:rawvideoparse+videoconvert+x264enc", {
-            "mode": "quantizer", "value": int(fmt["crf"])}
+        # The recipe records the encoder element actually chosen on this
+        # host and its real rate control: gst x264enc `pass=quant` +
+        # `quantizer`; openh264enc `rate-control=quality` + bitrate. The
+        # recipe value is this driver's own parameter — it never pretends
+        # to be the same as ffmpeg CRF.
+        encoder = self._h264_encoder(_gst_environment())
+        engine = "gst:rawvideoparse+videoconvert+" \
+            + (encoder or "unresolved-no-h264-element")
+        if encoder == "openh264enc":
+            return engine, {"mode": "rate-control=quality",
+                            "bitrate": 4000000}
+        if encoder == "x264enc":
+            return engine, {"mode": "pass=quant",
+                            "quantizer": int(fmt["crf"]),
+                            "speed-preset": "veryfast"}
+        return engine, {"mode": "unavailable — no H.264 encoder "
+                                "element on this host"}
 
     def probe(self, scope=None):
         env = _gst_environment()
@@ -90,19 +103,27 @@ class GStreamerDriver(EncoderDriver):
         work_dir = Path(work_dir)
         out = work_dir / "video_packets.mp4"
         env = _gst_environment()
-        encoder = self._h264_encoder(env)
-        if env["binary"] is None or encoder is None:
+        # The encoder named by the recipe's codec_contract is the one used;
+        # the element must also exist on this host.
+        encoder = recipe["codec_engine"].rsplit("+", 1)[-1]
+        if env["binary"] is None or encoder not in ("x264enc",
+                                                  "openh264enc") \
+                or not env["elements"].get(encoder):
             raise FilmError(
                 "GSTREAMER is UNAVAILABLE on this host "
-                "(gst-launch-1.0 or an H.264 encoder element is missing)")
+                "(gst-launch-1.0 or the recipe's H.264 encoder element "
+                "is missing)")
         fps = frames.fps
+        rate_control = recipe["rate_control"]
         if encoder == "x264enc":
+            quantizer = rate_control.get("quantizer",
+                                         rate_control.get("value"))
             encoder_part = ["x264enc", "pass=quant",
-                            f"quantizer={recipe['rate_control']['value']}",
+                            f"quantizer={quantizer}",
                             "speed-preset=veryfast"]
         else:
             encoder_part = ["openh264enc", "rate-control=quality",
-                            "bitrate=4000000"]
+                            f"bitrate={rate_control.get('bitrate', 4000000)}"]
         pipeline = [
             "gst-launch-1.0", "-q",
             "fdsrc", "fd=0", "!",
@@ -116,20 +137,48 @@ class GStreamerDriver(EncoderDriver):
             "mp4mux", "streamable=true", "faststart=false", "!",
             "filesink", f"location={out}",
         ]
+        # Frames are streamed into stdin one at a time while a drain
+        # thread keeps stderr moving; stdout is unused, so it is not
+        # piped at all. Neither pipe can deadlock.
         proc = subprocess.Popen(
             [str(a) for a in pipeline], stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        tail = bytearray()
+
+        def _drain():
+            while True:
+                chunk = proc.stderr.read(1 << 16)
+                if not chunk:
+                    return
+                tail.extend(chunk)
+                del tail[:-65536]
+
+        reader = threading.Thread(target=_drain, daemon=True)
+        reader.start()
         try:
-            for index in range(frames.count):
-                proc.stdin.write(frames.rgb_bytes(index))
-            proc.stdin.close()
-            stderr = proc.stderr.read()
-            code = proc.wait(timeout=600)
+            try:
+                for index in range(frames.count):
+                    proc.stdin.write(frames.rgb_bytes(index))
+            except (BrokenPipeError, OSError):
+                pass  # the pipeline's stderr carries its own error
+            finally:
+                try:
+                    proc.stdin.close()
+                except OSError:
+                    pass
+            try:
+                code = proc.wait(timeout=600)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+                raise FilmError("gst-launch-1.0 timed out")
         finally:
             if proc.poll() is None:
                 proc.kill()
+                proc.wait()
+            reader.join(timeout=30)
         if code != 0 or not out.exists():
             raise FilmError("gst-launch-1.0 failed: "
-                            + stderr.decode(errors="replace")[-2000:])
+                            + tail.decode(errors="replace")[-2000:])
         return {"path": out, "timed": True,
                 "container": "mp4", "packets": "h264"}
