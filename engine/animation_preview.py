@@ -23,7 +23,6 @@ application and seal semantics arrive with their own nodes (ANIM-006 onward).
 """
 from pathlib import Path
 import copy
-from fractions import Fraction
 
 from PIL import Image, ImageDraw
 
@@ -33,6 +32,7 @@ from .animation_schema import (canon_bytes, load_animation_timeline,
                                validate_animation_timeline)
 from .frame_clock import frame_filename
 from .frame_sequence import member_map_for_entry
+from .transitions import composite_pair, frame_contributors
 from .builds import allocate_build, capture, seal_build
 from .compiler import media_check
 from .core import (FilmError, digest, ffmpeg, now, project_mutex, read,
@@ -115,25 +115,9 @@ def _member_image(resolved_entry, local_index):
         return None, f"member failed to decode ({path.name}): {e}"
 
 
-def _contributors(frame_index, layout):
-    """([(row, weight)], transition) covering one output frame; max two rows."""
-    for transition in layout["transitions"]:
-        start, end = transition["output_range"]
-        if start <= frame_index < end:
-            overlap = transition["overlap_frames"]
-            incoming = Fraction(frame_index - start + 1, overlap + 1)
-            by_id = {r["instance_id"]: r for r in layout["entries"]}
-            return ([(by_id[transition["from_instance"]], 1 - incoming),
-                     (by_id[transition["to_instance"]], incoming)],
-                    transition)
-    row = next(r for r in layout["entries"]
-               if r["output_range"][0] <= frame_index < r["output_range"][1])
-    return [(row, Fraction(1))], None
-
-
 def _compose(frame_index, layout, resolved, width, height):
     """One output frame plus its draft frame-map source rows and warnings."""
-    pairs, transition = _contributors(frame_index, layout)
+    pairs, transition = frame_contributors(layout, frame_index)
     layer, sources, warnings = None, [], []
     for row, weight in pairs:
         entry = resolved[row["instance_id"]]
@@ -149,7 +133,7 @@ def _compose(frame_index, layout, resolved, width, height):
             image = _placeholder(width, height,
                                  f"{row['shot_id']} / NO SEQUENCE — DRAFT")
         fitted = _fit(image, width, height)
-        layer = fitted if layer is None else Image.blend(layer, fitted, float(weight))
+        layer = fitted if layer is None else composite_pair(layer, fitted, weight)
         sources.append({"instance_id": row["instance_id"], "shot_id": row["shot_id"],
                         "local_frame_index": source_index,
                         "sequence_revision": entry["pin"]["revision"] if present else None,
