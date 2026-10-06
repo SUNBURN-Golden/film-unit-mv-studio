@@ -385,3 +385,13 @@ def test_legacy_mv_project_shows_no_animation_section(box):
     assert not any(t.label == "08 · ANIMATION" for t in at.tabs)
     assert not any(b.key and b.key.startswith("an_") for b in at.button)
     assert not any("FRAME_ANIMATION_V1" in s.value for s in at.subheader)
+
+
+def test_upload_names_are_confined_to_a_basename():
+    from types import SimpleNamespace
+    from app.animation_ui import _upload_name
+    for raw, want in [("/etc/passwd", "passwd"), ("../../x.png", "x.png"),
+                      ("..\\..\\y.png", "y.png"), ("..", "upload.bin"),
+                      ("", "upload.bin"), (".hidden", "upload.bin"),
+                      ("cut.png", "cut.png")]:
+        assert _upload_name(SimpleNamespace(name=raw)) == want

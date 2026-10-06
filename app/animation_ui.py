@@ -87,6 +87,19 @@ def _pins(text):
     return pins
 
 
+def _upload_name(upload):
+    """A browser-supplied file name confined to a plain basename.
+
+    The name is untrusted: an absolute path or `..` segment would escape the
+    temp directory, so only the final component is kept (and a hidden or
+    empty name gets a fixed fallback).
+    """
+    name = Path(str(upload.name).replace("\\", "/")).name
+    if not name or name.startswith(".") or name in {"..", "."}:
+        name = "upload.bin"
+    return name
+
+
 def _sequence_import(p, shot_id, files):
     """Store uploaded PNGs as an ordered folder and import the sequence."""
     with tempfile.TemporaryDirectory() as tmp:
@@ -158,7 +171,7 @@ def _prepare(p, shot_id):
     if st.button("자산 import", key="an_asset_import", disabled=not asset_file):
         def run():
             with tempfile.TemporaryDirectory() as tmp:
-                source = Path(tmp) / asset_file[0].name
+                source = Path(tmp) / _upload_name(asset_file[0])
                 source.write_bytes(asset_file[0].getvalue())
                 if kind == "LAYER_RGBA":
                     return import_layer_rgba(
@@ -202,7 +215,7 @@ def _prepare(p, shot_id):
                  disabled=not ctrl_file):
         def run():
             with tempfile.TemporaryDirectory() as tmp:
-                source = Path(tmp) / ctrl_file[0].name
+                source = Path(tmp) / _upload_name(ctrl_file[0])
                 source.write_bytes(ctrl_file[0].getvalue())
                 return import_draft_image(
                     p, shot_id, source, role=role, frame=int(ctrl_frame),
@@ -284,7 +297,7 @@ def _motion(p, shot_id):
                  disabled=not rep_file):
         def run():
             with tempfile.TemporaryDirectory() as tmp:
-                source = Path(tmp) / rep_file[0].name
+                source = Path(tmp) / _upload_name(rep_file[0])
                 source.write_bytes(rep_file[0].getvalue())
                 return import_replacement_drawing(
                     p, source, replaces=pin, frame=int(rep_frame),
