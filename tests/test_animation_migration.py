@@ -3,12 +3,14 @@
 The synthetic fixtures only exercise the migration contract; they are not a
 real production conversion, an artistic review or a qualification result.
 """
+import hashlib
 import json
 from pathlib import Path
 
 import pytest
 
 from engine import cli
+from engine import animation_migrate
 from engine.animation_migrate import animation_init
 from engine.animation_schema import (canon_bytes, check_document, load_animation_timeline,
                                      read_canon, validate_animation_timeline, write_canon)
@@ -201,7 +203,7 @@ def test_animation_init_aborts_without_rewriting_when_inputs_are_invalid(tmp_pat
 
 def test_animation_init_aborts_on_conflicting_backup(tmp_path):
     p = fixture_project(tmp_path, seconds=2, shot_count=1)
-    backup = p / "migrations" / f"animation-init-{digest(p / 'project.yaml')[:16]}"
+    backup = animation_migrate._backup_dir(p)
     backup.mkdir(parents=True)
     atomic_text(backup / "project.yaml", "different original bytes")
     with pytest.raises(FilmError, match="backup"):
@@ -209,9 +211,23 @@ def test_animation_init_aborts_on_conflicting_backup(tmp_path):
     assert read(p / "project.yaml").get("production_profile") in (None, "LEGACY_MV")
 
 
-def test_animation_init_refuses_to_overwrite_an_existing_timeline(tmp_path):
+def test_animation_init_replaces_leftover_but_never_a_claimed_timeline(tmp_path):
     p = fixture_project(tmp_path, seconds=2, shot_count=1)
+    # A timeline on a still-LEGACY_MV project with no completed migration
+    # report is an interrupted-init leftover: it is replaced, not wedged.
     write_canon(p / "timeline/edit.json", timeline([48]))
+    report = animation_init(p)
+    assert report["timeline"]["entries"] == 1
+    assert read(p / "project.yaml")["production_profile"] == "FRAME_ANIMATION_V1"
+
+    # A timeline claimed by a completed migration report is never overwritten.
+    (tmp_path / "claimed").mkdir()
+    p = fixture_project(tmp_path / "claimed", seconds=2, shot_count=1)
+    write_canon(p / "timeline/edit.json", timeline([48]))
+    sha = hashlib.sha256((p / "timeline/edit.json").read_bytes()).hexdigest()
+    report_dir = p / "migrations" / ("animation-init-" + "0" * 16)
+    write(report_dir / "migration.json", {"operation": "animation-init",
+                                          "timeline": {"sha256": sha}})
     with pytest.raises(FilmError, match="already exists"):
         animation_init(p)
     assert read(p / "project.yaml").get("production_profile") in (None, "LEGACY_MV")
@@ -222,6 +238,62 @@ def test_animation_init_needs_a_shot_manifest(tmp_path):
     (p / "manifest/shots.json").unlink()
     with pytest.raises(FilmError, match="Missing file"):
         animation_init(p)
+
+
+def test_sub_frame_refusal_is_clean_and_retry_converts(tmp_path):
+    p = fixture_project(tmp_path, seconds=2, shot_count=2)
+    original = read(p / "manifest/shots.json")
+    shots = [dict(s) for s in original]
+    shots[0].update(out_ms=10, duration_ms=10)  # shorter than one frame at 24 fps
+    shots[1].update(in_ms=10, duration_ms=shots[1]["out_ms"] - 10)
+    write(p / "manifest/shots.json", shots)
+    before = project_files(p)
+    with pytest.raises(FilmError, match="one frame"):
+        animation_init(p)
+    # A refused conversion leaves no migrations/ or timeline/ behind.
+    assert project_files(p) == before
+    assert not (p / "migrations").exists()
+    assert not (p / "timeline").exists()
+    # After the manifest is fixed the retry converts normally.
+    write(p / "manifest/shots.json", original)
+    report = animation_init(p)
+    assert read(p / "project.yaml")["production_profile"] == "FRAME_ANIMATION_V1"
+    assert report["timeline"]["entries"] == 2
+
+
+def test_failed_write_phase_rolls_back_and_retry_converts(tmp_path, monkeypatch):
+    p = fixture_project(tmp_path, seconds=2, shot_count=1)
+    yaml_bytes = (p / "project.yaml").read_bytes()
+    before = project_files(p)
+    real_write = animation_migrate.write
+
+    def fail_on_project_yaml(path, value):
+        if Path(path).name == "project.yaml" and (p / "timeline/edit.json").exists():
+            raise FilmError("Simulated write-phase failure")
+        return real_write(path, value)
+
+    monkeypatch.setattr(animation_migrate, "write", fail_on_project_yaml)
+    with pytest.raises(FilmError, match="Simulated write-phase failure"):
+        animation_init(p)
+    # Rollback: LEGACY_MV declaration restored, new-mode files dropped.
+    assert (p / "project.yaml").read_bytes() == yaml_bytes
+    assert project_files(p) == before
+    assert not (p / "timeline").exists()
+    monkeypatch.undo()
+    # Editing a backed-up input keys the retry's backup to a fresh directory.
+    (failed_backup,) = p.glob("migrations/animation-init-*")
+    atomic_text(p / "lyrics/lyrics_source.txt", "Edited fixture lyrics.\n")
+    report = animation_init(p)
+    assert read(p / "project.yaml")["production_profile"] == "FRAME_ANIMATION_V1"
+    assert report["backup_dir"] != str(failed_backup.relative_to(p))
+
+
+def test_animation_init_refuses_a_second_conversion(tmp_path):
+    p = fixture_project(tmp_path, seconds=2, shot_count=1)
+    animation_init(p)
+    with pytest.raises(FilmError, match="LEGACY_MV"):
+        animation_init(p)
+    assert read(p / "project.yaml")["production_profile"] == "FRAME_ANIMATION_V1"
 
 
 def test_cli_animation_init(tmp_path):
@@ -283,11 +355,13 @@ def test_timeline_validator_blocks(tmp_path):
     hard = timeline([24, 24])
     hard["entries"][0]["transition_out"]["overlap_frames"] = 1
     bad_cases.append((hard, "HARD_CUT"))
-    soft = timeline([24, 24])
-    soft["entries"][0]["transition_out"].update(type="CROSSFADE", overlap_frames=2)
-    bad_cases.append((soft, "CROSSFADE"))  # missing curve
-    soft["entries"][0]["transition_out"]["curve"] = "EASE_IN"
-    bad_cases.append((soft, "CROSSFADE"))  # wrong curve
+    soft_missing = timeline([24, 24])
+    soft_missing["entries"][0]["transition_out"].update(type="CROSSFADE", overlap_frames=2)
+    bad_cases.append((soft_missing, "CROSSFADE"))  # missing curve
+    soft_wrong = timeline([24, 24])
+    soft_wrong["entries"][0]["transition_out"].update(type="CROSSFADE", overlap_frames=2,
+                                                     curve="EASE_IN")
+    bad_cases.append((soft_wrong, "CROSSFADE"))  # wrong curve
     bad_cases += [
         (timeline([4, 4], [4]), "inside both"),          # O >= min(L_i, L_next)
         (timeline([10, 4, 10], [2, 3]), "Adjacent"),     # O0 + O1 > L_middle
