@@ -60,7 +60,8 @@ def test_keys_are_entered_saved_privately_and_never_shown(screen):
     next(r for r in at.radio if r.key == "pick_text").set_value("groq").run()
     field = next(t for t in at.text_input if "GROQ_API_KEY" in t.label)
     assert field.value == ""
-    field.set_value("gsk-test-token").run()
+    # Form widgets batch like a browser: the value is sent together with the submit click, in one run.
+    field.set_value("gsk-test-token")
     next(b for b in at.button if b.label == "저장").click().run()
     assert settings.get_secret("GROQ_API_KEY") == "gsk-test-token" and not at.exception
     assert any("저장했습니다" in s.value for s in at.success)
@@ -80,7 +81,7 @@ def test_connection_test_fills_the_model_list(screen, monkeypatch):
     assert any("연결되었습니다" in s.value for s in at.success)
     model = next(s for s in at.selectbox if s.label == "모델")
     assert list(model.options) == ["g-a", "g-b"]
-    model.select("g-b").run()
+    model.select("g-b")
     next(b for b in at.button if b.label == "저장").click().run()
     assert settings.get_settings("gemini_text")["model"] == "g-b"
 
