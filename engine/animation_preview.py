@@ -31,6 +31,8 @@ from .animation_assets import resolve_shot_sequence
 from .animation_schema import (canon_bytes, load_animation_timeline,
                                require_animation_profile,
                                validate_animation_timeline)
+from .frame_clock import frame_filename
+from .frame_sequence import member_map_for_entry
 from .builds import allocate_build, capture, seal_build
 from .compiler import media_check
 from .core import (FilmError, digest, ffmpeg, now, project_mutex, read,
@@ -78,6 +80,7 @@ def _frame_resolvers(document, layout, p):
                                           entry["sequence_revision"])
             resolved[row["instance_id"]] = {
                 "members": dict(found["members"]),
+                "member_map": member_map_for_entry(entry),
                 "member_sha256": {f.get("frame_index"): f["sha256"]
                                   for f in found["record"]["files"]},
                 "used_start": entry["used_source_range"][0],
@@ -135,7 +138,8 @@ def _compose(frame_index, layout, resolved, width, height):
     for row, weight in pairs:
         entry = resolved[row["instance_id"]]
         local = frame_index - row["output_range"][0]
-        source_index = entry["used_start"] + local if entry is not None else None
+        source_index = (entry["member_map"][local]["member"]
+                        if entry is not None else None)
         image, error = _member_image(entry, source_index)
         present = image is not None
         if error is not None:
@@ -248,7 +252,7 @@ def compile_draft_preview(project, quality="draft", progress=None):
                     index, layout, resolved, fmt["width"], fmt["height"])
                 for note in notes:
                     member_warnings.setdefault(note)
-                name = f"F_{index + 1:06d}.png"
+                name = frame_filename(index)
                 frame.save(frames_dir / name)
                 incomplete += any(not s["resolved"] for s in sources)
                 frame_map.append({"frame_index": index,
