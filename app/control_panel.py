@@ -85,6 +85,8 @@ with web_tab:
     render_connection(p)
     from app.archive_ui import render_archive
     render_archive(p)
+    from app.capability_ui import render_capabilities
+    render_capabilities(p)
 
 with tabs[0]:
     st.subheader("음원 분석")

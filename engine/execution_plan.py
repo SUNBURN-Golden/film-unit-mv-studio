@@ -419,11 +419,23 @@ def job_key(plan, operation):
     })).hexdigest()
 
 
-def _evidence_covers(evidence, route, worker):
-    """Route/worker scope must be explicitly QUALIFIED_FOR_SCOPE."""
+def _evidence_covers(evidence, operation):
+    """This operation's scope must be explicitly QUALIFIED_FOR_SCOPE.
+
+    Maps carrying `operations` gate per operation — an operation absent
+    from `operations` or not QUALIFIED_FOR_SCOPE fails, so qualification
+    never leaks between siblings sharing a route or worker. Legacy maps
+    without `operations` keep the route/worker lookup.
+    """
     if type(evidence) is not dict:
         return False
-    scope = evidence.get(route) or evidence.get(worker)
+    per_op = evidence.get("operations")
+    if type(per_op) is dict:
+        entry = per_op.get(operation["operation_id"])
+        return type(entry) is dict \
+            and entry.get("state") == "QUALIFIED_FOR_SCOPE"
+    scope = evidence.get(operation["route"]) \
+        or evidence.get(operation["worker"])
     return type(scope) is dict \
         and scope.get("state") == "QUALIFIED_FOR_SCOPE"
 
@@ -447,7 +459,7 @@ def assert_executable(plan, *, evidence=None, additional_charges_approved=False)
     if execution["policy"] == "AUTO_PERFORMANCE" \
             and execution["capability_evidence_required"]:
         missing = [o["operation_id"] for o in plan["operations"]
-                   if not _evidence_covers(evidence, o["route"], o["worker"])]
+                   if not _evidence_covers(evidence, o)]
         if missing:
             raise FilmError(
                 "CAPABILITY_EVIDENCE_REQUIRED: AUTO_PERFORMANCE candidates "

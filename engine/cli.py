@@ -299,6 +299,15 @@ def main(argv=None):
     sub_imp.add_argument("--result-dir", required=True)
     encoders = sub.add_parser("encoders", help="ANIM-015: probe encoder drivers and report capability evidence; absent hardware is UNAVAILABLE, never fabricated")
     encoders.add_argument("--driver", help="Probe one driver")
+    cap_status = sub.add_parser("capability-status", help="ANIM-019: every stored capability evidence entry with its current computed state and machine-readable reasons")
+    cap_status.add_argument("--state-dir", required=True, help="State dir holding capability/CE-*.json")
+    cap_status.add_argument("--observation", help="JSON file with a fresh environment/entitlement observation for staleness checks")
+    cap_status.add_argument("--now-ms", type=int, default=None)
+    cap_pre = sub.add_parser("capability-preflight", help="ANIM-019: filter a plan's route/worker/encoder candidates to currently eligible ones; AUTO_PERFORMANCE never selects without a bound measurement")
+    cap_pre.add_argument("target", help="Project dir holding execution/plan.json, or an ExecutionPlan 1 JSON file")
+    cap_pre.add_argument("--state-dir", required=True)
+    cap_pre.add_argument("--observation", help="JSON file with a fresh environment/entitlement observation")
+    cap_pre.add_argument("--now-ms", type=int, default=None)
     encode_build = sub.add_parser("encode-build", help="ANIM-015: encode+verify a sealed Build 2 build's delivery frames with a chosen driver")
     encode_build.add_argument("build_dir")
     encode_build.add_argument("--driver", required=True,
@@ -727,6 +736,30 @@ def main(argv=None):
         elif a.command == "encoders":
             from .encoder_backends import probe_all, probe_driver
             result = probe_driver(a.driver) if a.driver else probe_all()
+        elif a.command == "capability-status":
+            from .capability_registry import registry_status
+            observation = json.loads(Path(a.observation)
+                                     .read_text(encoding="utf-8")) \
+                if a.observation else None
+            result = registry_status(a.state_dir,
+                                     observation=observation,
+                                     now_ms=a.now_ms)
+        elif a.command == "capability-preflight":
+            from .animation_schema import read_canon as _read_plan
+            from .capability_registry import plan_preflight
+            from .execution_plan import validate_execution_plan
+            target = Path(a.target)
+            plan_path = target / "execution" / "plan.json" \
+                if target.is_dir() else target
+            if not plan_path.is_file():
+                raise FilmError(f"no ExecutionPlan 1 at {plan_path}")
+            plan = validate_execution_plan(_read_plan(plan_path))
+            observation = json.loads(Path(a.observation)
+                                     .read_text(encoding="utf-8")) \
+                if a.observation else None
+            result = plan_preflight(plan, state_dir=a.state_dir,
+                                    observation=observation,
+                                    now_ms=a.now_ms)
         elif a.command == "encode-build":
             from .animation_compiler import encode_build_delivery
             result = encode_build_delivery(a.build_dir, a.driver, a.output,
