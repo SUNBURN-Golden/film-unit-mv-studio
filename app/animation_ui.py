@@ -1,0 +1,644 @@
+"""FRAME_ANIMATION_V1 one-cut flow (ANIM-011; design 14절).
+
+The "08 · ANIMATION" tab of the existing control panel — rendered only for
+projects whose production_profile is FRAME_ANIMATION_V1; LEGACY_MV projects
+render exactly as before and nothing here converts a project. Each button
+calls the ANIM-003..010 engine functions directly; the panel re-implements
+no validation. Imported art stays DRAFT and every lock/review/decision is a
+protocol record bound to exact digests — qualification UNQUALIFIED,
+acceptance PENDING, release NOT_AUTHORIZED; the panel never implies
+production release. The path-B (ANIM-010) connection point exists but stays
+disabled until ANIM-012 wires it to the adapter.
+"""
+from pathlib import Path
+import json
+import sys
+import tempfile
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import streamlit as st
+
+from engine.animation_assets import (commit_draft_frames, import_draft_image,
+                                     import_frame_sequence, import_layer_rgba,
+                                     import_mask, import_replacement_drawing,
+                                     import_rig_spec, load_registry)
+from engine.animation_compiler import compile_final_candidate
+from engine.animation_locks import (WAVES_PATH, declare_waves, load_waves,
+                                    lock_status, record_final_lock,
+                                    record_plan_lock, record_route_decision,
+                                    record_wave_lock, route_status)
+from engine.animation_preview import compile_draft_preview
+from engine.animation_review import (film_review_status, record_cut_review,
+                                     record_film_review,
+                                     record_transition_review, review_status)
+from engine.animation_schema import load_animation_timeline
+from engine.builds import list_builds
+from engine.compositor import composite_shot
+from engine.core import FilmError, project_mutex, safe_path
+from engine.frame_sequence import animation_validate
+from engine.motion_plan import load_shot_plan, plan_path, save_shot_plan
+from engine.packets import export_work_packets
+
+CONTROL_ROLES = ["layout", "keypose", "breakdown", "pose", "first_frame",
+                 "inbetween"]
+STATE_KO = {"CURRENT": "현재", "STALE": "낡음", "UNREVIEWED": "미검수",
+            "UNRESOLVED": "미해결", "CHANGES_REQUIRED": "수정 필요",
+            "UNLOCKED": "미잠금"}
+
+
+def _jsonable(value):
+    return json.loads(json.dumps(value, default=str, ensure_ascii=False))
+
+
+def _guarded(fn):
+    """Run one engine call; a refusal becomes a message, not a traceback."""
+    try:
+        return fn()
+    except FilmError as exc:
+        st.error(str(exc))
+    except Exception as exc:
+        st.error(f"처리하지 못했습니다: {exc}")
+    return None
+
+
+def _do(fn, message):
+    """Run a mutating engine action; on success flash it and redraw."""
+    result = _guarded(fn)
+    if result is not None:
+        st.session_state["an_flash"] = message
+        st.session_state["an_detail"] = result
+        st.rerun()
+    return result
+
+
+def _csv(text):
+    return [s.strip() for s in text.split(",") if s.strip()]
+
+
+def _pins(text):
+    """Parse `asset_id:revision:sha256` pins separated by commas."""
+    pins = []
+    for raw in _csv(text):
+        parts = raw.split(":")
+        if len(parts) != 3:
+            raise FilmError("참조 핀은 asset_id:revision:sha256 형식입니다")
+        pins.append({"asset_id": parts[0], "revision": int(parts[1]),
+                     "content_sha256": parts[2]})
+    return pins
+
+
+def _sequence_import(p, shot_id, files):
+    """Store uploaded PNGs as an ordered folder and import the sequence."""
+    with tempfile.TemporaryDirectory() as tmp:
+        folder = Path(tmp)
+        for index, uploaded in enumerate(files):
+            (folder / f"f{index:04d}.png").write_bytes(uploaded.getvalue())
+        return import_frame_sequence(p, shot_id, folder=folder)
+
+
+def _registry(p):
+    try:
+        return load_registry(p)
+    except FilmError as exc:
+        st.error(str(exc))
+        return {"assets": {}, "assignments": {}}
+
+
+def _layer_pins(registry):
+    """Current LAYER_RGBA revision pins, keyed by a display label."""
+    out = {}
+    for asset_id, entry in sorted(registry.get("assets", {}).items()):
+        record = entry["revisions"][str(entry["current_revision"])]
+        if record["kind"] == "LAYER_RGBA":
+            pin = {"asset_id": asset_id,
+                   "revision": entry["current_revision"],
+                   "content_sha256": record["content_sha256"]}
+            out[f"{asset_id} r{entry['current_revision']}"] = \
+                (pin, record.get("pivot", [0, 0]))
+    return out
+
+
+def _stale_lock_rows(locks):
+    rows = [("PLAN_LOCK", locks["plan"])]
+    rows += [(f"WAVE_LOCK {w}", s) for w, s in locks["waves"].items()]
+    rows.append(("FINAL_LOCK", locks["final"]))
+    return [f"{name} · {s['state']}"
+            + (f" (바뀐 범위: {', '.join(s['changed'])})" if s["changed"] else "")
+            for name, s in rows if s["state"] == "STALE"]
+
+
+# ---------------------------------------------------------------------------
+# Flow steps
+
+
+def _prepare(p, shot_id):
+    st.caption("자산·샷 계획·작업 패킷을 준비하고 총 프레임 수를 검산합니다.")
+    st.markdown("**자산 가져오기 (레이어·마스크·리그)**")
+    kind = st.selectbox("자산 종류", ["LAYER_RGBA", "MASK", "RIG_SPEC"],
+                        key="an_asset_kind")
+    asset_file = st.file_uploader("자산 파일 (PNG / RIG_SPEC은 JSON)",
+                                  type=["png", "json"],
+                                  accept_multiple_files=True,
+                                  key="an_asset_file")
+    if kind == "LAYER_RGBA":
+        c1, c2, c3 = st.columns(3)
+        pivot = [c1.number_input("pivot x", value=0, key="an_asset_px"),
+                 c2.number_input("pivot y", value=0, key="an_asset_py")]
+        crop = [c3.number_input("crop x", value=0, key="an_asset_cx"),
+                st.number_input("crop y", value=0, key="an_asset_cy")]
+        z_order = st.number_input("z-order", value=0, key="an_asset_z")
+    elif kind == "MASK":
+        layers = _layer_pins(_registry(p))
+        mask_target = st.selectbox("마스크 대상 레이어", list(layers),
+                                   key="an_mask_target")
+        channel = st.radio("채널", ["LUMINANCE", "ALPHA"], horizontal=True,
+                           key="an_mask_channel")
+        region_text = st.text_input("영역 x,y,w,h (비우면 전체)",
+                                    key="an_mask_region")
+    if st.button("자산 import", key="an_asset_import", disabled=not asset_file):
+        def run():
+            with tempfile.TemporaryDirectory() as tmp:
+                source = Path(tmp) / asset_file[0].name
+                source.write_bytes(asset_file[0].getvalue())
+                if kind == "LAYER_RGBA":
+                    return import_layer_rgba(
+                        p, source, pivot=[int(v) for v in pivot],
+                        crop_origin=[int(v) for v in crop],
+                        z_order=int(z_order))
+                if kind == "MASK":
+                    if not mask_target:
+                        raise FilmError("먼저 LAYER_RGBA 자산을 가져오세요.")
+                    region = ([int(v) for v in _csv(region_text)]
+                              if region_text.strip() else None)
+                    return import_mask(p, source,
+                                       target=layers[mask_target][0],
+                                       region=region, channel=channel)
+                return import_rig_spec(
+                    p, json.loads(source.read_text(encoding="utf-8")))
+        _do(run, f"{kind} 자산을 DRAFT로 가져왔습니다")
+    st.divider()
+    plan_up = st.file_uploader("샷 계획 JSON (animation_shot_plan)",
+                               type=["json"], accept_multiple_files=True,
+                               key="an_plan_file")
+    if st.button("샷 계획 저장", key="an_plan_save", disabled=not plan_up):
+        def run():
+            document = json.loads(plan_up[0].getvalue().decode("utf-8"))
+            return save_shot_plan(p, document)
+        _do(run, f"{shot_id} 계획을 저장했습니다")
+    if st.button("A 경로 작업 패킷 만들기", key="an_packet"):
+        _do(lambda: export_work_packets(p, shots=[shot_id]),
+            f"{shot_id} 작업 패킷을 썼습니다 (수동 hand-off용)")
+    st.markdown("**제어·제작 이미지 가져오기**")
+    ctrl_file = st.file_uploader("이미지 (PNG)", type=["png"],
+                                 accept_multiple_files=True,
+                                 key="an_ctrl_file")
+    role = st.selectbox("역할", CONTROL_ROLES, key="an_ctrl_role",
+                        help="layout은 조건 입력만; 나머지는 패킷 요청과 맞아야 합니다")
+    ctrl_frame = st.number_input("컷 기준 프레임", min_value=0, value=0,
+                                 key="an_ctrl_frame")
+    ctrl_refs = st.text_input("참조 핀 (asset_id:revision:sha256 — 쉼표 구분)",
+                              key="an_ctrl_refs")
+    if st.button("제어 이미지 import", key="an_ctrl_import",
+                 disabled=not ctrl_file):
+        def run():
+            with tempfile.TemporaryDirectory() as tmp:
+                source = Path(tmp) / ctrl_file[0].name
+                source.write_bytes(ctrl_file[0].getvalue())
+                return import_draft_image(
+                    p, shot_id, source, role=role, frame=int(ctrl_frame),
+                    references=_pins(ctrl_refs))
+        _do(run, f"{shot_id} 프레임 {int(ctrl_frame)} · {role} — DRAFT로 기록했습니다")
+    st.divider()
+    if st.button("계획 검사 · 총 프레임 검산", key="an_validate"):
+        result = _guarded(lambda: animation_validate(p))
+        if result is not None:
+            tl = result["timeline"]
+            cols = st.columns(4)
+            cols[0].metric("출력 프레임", tl["output_frames"])
+            cols[1].metric("목표 프레임", result["target_frames"])
+            cols[2].metric("겹침", tl["overlap_frames"])
+            cols[3].metric("전환", len(tl["transitions"]))
+            coverage = tl["coverage"]
+            if coverage["uncovered_frames"]:
+                st.error("커버되지 않는 출력 프레임: "
+                         f"{coverage['uncovered_frames']}개")
+            if coverage["frames_with_three_or_more"]:
+                st.error("세 컷 이상이 겹치는 프레임이 있습니다: "
+                         f"{coverage['frames_with_three_or_more']}개")
+            if result["unresolved"]:
+                reasons = "; ".join(
+                    f"{e['instance_id']}({e['shot_id']}): {e['reason']}"
+                    for e in result["entries"] if not e["resolved"])
+                st.error("시퀀스가 해결되지 않는 컷이 있습니다: " + reasons)
+            elif result["ok"]:
+                st.success("모든 컷의 시퀀스가 해결되고 총 프레임이 일치합니다.")
+            with st.expander("검사 상세 (해시 포함)"):
+                st.json(_jsonable(result))
+
+
+def _motion(p, shot_id):
+    st.caption("저장된 계획의 경로·keypose·노출 요약을 보고 교체 그림을 넣습니다.")
+    if safe_path(p, plan_path(shot_id)).is_file():
+        plan = _guarded(lambda: load_shot_plan(p, shot_id))
+        if plan:
+            st.dataframe(
+                [{"구간": f"[{s['start']}, {s['end']})", "경로": s["path"],
+                  "능력": ", ".join(s["capabilities"])}
+                 for s in plan["segments"]], hide_index=True)
+            if plan["keyposes"]:
+                st.dataframe(
+                    [{"프레임": k["frame"], "종류": k["kind"]}
+                     for k in plan["keyposes"]], hide_index=True)
+            camera = plan["tracks"]["camera"]
+            st.caption("카메라: " + ("움직임 있음" if camera["transform"]
+                                     else "고정"))
+            layers = plan["tracks"]["layers"]
+            if layers:
+                st.dataframe(
+                    [{"레이어": lid, "그림 수": len(track["drawings"]),
+                      "노출 스케줄": len(track["exposure"]),
+                      "움직임": "있음" if track["transform"] else "정지",
+                      "마스크": "있음" if track["mask"] else "없음"}
+                     for lid, track in layers.items()], hide_index=True)
+    else:
+        st.caption(f"{shot_id}에 저장된 샷 계획이 없습니다.")
+    st.markdown("**교체 그림 (REPLACEMENT_DRAWING)**")
+    layers = _layer_pins(_registry(p))
+    if not layers:
+        st.caption("교체 대상 LAYER_RGBA가 없습니다. 01 · 준비에서 레이어를 "
+                   "먼저 가져오세요.")
+        return
+    target = st.selectbox("대상 레이어", list(layers), key="an_repl_target")
+    pin, pivot = layers[target]
+    rep_frame = st.number_input("처음 나타나는 컷 프레임", min_value=0,
+                                value=0, key=f"an_repl_frame_{target}")
+    c1, c2 = st.columns(2)
+    rep_pivot = [c1.number_input("pivot x", value=pivot[0],
+                                 key=f"an_repl_px_{target}"),
+                 c2.number_input("pivot y", value=pivot[1],
+                                 key=f"an_repl_py_{target}")]
+    rep_file = st.file_uploader("교체 그림 (RGBA PNG)", type=["png"],
+                                accept_multiple_files=True,
+                                key=f"an_repl_file_{target}")
+    if st.button("교체 그림 import", key=f"an_repl_import_{target}",
+                 disabled=not rep_file):
+        def run():
+            with tempfile.TemporaryDirectory() as tmp:
+                source = Path(tmp) / rep_file[0].name
+                source.write_bytes(rep_file[0].getvalue())
+                return import_replacement_drawing(
+                    p, source, replaces=pin, frame=int(rep_frame),
+                    pivot=[int(v) for v in rep_pivot])
+        _do(run, f"{target}의 교체 그림을 DRAFT로 가져왔습니다")
+
+
+def _import(p, shot_id):
+    st.caption("외부에서 만든 프레임을 시퀀스로 가져오거나, 패킷으로 확인한 "
+               "draft 프레임을 시퀀스로 조립합니다. 둘 다 DRAFT입니다.")
+    seq = st.file_uploader("프레임 PNG 묶음 (업로드 순서=프레임 순서)",
+                           type=["png"], accept_multiple_files=True,
+                           key="an_seq_files")
+    if st.button("시퀀스 import", key="an_seq_import", disabled=not seq):
+        _do(lambda: _sequence_import(p, shot_id, seq),
+            f"{shot_id} 시퀀스 {len(seq)}프레임을 DRAFT로 가져왔습니다")
+    if st.button("draft 프레임 조립 (commit-draft-frames)",
+                 key="an_draft_commit"):
+        _do(lambda: commit_draft_frames(p, shot_id),
+            f"{shot_id}의 draft 프레임을 시퀀스로 조립했습니다")
+
+
+def _review(p, shot_id, entry, entries, reviews):
+    st.caption("컷/전체 Preview를 재생하고 현재 버전의 검수를 기록합니다.")
+    c1, c2 = st.columns(2)
+    if c1.button("이 컷 합성 Preview (C 계획)", key="an_shot_preview"):
+        if not safe_path(p, plan_path(shot_id)).is_file():
+            st.error(f"{shot_id}에 저장된 샷 계획이 없습니다 — "
+                     "compile-shot은 C 계획 컷 전용입니다. A 경로/가져온 "
+                     "시퀀스는 곡 전체 Draft Preview로 확인하세요.")
+        else:
+            result = _guarded(lambda: composite_shot(p, shot_id))
+            if result is not None:
+                st.success(f"{shot_id} 합성 시퀀스를 만들었습니다 "
+                           f"(DRAFT)")
+                with st.expander("합성 결과 상세"):
+                    st.json(_jsonable(result))
+    if c2.button("곡 전체 Draft Preview", key="an_preview"):
+        with st.spinner("Draft Preview를 컴파일하고 있습니다…"):
+            result = _guarded(lambda: compile_draft_preview(p))
+        if result is not None:
+            st.success(f"{result['build_id']} · DRAFT_PREVIEW "
+                       f"({result['frames']['resolved_frames']}/"
+                       f"{result['frames']['total']} 프레임 해결)")
+            for warning in result["warnings"]:
+                st.warning(warning)
+            st.video(result["output"])
+    st.markdown("**현재 검수 상태**")
+    st.dataframe(
+        [{"대상": t, "범위": row["scope"],
+          "상태": STATE_KO.get(row["state"], row["state"]),
+          "리뷰": row.get("review_id") or "—"}
+         for t, row in reviews["targets"].items()],
+        hide_index=True)
+    reviewer = st.text_input("검토자", key="an_reviewer")
+    current = reviews["targets"].get(entry["instance_id"], {})
+    st.caption(f"{entry['instance_id']} ({shot_id}) 현재 검수: "
+               f"{STATE_KO.get(current.get('state'), '미검수')}")
+    c1, c2 = st.columns(2)
+
+    def cut_review(decision):
+        with project_mutex(p):
+            return record_cut_review(
+                p, entry["instance_id"], reviewer=reviewer,
+                methods=["CUT_FULL_SPEED_PLAYBACK"], decision=decision)
+    if c1.button("이 컷 승인 (현재 버전 검토 완료)", key="an_cut_ok"):
+        _do(lambda: cut_review("APPROVED"),
+            f"{entry['instance_id']} 승인을 기록했습니다 (protocol 검수)")
+    if c2.button("이 컷 수정 필요 기록", key="an_cut_fix"):
+        _do(lambda: cut_review("FIX_REQUIRED"),
+            f"{entry['instance_id']} 수정 필요를 기록했습니다")
+    transitions = [e["transition_out"]["id"] for e in entries
+                   if e.get("transition_out")]
+    if transitions:
+        pick = st.selectbox("전환", transitions, key="an_tr_pick",
+                            format_func=lambda t: f"{t} · {STATE_KO.get(reviews['targets'].get(t, {}).get('state'), '미검수')}")
+        if st.button("이 전환 승인", key="an_tr_ok"):
+            def run():
+                with project_mutex(p):
+                    return record_transition_review(
+                        p, pick, reviewer=reviewer,
+                        methods=["TRANSITION_FULL_SPEED_PLAYBACK"])
+            _do(run, f"{pick} 전환 승인을 기록했습니다")
+
+
+def _fix(p, shot_id, locks, reviews):
+    st.caption("한 컷의 프레임·그림을 교체하면 그 컷에 묶인 검수·LOCK이 "
+               "낡아집니다. 영향 범위를 먼저 확인하세요.")
+    stale = [f"{t} · {STATE_KO.get(r['state'], r['state'])}"
+             for t, r in reviews["targets"].items()
+             if r["state"] in ("STALE", "CHANGES_REQUIRED")]
+    missing = [t for t, r in reviews["targets"].items()
+               if r["state"] in ("UNREVIEWED", "UNRESOLVED")]
+    stale_locks = _stale_lock_rows(locks)
+    if stale or stale_locks:
+        st.warning("재검수 필요: " + ("; ".join(stale + stale_locks)))
+    elif missing:
+        st.info("아직 검수되지 않은 대상: " + "; ".join(missing))
+    else:
+        st.success("모든 검수와 LOCK이 현재 버전을 가리킵니다.")
+    seq = st.file_uploader("교체 프레임 PNG 묶음", type=["png"],
+                           accept_multiple_files=True, key="an_fix_files")
+    if st.button("이 컷 교체 (새 리비전 import)", key="an_fix_import",
+                 disabled=not seq):
+        _do(lambda: _sequence_import(p, shot_id, seq),
+            f"{shot_id}를 새 리비전으로 교체했습니다 — 묶여 있던 검수는 "
+            "재검수가 필요합니다")
+
+
+def _waves(p, entries):
+    waves_doc = _guarded(lambda: load_waves(p))
+    if waves_doc is not None:
+        st.dataframe(
+            [{"wave": w["wave"], "샷": ", ".join(w["shots"]),
+              "어려운 유형": ", ".join(d["type"] for d in w["difficulty"])
+              or "—", "메모": w.get("note", "")}
+             for w in waves_doc["waves"]], hide_index=True)
+        return waves_doc
+    if safe_path(p, WAVES_PATH).exists():
+        return None  # unreadable file: the error was already shown
+    st.markdown("**제작 순서 (wave) 선언**")
+    st.caption("W00은 실제 본편 컷 중 가장 어려운 것을 먼저 만드는 초기 "
+               "wave입니다. 나머지 샷은 W01로 둡니다.")
+    shots = [e["shot_id"] for e in entries]
+    w00 = st.multiselect("W00 샷", shots, default=shots[:1],
+                         key="an_w00_shots")
+    types = st.text_input("W00이 검증할 어려운 유형 (쉼표 구분)",
+                          key="an_w00_types")
+    reason = st.text_input("유형을 고른 근거", key="an_w00_reason")
+    if st.button("제작 순서 선언", key="an_waves_declare"):
+        def run():
+            if not w00:
+                raise FilmError("W00에 넣을 샷을 고르세요")
+            difficulty = [{"type": t, "reason": reason.strip()}
+                          for t in _csv(types)]
+            rest = [s for s in shots if s not in w00]
+            waves = [{"wave": "W00", "shots": list(w00),
+                      "difficulty": difficulty, "note": "control panel 선언"}]
+            if rest:
+                waves.append({"wave": "W01", "shots": rest,
+                              "difficulty": [], "note": "나머지 범위"})
+            return declare_waves(p, waves)
+        _do(run, "제작 순서를 선언했습니다")
+    return None
+
+
+def _locks(p, waves_doc):
+    st.markdown("**범위 LOCK**")
+    st.caption("LOCK·비용 승인·최종 승인은 각각 별도 버튼과 별도 사람의 "
+               "기록입니다. 이 화면의 A 경로 수작업에는 유료 생성이 없어 "
+               "비용 승인 단계가 없습니다 (B 경로 견적 승인은 어댑터 연결 "
+               "후에 활성화됩니다).")
+    approver = st.text_input("범위 승인자", key="an_lock_approver")
+    c1, c2, c3 = st.columns(3)
+    if c1.button("PLAN_LOCK", key="an_lock_plan"):
+        _do(lambda: record_plan_lock(p, approver),
+            "PLAN_LOCK을 기록했습니다")
+    wave_ids = [w["wave"] for w in waves_doc["waves"]] if waves_doc else []
+    wave_pick = c2.selectbox("wave", wave_ids, key="an_lock_wave_pick")
+    if c2.button("WAVE_LOCK", key="an_lock_wave", disabled=not wave_ids):
+        _do(lambda: record_wave_lock(p, wave_pick, approver),
+            f"{wave_pick} WAVE_LOCK을 기록했습니다")
+    if c3.button("FINAL_LOCK", key="an_lock_final"):
+        _do(lambda: record_final_lock(p, approver),
+            "FINAL_LOCK을 기록했습니다")
+
+
+def _route(p, waves_doc, route):
+    st.markdown("**초기 wave 경로 결정**")
+    if route["checkpoint"] == "DECIDED":
+        decision = route["decision"]
+        st.success(f"{decision['decision_id']} · {decision['wave']} · "
+                   f"{decision['decision']} · 적용 범위: "
+                   f"{decision['apply_scope']['waves']}")
+        return
+    if waves_doc is None:
+        st.caption("먼저 제작 순서를 선언하세요.")
+        return
+    initial = waves_doc["waves"][0]
+    declared = [d["type"] for d in initial["difficulty"]]
+    later = [w["wave"] for w in waves_doc["waves"][1:]]
+    decision = st.radio("결정", ["keep", "change", "mix"], horizontal=True,
+                        key="an_rd_decision")
+    c1, c2 = st.columns(2)
+    decider = c1.text_input("결정자", key="an_rd_decider")
+    approver = c2.text_input("결정 승인자", key="an_rd_approver")
+    checked = st.multiselect("검증한 유형", declared, default=declared,
+                             key="an_rd_checked")
+    scope = st.multiselect("적용 범위로 여는 이후 wave", later, default=later,
+                           key="an_rd_scope")
+    conditions = st.text_input("검토한 조건 (쉼표 구분)", key="an_rd_conditions")
+    observations = st.text_input("관측 근거 (쉼표 구분)", key="an_rd_observations")
+    changes = st.text_input("변경 항목 — CHANGE/MIX (쉼표 구분)",
+                            key="an_rd_changes")
+    cost = st.text_input("비용·시간 영향", key="an_rd_cost")
+    early = st.checkbox("조기 결정 (모든 컷 채택 전)", key="an_rd_early")
+    grounds = st.text_input("조기 결정 근거", key="an_rd_grounds")
+    if st.button("경로 결정 기록", key="an_rd_record"):
+        def run():
+            return record_route_decision(
+                p, initial["wave"], decision=decision, decider=decider,
+                approver=approver, checked_types=list(checked),
+                unchecked_types=[t for t in declared if t not in checked],
+                apply_scope=list(scope),
+                reviewed_conditions=_csv(conditions),
+                observations=_csv(observations), changes=_csv(changes),
+                cost_time_impact=cost, early=early, grounds=grounds)
+        _do(run, f"{initial['wave']} 경로 결정을 기록했습니다")
+
+
+def _approve_film(p, build, reviewer, decision):
+    """UI gate for approve-film: exact FINAL_CANDIDATE build + current
+    (non-stale) cut/transition reviews; the engine binding is recorded by
+    record_film_review itself."""
+    build_id = build["build_id"]
+    if (build.get("document_type") != "animation_build"
+            or build.get("schema_version") != 2
+            or build.get("status") != "COMPLETE"
+            or build.get("mode") != "FINAL_CANDIDATE"):
+        raise FilmError(
+            f"{build_id}는 최종 승인 대상이 아닙니다 — FINAL_CANDIDATE로 "
+            "봉인된 정확한 Build 2만 승인할 수 있습니다")
+    reviews = review_status(p, strict=False)
+    if build.get("edit_digest") != reviews["edit_digest"]:
+        raise FilmError(
+            f"{build_id}는 지금 편집과 다른 상태에서 만들어진 빌드입니다 "
+            "(stale). 새 Final 후보를 만들어 주세요.")
+    pending = [f"{t} {r['state']}" for t, r in reviews["targets"].items()
+               if r["state"] != "CURRENT"]
+    if pending:
+        raise FilmError("현재 검수가 아닌 대상이 있어 최종 승인을 기록할 수 "
+                        "없습니다: " + "; ".join(pending))
+    with project_mutex(p):
+        return record_film_review(
+            p, build_id, reviewer=reviewer,
+            methods=["FULL_SPEED_WHOLE_FILM", "TECHNICAL_VALIDATION"],
+            deliverable="MASTER_SUBBED.mp4", decision=decision)
+
+
+def _output(p, entries, locks, route, reviews):
+    waves_doc = _waves(p, entries)
+    _locks(p, waves_doc)
+    _route(p, waves_doc, route)
+    st.markdown("**Final 후보와 최종 승인**")
+    if st.button("Final 후보 만들기 (compile-final)", key="an_final_make"):
+        with st.spinner("Final 후보를 봉인하고 있습니다…"):
+            result = _guarded(lambda: compile_final_candidate(p))
+        if result is not None:
+            st.success(f"{result['build_id']} · FINAL_CANDIDATE 봉인 완료")
+            st.video(result["output"])
+    builds = list_builds(p)
+    if not builds:
+        st.caption("아직 봉인된 빌드가 없습니다.")
+        return
+    pick = st.selectbox(
+        "빌드", builds, key="an_final_build",
+        format_func=lambda b: f"{b['build_id']} · "
+        f"{b.get('mode') or b.get('document_type') or 'Build 1'} · "
+        f"{b.get('status')}")
+    film = _guarded(lambda: film_review_status(p, pick["build_id"]))
+    if film is not None:
+        st.caption(f"{pick['build_id']}의 FINAL_FILM 검수: "
+                   f"{STATE_KO.get(film['state'], film['state'])}")
+    reviewer = st.text_input("최종 검토자", key="an_film_reviewer")
+    st.caption("최종 승인은 정확한 빌드와 현재 검수에 묶이는 protocol 기록"
+               "입니다 — 실제 작품 승인·qualification·release를 대신하지 "
+               "않습니다.")
+    c1, c2 = st.columns(2)
+    if c1.button("최종 승인 기록 (approve-film)", key="an_final_ok"):
+        _do(lambda: _approve_film(p, pick, reviewer, "APPROVED"),
+            f"{pick['build_id']} 최종 승인을 기록했습니다")
+    if c2.button("최종 수정 필요 기록", key="an_final_fix"):
+        _do(lambda: _approve_film(p, pick, reviewer, "FIX_REQUIRED"),
+            f"{pick['build_id']} 수정 필요를 기록했습니다")
+
+
+def _path_b():
+    st.divider()
+    st.markdown("**경로 B · 구간 생성**")
+    st.button("경로 B 연결 대기 (ANIM-010/012)", disabled=True,
+              key="an_path_b")
+    st.caption("B 경로의 견적·예약·제출·가져오기는 ANIM-012가 segment "
+               "adapter를 이 화면에 연결할 때까지 비활성입니다. 여기서 "
+               "대신 실행하거나 흉내내지 않습니다.")
+
+
+# ---------------------------------------------------------------------------
+
+
+def render_animation(p):
+    """The FRAME_ANIMATION_V1 section; caller gates on production_profile."""
+    p = Path(p)
+    st.subheader("FRAME_ANIMATION_V1 · 프레임 애니메이션")
+    st.caption("한 컷의 준비 → 동작·노출 → import → 검토 → 수정 → 출력·승인 "
+               "흐름입니다. 가져온 그림은 모두 DRAFT이고, 이 화면의 기록은 "
+               "검수 protocol이지 실제 작품 승인이 아닙니다 "
+               "(qualification UNQUALIFIED · acceptance PENDING · "
+               "release NOT_AUTHORIZED).")
+    flash = st.session_state.pop("an_flash", None)
+    if flash:
+        st.success(flash)
+    detail = st.session_state.pop("an_detail", None)
+    if detail is not None:
+        with st.expander("기록 상세 (해시 포함)", expanded=False):
+            st.json(_jsonable(detail))
+    try:
+        timeline = load_animation_timeline(p)
+        locks = lock_status(p)
+        route = route_status(p)
+        reviews = review_status(p, strict=False)
+    except FilmError as exc:
+        st.error(str(exc))
+        return
+    entries = timeline["entries"]
+    cols = st.columns(4)
+    cols[0].metric("PLAN", locks["plan"]["state"])
+    wave_current = sum(1 for s in locks["waves"].values()
+                       if s["state"] == "CURRENT")
+    cols[1].metric("WAVE", f"{wave_current}/{len(locks['waves'])}"
+                   if locks["waves"] else "미선언")
+    cols[2].metric("경로 결정", route["checkpoint"])
+    cols[3].metric("FINAL", locks["final"]["state"])
+    current = sum(1 for r in reviews["targets"].values()
+                  if r["state"] == "CURRENT")
+    st.caption(f"검수 현재 {current}/{len(reviews['targets'])} · "
+               f"qualification UNQUALIFIED · acceptance PENDING · "
+               f"release NOT_AUTHORIZED")
+    with st.expander("상태 상세 (해시·바인딩)", expanded=False):
+        st.json(_jsonable({"locks": locks, "route": route,
+                           "reviews": reviews}))
+    by_instance = {e["instance_id"]: e for e in entries}
+    pick = st.selectbox(
+        "작업할 컷", [e["instance_id"] for e in entries], key="an_shot",
+        format_func=lambda i: f"{i} · {by_instance[i]['shot_id']} · "
+        f"{by_instance[i]['used_source_range'][1] - by_instance[i]['used_source_range'][0]}프레임")
+    entry = by_instance[pick]
+    shot_id = entry["shot_id"]
+    pin = (_registry(p).get("assignments") or {}).get(shot_id)
+    if pin:
+        st.caption(f"{shot_id} 채택 시퀀스: {pin['asset_id']} "
+                   f"r{pin['revision']} (DRAFT)")
+    else:
+        st.caption(f"{shot_id}: 아직 채택된 시퀀스가 없습니다")
+    with st.expander("01 · 준비 — 자산·계획·패킷·프레임 검산", expanded=True):
+        _prepare(p, shot_id)
+    with st.expander("02 · 동작·노출 — keypose와 교체 그림", expanded=False):
+        _motion(p, shot_id)
+    with st.expander("03 · Import — 시퀀스 / draft 프레임", expanded=True):
+        _import(p, shot_id)
+    with st.expander("04 · 검토 — Preview 재생과 현재 검수", expanded=True):
+        _review(p, shot_id, entry, entries, reviews)
+    with st.expander("05 · 수정 — 한 컷 교체와 재검수 범위", expanded=True):
+        _fix(p, shot_id, locks, reviews)
+    with st.expander("06 · 출력·승인 — LOCK·경로 결정·최종 승인",
+                     expanded=True):
+        _output(p, entries, locks, route, reviews)
+    _path_b()
