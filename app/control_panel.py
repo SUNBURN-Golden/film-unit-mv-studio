@@ -6,7 +6,8 @@ import tempfile
 import yaml
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import streamlit as st
-from engine.core import FilmError, atomic_text, init_project, lock_production, production_fingerprint, production_profile, project_mutex, read, write
+from engine.core import FilmError, atomic_text, lock_production, production_fingerprint, production_profile, project_mutex, read, write
+from engine.brief import create_project
 from engine.audio import analyze
 from engine.production import generate_storyboard, import_frame, make_package
 from engine.pipeline import compile_project, prepare
@@ -49,6 +50,7 @@ if chosen == "새 프로젝트":
         audio = st.file_uploader("Suno MP3 / WAV", type=["mp3", "wav"])
         brief = st.text_area("어떤 영상으로 만들까요?", placeholder="그림체, 인물, 이야기, 반복되는 이미지 등을 자유롭게 적어주세요.")
         lyrics = st.text_area("가사 원문", help="가사 자막의 원본입니다. 타이밍은 곡을 들으며 별도로 검토합니다.")
+        emotion = st.text_input("원하는 감정·분위기", help="미확정이면 비워두세요. 제작 준비 탭에서 다시 정리할 수 있습니다.")
         aspect = st.selectbox("화면비", ["16:9", "4:3", "9:16"], help="Gemini Veo 자동 제작은 16:9 또는 9:16만 지원합니다.")
         submit = st.form_submit_button("프로젝트 만들기", type="primary")
     if submit:
@@ -58,7 +60,7 @@ if chosen == "새 프로젝트":
             with tempfile.TemporaryDirectory() as tmp:
                 source = Path(tmp) / ("master" + Path(audio.name).suffix.lower())
                 source.write_bytes(audio.getvalue())
-                result = guarded(lambda: init_project(PROJECTS, name, source, brief, lyrics, aspect=aspect))
+                result = guarded(lambda: create_project(PROJECTS, name, source, brief, lyrics, emotion=emotion, aspect=aspect))
                 if result:
                     from desktop.runtime import configure_project_font
                     configure_project_font(result)
@@ -70,11 +72,12 @@ config = read(p / "project.yaml")
 audio_path = p / config["audio"]["path"]
 if config["audio"].get("synthetic_test_audio"):
     st.info("파이프라인 검증용 합성 음원입니다. 콘티 그림은 배치 확인용 도식입니다.")
-st.sidebar.audio(str(audio_path))
-tab_names = ["00 · AI 모델", "00 · 웹사이트 연결", "01 · PROJECT", "02 · DIRECTOR", "03 · STORYBOARD", "04 · LYRICS", "05 · TIMELINE", "06 · COMPILE / BUILDS", "07 · RENDER · 고급"]
+if audio_path.is_file():
+    st.sidebar.audio(str(audio_path))
+tab_names = ["00 · AI 모델", "00 · 웹사이트 연결", "01 · 제작 준비", "01 · PROJECT", "02 · DIRECTOR", "03 · STORYBOARD", "04 · LYRICS", "05 · TIMELINE", "06 · COMPILE / BUILDS", "07 · RENDER · 고급"]
 if production_profile(config) == "FRAME_ANIMATION_V1":
     tab_names.append("08 · ANIMATION")
-models_tab, web_tab, *tabs = st.tabs(tab_names)
+models_tab, web_tab, brief_tab, *tabs = st.tabs(tab_names)
 
 with models_tab:
     from app.models_ui import render_picker
@@ -87,6 +90,10 @@ with web_tab:
     render_archive(p)
     from app.capability_ui import render_capabilities
     render_capabilities(p)
+
+with brief_tab:
+    from app.brief_board import render_brief_board
+    render_brief_board(p)
 
 with tabs[0]:
     st.subheader("음원 분석")
