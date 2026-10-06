@@ -19,6 +19,8 @@ DOCUMENT_SCHEMAS = {
     "animation_timeline": 1,
     "animation_timeline_derived": 1,
     "animation_asset_registry": 1,
+    "animation_review": 1,
+    "animation_build": 2,
 }
 
 TIMELINE_FIELDS = {"document_type", "schema_version", "target_frames", "entries"}

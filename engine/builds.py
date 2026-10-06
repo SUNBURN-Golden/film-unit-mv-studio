@@ -91,9 +91,19 @@ def replay_build(build_dir, output_dir):
     if out.exists():
         raise FilmError("Replay output already exists; choose a new directory")
     data = read(p / "build.json")
+    if data.get("document_type") == "animation_build":
+        # Build 2 dispatches to the LOCAL_FULL animation replay; Build 1
+        # records continue on the unchanged path below.
+        out.mkdir(parents=True)
+        try:
+            from .animation_compiler import replay_local_full
+            return replay_local_full(p, out, data)
+        except Exception:
+            shutil.rmtree(out, ignore_errors=True)
+            raise
     if data.get("document_type") is not None or data.get("schema_version") != 1:
-        raise FilmError("Draft previews are not replayable; Build 2 replay "
-                        "arrives with ANIM-006")
+        raise FilmError("Draft previews are not replayable; only sealed "
+                        "Build 1/Build 2 outputs reproduce")
     out.mkdir(parents=True)
     clips = [safe_path(p, s["clip_path"]) for s in data["shots"]]
     clean = out / "MASTER_CLEAN.mp4"

@@ -161,10 +161,14 @@ def test_legacy_mutating_paths_stay_blocked_after_conversion(tmp_path):
     from engine.handoff import submit_shots, submit_world
     from engine.imagegen import import_reference
     from engine.production import generate_storyboard
+    # compile_final is not blocked either: since ANIM-006 it dispatches to the
+    # FRAME_ANIMATION_V1 Final-candidate path, which refuses this edit because
+    # nothing is imported — still a FilmError before any build is allocated.
+    with pytest.raises(FilmError, match="pinned sequence"):
+        compile_final(p)
     for call in (
         # compile_preview is not blocked: since ANIM-003 it dispatches to the
         # FRAME_ANIMATION_V1 draft Preview (test_anim_003.py covers it).
-        lambda: compile_final(p),
         lambda: split_shot(p, "S001", 1000), lambda: lock_production(p, "x"),
         lambda: import_asset(p, "S001", p / "storyboard/S001.png"),
         lambda: import_frame(p, "S001", p / "storyboard/S001.png"),
