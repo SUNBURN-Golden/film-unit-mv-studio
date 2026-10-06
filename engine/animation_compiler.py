@@ -253,6 +253,16 @@ def compile_final_candidate(project, exposure=None, progress=None):
         if abs(duration_ms / 1000 - seconds) > .1:
             raise FilmError("Master audio does not cover the animation "
                             "timeline")
+        # Scope approval (ANIM-007): once a project declares production waves
+        # or scope locks, Final production needs a current FINAL_LOCK.
+        # Projects without either file keep the ANIM-006 gates unchanged.
+        from .animation_locks import LOCKS_PATH, WAVES_PATH, lock_status
+        if safe_path(p, WAVES_PATH).is_file() or safe_path(p, LOCKS_PATH).is_file():
+            final = lock_status(p)["final"]
+            if final["state"] != "CURRENT":
+                raise FilmError(
+                    "Final candidate production is outside the locked scope: "
+                    f"FINAL_LOCK is {final['state']}")
         lyric_document, lyric_warnings = validate_lyrics(
             p, duration_ms, strict=True)
         # Every entry resolves to its pinned revision and every cut and

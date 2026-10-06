@@ -106,6 +106,31 @@ def main(argv=None):
     approve_film.add_argument("--decision", choices=["APPROVED", "FIX_REQUIRED"], default="APPROVED")
     review_list = sub.add_parser("animation-reviews", help="Show per-cut/per-transition review state (CURRENT/STALE/UNREVIEWED)")
     review_list.add_argument("project")
+    wave_plan = sub.add_parser("animation-waves", help="FRAME_ANIMATION_V1: declare the production wave order (W00 leads) or show it")
+    wave_plan.add_argument("project")
+    wave_plan.add_argument("--file", help="JSON file holding the ordered waves list")
+    locks_show = sub.add_parser("animation-locks", help="FRAME_ANIMATION_V1: show PLAN/WAVE/FINAL scope lock state")
+    locks_show.add_argument("project")
+    lock_cmd = sub.add_parser("animation-lock", help="FRAME_ANIMATION_V1: record one scope lock (PLAN_LOCK/WAVE_LOCK/FINAL_LOCK)")
+    lock_cmd.add_argument("project")
+    lock_cmd.add_argument("--scope", choices=["PLAN_LOCK", "WAVE_LOCK", "FINAL_LOCK"], required=True)
+    lock_cmd.add_argument("--wave", help="Wave id; required for WAVE_LOCK")
+    lock_cmd.add_argument("--approver", required=True)
+    route = sub.add_parser("route-decision", help="FRAME_ANIMATION_V1: record the initial wave's KEEP/CHANGE/MIX route decision")
+    route.add_argument("project")
+    route.add_argument("wave")
+    route.add_argument("--decision", choices=["keep", "change", "mix"], required=True)
+    route.add_argument("--decider", required=True)
+    route.add_argument("--approver", required=True)
+    route.add_argument("--apply-scope", default="", help="Comma-separated later wave ids this decision opens")
+    route.add_argument("--checked", default="", help="Comma-separated verified difficulty types")
+    route.add_argument("--unchecked", default="", help="Comma-separated unverified difficulty types")
+    route.add_argument("--conditions", default="", help="Comma-separated reviewed conditions")
+    route.add_argument("--observations", default="", help="Comma-separated observation grounds")
+    route.add_argument("--changes", default="", help="Comma-separated change items (CHANGE/MIX)")
+    route.add_argument("--cost-time-impact", default="")
+    route.add_argument("--grounds", default="", help="Recorded grounds; required for an early decision")
+    route.add_argument("--early", action="store_true", help="Decide before every wave cut reached adoption")
     packets = sub.add_parser("packets", help="Write per-shot prompts and import commands for making media by hand in subscription apps; no provider calls")
     packets.add_argument("project")
     packets.add_argument("--shots", help="Comma-separated shot IDs; default all shots")
@@ -240,6 +265,43 @@ def main(argv=None):
         elif a.command == "animation-reviews":
             from .animation_review import review_status
             result = review_status(a.project)
+        elif a.command == "animation-waves":
+            from .animation_locks import declare_waves, load_waves
+            if a.file:
+                data = json.loads(Path(a.file).read_text(encoding="utf-8"))
+                result = declare_waves(a.project,
+                                       data["waves"] if isinstance(data, dict) else data)
+            else:
+                result = load_waves(Path(a.project)) or {"waves": [], "note": f"no production/waves.json"}
+        elif a.command == "animation-locks":
+            from .animation_locks import lock_status
+            result = lock_status(a.project)
+        elif a.command == "animation-lock":
+            from .animation_locks import (record_final_lock, record_plan_lock,
+                                          record_wave_lock)
+            if a.scope == "PLAN_LOCK":
+                result = record_plan_lock(a.project, a.approver)
+            elif a.scope == "FINAL_LOCK":
+                result = record_final_lock(a.project, a.approver)
+            else:
+                if not a.wave:
+                    raise FilmError("--wave is required for WAVE_LOCK")
+                result = record_wave_lock(a.project, a.wave, a.approver)
+        elif a.command == "route-decision":
+            from .animation_locks import record_route_decision
+
+            def _csv(value):
+                return [s.strip() for s in value.split(",") if s.strip()]
+
+            result = record_route_decision(
+                a.project, a.wave, decision=a.decision.upper(),
+                decider=a.decider, approver=a.approver,
+                checked_types=_csv(a.checked), unchecked_types=_csv(a.unchecked),
+                apply_scope=_csv(a.apply_scope),
+                reviewed_conditions=_csv(a.conditions),
+                observations=_csv(a.observations), changes=_csv(a.changes),
+                cost_time_impact=a.cost_time_impact,
+                early=a.early, grounds=a.grounds)
         elif a.command == "builds":
             from .builds import list_builds
             result = list_builds(a.project)

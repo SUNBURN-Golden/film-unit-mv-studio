@@ -4,11 +4,17 @@ Each run performs only already-approved work with the providers chosen in the
 model picker, then stops at the next human decision: approve an image batch,
 review frames and LOCK, approve the video batch, or review the Preview. It never
 waits in a loop; run it again to continue.
+
+FRAME_ANIMATION_V1 projects take the ANIM-007 path instead: PLAN/WAVE/FINAL
+scope locks gate production, the initial wave (W00) produces only its declared
+main-film cuts, and adoption stops at NEEDS_ROUTE_DECISION until a recorded
+KEEP/CHANGE/MIX decision opens later waves.
 """
 from pathlib import Path
 import shlex
 
-from .core import FilmError, read, require_lock, write
+from .core import FilmError, production_profile, read, require_lock, write
+from .schema import ANIMATION_PROFILE
 from . import imagegen, providers
 from .gemini import DEFAULT_CONFIG
 from .imagegen import reserved_usd
@@ -48,6 +54,8 @@ def _image_kind(p, kind, adapter):
 
 def autopilot(project, image=None):
     p = Path(project)
+    if production_profile(read(p / "project.yaml")) == ANIMATION_PROFILE:
+        return animation_autopilot(p)
     target = shlex.quote(str(project))
     image_choice, video_choice = providers.chosen(p, "image"), providers.chosen(p, "video")
     lacking = [label for label, choice in (("참조 이미지 · 첫 프레임", image_choice), ("영상", video_choice)) if choice is None]
@@ -122,4 +130,143 @@ def autopilot(project, image=None):
             "needs_review": [s["shot_id"] for s in shots if s["status"] == "NEEDS_REVIEW"],
             "failed": [s["shot_id"] for s in shots if s["status"] == "FAIL"],
             "next": "Watch the Preview. Review each generated shot (control panel 07 · RENDER), then compile-final."}
+
+
+# ---------------------------------------------------------------------------
+# FRAME_ANIMATION_V1: scope-gated W00/route-decision flow (ANIM-007, design 9)
+
+
+def _gate(result):
+    from .animation_locks import EVIDENCE_FACETS, EVIDENCE_NOTE
+    result["facets"] = dict(EVIDENCE_FACETS)
+    result["note"] = EVIDENCE_NOTE
+    return result
+
+
+def _matching_candidate(p, reviews):
+    """A COMPLETE FINAL_CANDIDATE Build 2 that already binds these reviews."""
+    from .builds import list_builds
+    for record in list_builds(p):
+        if (record.get("document_type") == "animation_build"
+                and record.get("status") == "COMPLETE"
+                and record.get("mode") == "FINAL_CANDIDATE"
+                and record.get("edit_digest") == reviews["edit_digest"]
+                and record.get("reviews", {}).get("cuts") == reviews["cuts"]
+                and record.get("reviews", {}).get("transitions")
+                == reviews["transitions"]):
+            return record
+    return None
+
+
+def animation_autopilot(project, progress=None):
+    """One bounded run for a FRAME_ANIMATION_V1 project (design 9.4/9.5).
+
+    Executes only the currently-approved slice, then stops at the next human
+    gate. Locks, cut adoptions and the W00 route decision are recorded only
+    through their own explicit calls — this function never invents them. The
+    returned stage names the exact unmet gate; run it again to continue.
+    """
+    from .animation_locks import (WAVES_PATH, _initial_wave,
+                                  latest_route_decision, load_waves,
+                                  lock_status, unresolved_wave_shots)
+    from .animation_review import (film_review_status, require_current_reviews,
+                                   review_status)
+    from .animation_schema import (load_animation_timeline,
+                                   require_animation_profile)
+    target = shlex.quote(str(project))
+    p = Path(project)
+    config = require_animation_profile(p)
+    initial = _initial_wave(config)
+    timeline = load_animation_timeline(p)
+    status = lock_status(p)
+    if status["plan"]["state"] != "CURRENT":
+        return _gate({"stage": "NEEDS_PLAN_LOCK", "lock": status["plan"],
+                      "next": f"python -m engine.cli animation-lock {target} "
+                              "--scope PLAN_LOCK --approver <name>"})
+    waves = load_waves(p)
+    if waves is None:
+        return _gate({"stage": "NEEDS_PRODUCTION_INPUTS", "wave": initial,
+                      "missing": [WAVES_PATH],
+                      "next": f"declare the production order: python -m engine.cli "
+                              f"animation-waves {target} --file <waves.json>"})
+    decision = latest_route_decision(p, initial)
+    reviews = review_status(p, strict=False)
+    wave_by_shot = {s: w["wave"] for w in waves["waves"] for s in w["shots"]}
+    for wave in waves["waves"]:
+        wave_id = wave["wave"]
+        if wave_id != initial:
+            if decision is None:
+                return _gate({"stage": "NEEDS_ROUTE_DECISION", "wave": initial,
+                              "next": f"python -m engine.cli route-decision {target} {initial} "
+                                      "--decision keep|change|mix --decider <name> "
+                                      "--approver <name> --apply-scope <waves>"})
+            if wave_id not in decision["apply_scope"]["waves"]:
+                return _gate({"stage": "WAVE_SCOPE_CLOSED", "wave": wave_id,
+                              "route": decision["decision_id"],
+                              "next": f"{wave_id} is outside the apply scope recorded by "
+                                      f"{decision['decision_id']}; a later decision or "
+                                      "plan revision must open it"})
+        missing = unresolved_wave_shots(p, timeline, waves, wave_id)
+        if missing:
+            return _gate({"stage": "NEEDS_PRODUCTION_INPUTS", "wave": wave_id,
+                          "missing": missing,
+                          "next": "import the wave's adopted frame sequences "
+                                  "(animation-import), then lock the wave"})
+        lock = status["waves"].get(wave_id, {"state": "UNLOCKED"})
+        if lock["state"] != "CURRENT":
+            return _gate({"stage": "NEEDS_WAVE_LOCK", "wave": wave_id,
+                          "lock": lock,
+                          "next": f"python -m engine.cli animation-lock {target} "
+                                  f"--scope WAVE_LOCK --wave {wave_id} --approver <name>"})
+        pending = [entry["instance_id"] for entry in timeline["entries"]
+                   if wave_by_shot.get(entry["shot_id"]) == wave_id
+                   and reviews["targets"].get(entry["instance_id"], {})
+                   .get("state") != "CURRENT"]
+        if pending:
+            return _gate({"stage": "NEEDS_CUT_REVIEW", "wave": wave_id,
+                          "pending": pending,
+                          "next": "record cut reviews inside the locked scope "
+                                  "(review-cut)"})
+        if wave_id == initial and decision is None:
+            adopted = {entry["instance_id"]:
+                       reviews["targets"][entry["instance_id"]]["binding_sha256"]
+                       for entry in timeline["entries"]
+                       if wave_by_shot.get(entry["shot_id"]) == wave_id}
+            return _gate({"stage": "NEEDS_ROUTE_DECISION", "wave": wave_id,
+                          "adopted": adopted,
+                          "next": f"initial wave adopted; the production lead records "
+                                  f"the route decision: python -m engine.cli "
+                                  f"route-decision {target} {wave_id} --decision "
+                                  "keep|change|mix --decider <name> --approver <name>"})
+    pending = [target_id for target_id, row in reviews["targets"].items()
+               if row["state"] != "CURRENT"]
+    if pending:
+        return _gate({"stage": "NEEDS_CUT_REVIEW", "wave": None,
+                      "pending": pending,
+                      "next": "every cut and transition needs a current review "
+                              "before the Final scope locks"})
+    if status["final"]["state"] != "CURRENT":
+        return _gate({"stage": "NEEDS_FINAL_LOCK", "lock": status["final"],
+                      "next": f"python -m engine.cli animation-lock {target} "
+                              "--scope FINAL_LOCK --approver <name>"})
+    current = require_current_reviews(p)
+    candidate = _matching_candidate(p, current)
+    if candidate is None:
+        from .animation_compiler import compile_final_candidate
+        result = compile_final_candidate(p, progress=progress)
+        return _gate({"stage": "FINAL_CANDIDATE_READY",
+                      "build_id": result["build_id"],
+                      "build_dir": result["build_dir"],
+                      "next": "the sealed candidate still needs an explicit "
+                              "final-film review (review-film)"})
+    film = film_review_status(p, candidate["build_id"])
+    if film["state"] == "CURRENT":
+        return _gate({"stage": "FINAL_APPROVED", "build_id": candidate["build_id"],
+                      "review_id": film["review_id"],
+                      "next": "fixture reviews only — real artwork acceptance, "
+                              "qualification and release stay PENDING/UNQUALIFIED"})
+    return _gate({"stage": "NEEDS_FINAL_REVIEW",
+                  "build_id": candidate["build_id"], "film": film,
+                  "next": f"python -m engine.cli review-film {target} "
+                          f"{candidate['build_id']} --reviewer <name>"})
 
