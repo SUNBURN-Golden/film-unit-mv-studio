@@ -60,6 +60,16 @@ STAGES = {"OBJECTS_PENDING", "OBJECTS_VERIFIED", "MANIFEST_INTENT",
 MANIFEST_PREFIX = "manifest-"
 DEFAULT_PROFILE = {"min_level": "UPLOAD_HASH_MATCHED", "per_kind": {},
                    "readback_cap_bytes": DEFAULT_READBACK_CAP}
+# Execution-storage §9.1: the completion manifest stays unpublished
+# until the source, the delivery PNG sequence, the clean reproduction
+# recipe, the frame_map, the original audio, the cue/font artifacts and
+# both clean and subbed MP4s are stored and verified. This is the
+# default `required_kinds` for begin_commit; an explicit reduced set is
+# accepted only for FAKE unit-test fixtures — never for a real
+# completion seal.
+COMPLETION_REQUIRED_KINDS = (
+    "source", "delivery_png_sequence", "recipe_clean", "frame_map",
+    "audio_original", "cue_font", "mp4_clean", "mp4_subbed")
 
 
 def _sha(value, what):
@@ -283,10 +293,16 @@ class ArchiveCommitter:
 
     def begin_commit(self, build_id, artifacts, *, snapshot_digest,
                      recipe_digest, toolchain_digest,
-                     verification_profile=None, required_kinds=(),
+                     verification_profile=None, required_kinds=None,
                      coverage=None, render_contract=None,
                      encode_contract=None):
-        """Journal COMMIT_INTENT before any upload side effect."""
+        """Journal COMMIT_INTENT before any upload side effect.
+
+        `required_kinds=None` demands the full §9.1 completion inventory
+        (COMPLETION_REQUIRED_KINDS); passing a smaller set is a FAKE
+        unit-test fixture escape hatch only — the completion seal path
+        never narrows it.
+        """
         if type(build_id) is not str or not build_id:
             raise FilmError("commit needs a non-empty build_id")
         # The manifest object id embeds the build id — fail the intent
@@ -296,6 +312,8 @@ class ArchiveCommitter:
                        **(verification_profile or {}))
         _level_rank(profile["min_level"])
         normalized = self._normalize_artifacts(artifacts, profile)
+        if required_kinds is None:
+            required_kinds = COMPLETION_REQUIRED_KINDS
         missing = [k for k in required_kinds
                    if k not in {a["kind"] for a in normalized}]
         if missing:
@@ -374,7 +392,10 @@ class ArchiveCommitter:
 
         `artifacts` (same declaration as begin_commit) re-supplies the
         bytes after a restart; they are checked against the intent pins.
-        Verified objects recorded in the journal are not re-verified.
+        A journaled OBJECT_VERIFIED is reused only after the object is
+        re-checked — existence, length and hash evidence must still hold
+        on every run; a deleted or truncated object refuses, it is never
+        copied into a sealed manifest.
         """
         self._require_writable()
         commit = self.commits.get(commit_key)
@@ -391,19 +412,19 @@ class ArchiveCommitter:
             cap = profile.get("readback_cap_bytes")
             for artifact in commit["artifacts"]:
                 for pin in artifact["objects"]:
-                    obj = objects[pin["object_id"]]
-                    if pin["object_id"] in commit["verified"]:
-                        continue            # verified checkpoint reused
-                    self.tracker.put(pin["object_id"], obj["data"])
-                    level = verify_object(
-                        self.backend, pin["object_id"], pin["sha256"],
-                        pin["byte_length"], readback_cap=cap,
-                        retry=self.retry, sleep_fn=self.sleep)
+                    if pin["object_id"] not in commit["verified"]:
+                        obj = objects[pin["object_id"]]
+                        self.tracker.put(pin["object_id"], obj["data"])
+                    level = self._verify_pinned(pin, cap)
                     if _level_rank(level) < _level_rank(pin["min_level"]):
                         raise FilmError(
                             f"OBJECT_LEVEL_INSUFFICIENT: "
                             f"{pin['object_id']} reached {level} below "
                             f"{pin['min_level']}")
+                    if pin["object_id"] in commit["verified"]:
+                        # The journaled checkpoint still stands — the
+                        # live re-check above is what makes it reusable.
+                        continue
                     self._j("OBJECT_VERIFIED", {
                         "commit_key": commit_key,
                         "object_id": pin["object_id"], "level": level,
@@ -414,6 +435,46 @@ class ArchiveCommitter:
         if commit["state"] == "OBJECTS_VERIFIED":
             return self._publish(commit)
         return {"commit_key": commit_key, "state": commit["state"]}
+
+    def _verify_pinned(self, pin, cap):
+        """Live verification for one pinned object — run every time.
+
+        A provider-reported SHA-256 never clears a FULL_READBACK floor:
+        when the pin's declared minimum is readback-class the whole
+        object is re-read and hashed; OBJECT_LEVEL_INSUFFICIENT can be
+        refused only after that readback was actually attempted.
+        """
+        if _level_rank(pin["min_level"]) >= LEVELS["FULL_READBACK"]:
+            return self._full_readback(pin, cap)
+        return verify_object(
+            self.backend, pin["object_id"], pin["sha256"],
+            pin["byte_length"], readback_cap=cap,
+            retry=self.retry, sleep_fn=self.sleep)
+
+    def _full_readback(self, pin, cap):
+        """Bounded whole-object re-read — the only FULL_READBACK proof."""
+        if pin["byte_length"] > (cap or 0):
+            raise FilmError(
+                f"READBACK_CAP_EXCEEDED: object {pin['object_id']} needs "
+                f"{pin['byte_length']} readback bytes > cap {cap}")
+        info = bounded_read(
+            lambda: self.backend.object_info(pin["object_id"]),
+            self.retry, self.sleep)
+        if info.get("byte_length") != pin["byte_length"]:
+            raise FilmError(
+                f"Archive object {pin['object_id']} stored length "
+                f"{info.get('byte_length')} != manifest "
+                f"{pin['byte_length']}")
+        result = bounded_read(
+            lambda: self.backend.get_object(pin["object_id"]),
+            self.retry, self.sleep)
+        if result.status != 200 or len(result.body) != pin["byte_length"]:
+            raise FilmError(f"Archive object {pin['object_id']} readback "
+                            "incomplete")
+        if sha256_bytes(result.body) != pin["sha256"]:
+            raise FilmError(f"Archive object {pin['object_id']} readback "
+                            "hash mismatch")
+        return "FULL_READBACK"
 
     def _manifest_doc(self, commit):
         profile = commit["verification_profile"]
@@ -481,9 +542,10 @@ class ArchiveCommitter:
                 return {"commit_key": commit["commit_key"],
                         "state": "SEAL_UNKNOWN",
                         "candidates": candidates}
-            bounded_read(lambda: self.backend.put_object(
-                commit["manifest_object_id"], manifest_raw),
-                self.retry, self.sleep)
+            # Publication is never retried on the HTTP allowance: a lost
+            # answer leaves SEAL_UNKNOWN and reconcile() answers it.
+            self.backend.put_object(commit["manifest_object_id"],
+                                    manifest_raw)
         except (ConnectionDropped, ArchiveRequestError) as e:
             # Publication outcome unknown: fence at SEAL_UNKNOWN. Nothing
             # new is created — reconcile() answers the question.
@@ -537,15 +599,39 @@ class ArchiveCommitter:
         self._require_writable()
         manifest_sha = commit["manifest_sha256"]
         manifest_raw = canon_bytes(commit["manifest"])
+        target = commit["manifest_object_id"]
         try:
             candidates = self._manifest_candidates(commit)
-            matched = []
-            for object_id in candidates:
+            published = False
+            if candidates == [target]:
+                # Only the intent's own object counts: it is re-read and
+                # hashed — a name match alone never seals.
                 body = bounded_read(
-                    lambda oid=object_id: self.backend.get_object(oid),
+                    lambda: self.backend.get_object(target),
                     self.retry, self.sleep).body
-                if sha256_bytes(body) == manifest_sha:
-                    matched.append(object_id)
+                published = sha256_bytes(body) == manifest_sha
+                if not published:
+                    self._j("SEAL_UNKNOWN", {
+                        "commit_key": commit_key,
+                        "reason": f"the intent manifest {target} holds "
+                                  "foreign bytes; refused, preserved"})
+                    commit["state"] = "SEAL_UNKNOWN"
+                    return {"commit_key": commit_key,
+                            "state": "SEAL_UNKNOWN",
+                            "candidates": candidates,
+                            "reason": "intent manifest integrity failed"}
+            elif candidates:
+                # A foreign manifest — even one holding byte-identical
+                # content — or several candidates name this build: the
+                # intent id is never sealed on another object's bytes.
+                self._j("SEAL_UNKNOWN", {
+                    "commit_key": commit_key,
+                    "reason": f"manifest candidates {candidates} do not "
+                              f"resolve to the intent {target}"})
+                commit["state"] = "SEAL_UNKNOWN"
+                return {"commit_key": commit_key, "state": "SEAL_UNKNOWN",
+                        "candidates": candidates,
+                        "reason": "multiple/foreign manifests for one build"}
         except (ConnectionDropped, ArchiveRequestError) as e:
             self._j("SEAL_UNKNOWN", {"commit_key": commit_key,
                                      "reason": f"publication check "
@@ -553,25 +639,12 @@ class ArchiveCommitter:
             commit["state"] = "SEAL_UNKNOWN"
             return {"commit_key": commit_key, "state": "SEAL_UNKNOWN",
                     "reason": "publication undetermined"}
-        if candidates and (len(candidates) != 1 or not matched):
-            # Not exactly the one intent manifest: a foreign manifest
-            # already names this build, or several do — refuse and
-            # preserve everything; nothing is chosen silently.
-            self._j("SEAL_UNKNOWN", {
-                "commit_key": commit_key,
-                "reason": f"manifest candidates {candidates} do not "
-                          f"resolve to the intent {manifest_sha[:16]}"})
-            commit["state"] = "SEAL_UNKNOWN"
-            return {"commit_key": commit_key, "state": "SEAL_UNKNOWN",
-                    "candidates": candidates,
-                    "reason": "multiple/foreign manifests for one build"}
-        if not matched:
+        if not published:
             # Definitively unpublished: re-PUT the exact same bytes under
-            # the same object id — identical publication, not a duplicate.
+            # the same object id — identical publication, not a
+            # duplicate, and never retried on the HTTP allowance.
             try:
-                bounded_read(lambda: self.backend.put_object(
-                    commit["manifest_object_id"], manifest_raw),
-                    self.retry, self.sleep)
+                self.backend.put_object(target, manifest_raw)
             except (ConnectionDropped, ArchiveRequestError) as e:
                 self._j("SEAL_UNKNOWN", {
                     "commit_key": commit_key,
@@ -637,10 +710,13 @@ class ArchiveCommitter:
             if object_id in protected:
                 raise FilmError(f"ORPHAN_REFUSED: {object_id} is referenced "
                                 "by a commit")
+            # The approved deletion is durable BEFORE the irreversible
+            # side effect — a crash can never leave an unrecorded
+            # removal; reconcile re-checks existence against the record.
+            self._j("ORPHAN_DELETED", {"object_id": object_id})
             bounded_read(lambda oid=object_id:
                          self.backend.delete_object(oid),
                          self.retry, self.sleep)
-            self._j("ORPHAN_DELETED", {"object_id": object_id})
             deleted.append(object_id)
             self.orphans_deleted.append(object_id)
         return {"deleted": deleted}

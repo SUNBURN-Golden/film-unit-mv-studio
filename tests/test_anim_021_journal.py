@@ -10,6 +10,7 @@ qualifies a real Drive archive or a real remote worker.
 """
 import hashlib
 import json
+import time
 
 import pytest
 
@@ -208,7 +209,16 @@ def test_submit_intent_records_the_binding_before_side_effects(tmp_path):
     assert data["recipe_digest"] == job["operation"]["recipe_digest"]
     assert data["runtime_contract"] == job["operation"]["runtime_contract"]
     assert data["credential_epoch"] == worker.credential_epoch
-    assert data["reservations"]["location"] == "USER_DESKTOP"
+    # The booked reservation and charge terms are the plan's own values —
+    # not a fixed placeholder; plan_sha alone is not the binding.
+    assert data["reservations"] == plan["resource_reservations"]
+    assert data["quote"]["additional_charges_approved"] is False
+    assert data["quote"]["allow_additional_charges"] == \
+        plan["execution"]["allow_additional_charges"]
+    assert data["quote"]["terms_sha256"] == hashlib.sha256(canon_bytes({
+        "execution": plan["execution"], "workspace": plan["workspace"],
+        "resource_reservations":
+            plan["resource_reservations"]})).hexdigest()
     # The raw nonce never persists; only its digest does.
     text = (tmp_path / "state" / "job_journal.jsonl").read_text()
     assert job["nonce"] in text
@@ -552,6 +562,9 @@ def test_upload_response_loss_requeries_confirmed_offset(tmp_path):
     # resend after the drop starts at 40, and no offset ever goes back.
     assert chunk_offsets[0] == 0 and 40 in chunk_offsets
     assert all(a <= b for a, b in zip(chunk_offsets, chunk_offsets[1:]))
+    # The live session entry reports the journaled server offset too.
+    assert tracker.status()["up-obj-1"]["sessions"][0]["confirmed"] == \
+        len(data)
 
 
 def test_upload_stall_exhausts_the_retry_allowance(tmp_path):
@@ -573,6 +586,101 @@ def test_upload_transferred_byte_cap_exhausts(tmp_path):
     tracker = UploadTracker(journal, backend, upload=UPLOAD, retry=retry)
     with pytest.raises(FilmError, match="TRANSPORT_RETRY_EXHAUSTED"):
         tracker.put("obj-1", make_png(4) * 3)
+
+
+def test_upload_request_cap_covers_the_whole_drive(tmp_path):
+    """max_requests applies across session create, status queries and
+    chunk sends — not reset per call."""
+    backend = FakeDriveBackend(provider_checksum="sha256")
+    journal = DurableJournal(tmp_path / "up.jsonl")
+    retry = dict(RETRY, max_requests=3)
+    tracker = UploadTracker(journal, backend, upload=UPLOAD, retry=retry)
+    with pytest.raises(FilmError, match="TRANSPORT_RETRY_EXHAUSTED"):
+        tracker.put("obj-1", make_png(4) * 3)
+    # create + status + first chunk: the fourth request never leaves.
+    assert len(backend.requests) == 3
+    assert "UPLOAD_COMPLETE" not in events(journal)
+
+
+def test_upload_elapsed_cap_covers_the_whole_drive(tmp_path, monkeypatch):
+    """max_elapsed_ms applies across the whole upload, not per read."""
+    backend = FakeDriveBackend(provider_checksum="sha256")
+    journal = DurableJournal(tmp_path / "up.jsonl")
+    retry = dict(RETRY, max_elapsed_ms=2500)
+    ticks = iter(range(0, 100_000, 1000))       # +1s per monotonic call
+    monkeypatch.setattr(time, "monotonic", lambda: next(ticks) / 1000.0)
+    tracker = UploadTracker(journal, backend, upload=UPLOAD, retry=retry)
+    with pytest.raises(FilmError, match="TRANSPORT_RETRY_EXHAUSTED"):
+        tracker.put("obj-1", make_png(4) * 3)
+    # create + status land inside the allowance; the third request is
+    # refused before it is sent.
+    assert len(backend.requests) == 2
+    assert "UPLOAD_COMPLETE" not in events(journal)
+
+
+def test_lost_create_session_is_session_unknown_until_reconcile(tmp_path):
+    """Evolution 4.2.1: one dropped create_upload_session answer never
+    mints a second session on the HTTP retry allowance — the intent is
+    journaled session-unknown and only an explicit reconcile moves it."""
+    backend = FakeDriveBackend(provider_checksum="sha256")
+    backend.drops = {"create_upload_session": 1}
+    journal = DurableJournal(tmp_path / "up.jsonl")
+    tracker = UploadTracker(journal, backend, upload=UPLOAD, retry=RETRY)
+    data = make_png(2)
+    with pytest.raises(FilmError, match="UPLOAD_SESSION_UNKNOWN"):
+        tracker.put("obj-1", data)
+    creates = [r for r in backend.requests
+               if r["op"] == "create_upload_session"]
+    assert len(creates) == 1                    # never retried
+    evs = events(journal)
+    assert evs.count("UPLOAD_INTENT") == 1      # one intent only
+    assert "UPLOAD_SESSION" not in evs
+    assert "UPLOAD_SESSION_LOST" in evs
+    # Same process and across a restart the intent stays fenced.
+    with pytest.raises(FilmError, match="UPLOAD_SESSION_UNKNOWN"):
+        tracker.put("obj-1", data)
+    t2 = UploadTracker(DurableJournal(tmp_path / "up.jsonl"), backend,
+                       upload=UPLOAD, retry=RETRY)
+    assert t2.status()["up-obj-1"]["unknown"] is True
+    with pytest.raises(FilmError, match="UPLOAD_SESSION_UNKNOWN"):
+        t2.put("obj-1", data)
+    assert len([r for r in backend.requests
+                if r["op"] == "create_upload_session"]) == 1
+    # Explicit reconcile: nothing landed -> the phantom is fenced and the
+    # SAME intent (not a new one) continues on a journaled new session.
+    assert t2.reconcile("obj-1") == {
+        "intent_id": "up-obj-1", "object_id": "obj-1",
+        "complete": False, "reconciled": "not_stored"}
+    assert t2.put("obj-1", data)["object_id"] == "obj-1"
+    assert backend._objects["obj-1"] == data
+    evs = events(t2.journal)
+    assert evs.count("UPLOAD_INTENT") == 1
+    assert evs.count("UPLOAD_SESSION") == 1
+
+
+def test_lost_put_object_reconciles_stored_bytes(tmp_path):
+    """A dropped whole-object put leaves the intent session-unknown; the
+    reconcile's object/hash check finds the landed bytes and completes
+    the same intent — never a second put."""
+    backend = FakeDriveBackend(provider_checksum="sha256")
+    journal = DurableJournal(tmp_path / "up.jsonl")
+    tracker = UploadTracker(journal, backend,
+                            upload={"resumable": False}, retry=RETRY)
+    data = make_png(3)
+    real_put = backend.put_object
+
+    def lose(object_id, body):
+        real_put(object_id, body)               # landed; the answer is
+        raise ConnectionDropped("put answer lost")   # lost anyway
+
+    backend.put_object = lose
+    with pytest.raises(FilmError, match="UPLOAD_SESSION_UNKNOWN"):
+        tracker.put("obj-9", data)
+    puts = [r for r in backend.requests if r["op"] == "put_object"]
+    assert len(puts) == 1
+    assert tracker.reconcile("obj-9")["complete"] is True
+    assert tracker.put("obj-9", data)["bytes_confirmed"] == len(data)
+    assert events(journal)[-1] == "UPLOAD_COMPLETE"
 
 
 class ExpireOnceBackend(FakeDriveBackend):
@@ -640,7 +748,9 @@ def test_restart_fences_the_session_ref_and_resumes_the_intent(tmp_path):
     assert evs.count("UPLOAD_INTENT") == 1        # same intent, not new
     assert evs.count("UPLOAD_SESSION") == 2
     assert "UPLOAD_SESSION_FENCED" in evs
-    assert list(backend._sessions) != old_sessions or True
+    sessions = tracker2.status()["up-obj-1"]["sessions"]
+    assert len({s["ref"] for s in sessions}) == 2  # a genuinely new session
+    assert sessions[0]["fenced"] and not sessions[1]["fenced"]
 
 
 def test_lost_complete_answer_rechecks_then_lands_once(tmp_path):
@@ -658,6 +768,26 @@ def test_lost_complete_answer_rechecks_then_lands_once(tmp_path):
 
 
 # == SEAL-CRASH: archive commit / seal reconciliation ============================
+
+def test_default_required_kinds_is_the_full_completion_set(tmp_path):
+    """§9.1: the completion manifest is never published while any of the
+    required inventory — source, delivery PNG sequence, clean recipe,
+    frame_map, original audio, cue/font, clean and subbed MP4 — is
+    missing. A lone preview refuses by default."""
+    from engine.archive_commit import COMPLETION_REQUIRED_KINDS
+    c, backend = committer(tmp_path)
+    with pytest.raises(FilmError, match="missing required artifacts"):
+        c.begin_commit("build-1",
+                       [{"kind": "preview", "data": make_png(1)}],
+                       snapshot_digest=SNAP, recipe_digest=RECIPE,
+                       toolchain_digest=TOOLCHAIN)
+    full = [{"kind": kind, "data": make_png(i + 2)}
+            for i, kind in enumerate(COMPLETION_REQUIRED_KINDS)]
+    key = c.begin_commit("build-1", full,
+                         snapshot_digest=SNAP, recipe_digest=RECIPE,
+                         toolchain_digest=TOOLCHAIN)
+    assert c.run(key)["state"] == "SEALED"
+
 
 def test_commit_seals_objects_then_manifest(tmp_path):
     c, backend, key = begun(tmp_path)
@@ -723,9 +853,42 @@ def test_crash_between_artifacts_reuses_only_verified(tmp_path):
         assert c2.run(key, artifacts())["state"] == "SEALED"
     finally:
         commit_mod.verify_object = real_verify
-    # Only the two unverified objects re-verified; the journaled
-    # checkpoint was reused without re-reading the backend.
-    assert len(seen) == 2 and not (set(seen) & verified_before)
+    # Every pin is re-verified on the resumed run — the journaled
+    # checkpoint is reused only after the object is proven to still
+    # exist and hash, never on the record alone.
+    all_pins = {o["object_id"] for a in commit["artifacts"]
+                for o in a["objects"]}
+    assert set(seen) == all_pins and verified_before <= set(seen)
+
+
+def test_deleted_verified_object_refuses_the_checkpoint(tmp_path):
+    """A previously OBJECT_VERIFIED object that was externally deleted or
+    truncated is refused on re-verification — never copied into a sealed
+    manifest from the journal record alone."""
+    import engine.archive_commit as commit_mod
+    c, backend, key = begun(tmp_path)
+    real_verify = commit_mod.verify_object
+    calls = []
+
+    def boom(backend_, *a, **kw):
+        calls.append(a[0])
+        if len(calls) == 2:
+            raise RuntimeError("crash after first object verified")
+        return real_verify(backend_, *a, **kw)
+
+    commit_mod.verify_object = boom
+    try:
+        with pytest.raises(RuntimeError):
+            c.run(key)
+    finally:
+        commit_mod.verify_object = real_verify
+    verified_oid = next(iter(c.commits[key]["verified"]))
+    del backend._objects[verified_oid]          # externally deleted
+    c2, _ = committer(tmp_path, backend, name="commit")
+    with pytest.raises(FilmError):
+        c2.run(key, artifacts())
+    assert c2.commits[key]["state"] == "OBJECTS_PENDING"
+    assert not [o for o in backend._objects if o.startswith("manifest-")]
 
 
 def test_crash_before_manifest_publish_republishes_same_intent(tmp_path):
@@ -753,7 +916,8 @@ def test_lost_publish_answer_is_seal_unknown_then_sealed(tmp_path):
     c, _ = committer(tmp_path, backend)
     key = c.begin_commit("build-1", artifacts(),
                          snapshot_digest=SNAP, recipe_digest=RECIPE,
-                         toolchain_digest=TOOLCHAIN)
+                         toolchain_digest=TOOLCHAIN,
+                         required_kinds=("frames", "preview"))
     real_put = backend.put_object
 
     def lose_answer(object_id, data):
@@ -795,7 +959,7 @@ def test_duplicate_manifests_for_one_build_are_refused(tmp_path):
     key_b = c2.begin_commit(
         "build-1", [{"kind": "preview", "data": make_png(11)}],
         snapshot_digest=SNAP, recipe_digest=RECIPE,
-        toolchain_digest=TOOLCHAIN)
+        toolchain_digest=TOOLCHAIN, required_kinds=("preview",))
     assert c2.run(key_b)["state"] == "SEALED"
     # Reconciling the first commit sees a foreign manifest for its build:
     # refused, preserved, never overwritten or deleted.
@@ -810,22 +974,96 @@ def test_duplicate_manifests_for_one_build_are_refused(tmp_path):
     with pytest.raises(FilmError, match="BUILD_IDENTITY_CONFLICT"):
         c3.begin_commit("build-1", [{"kind": "x", "data": b"y"}],
                         snapshot_digest=SNAP, recipe_digest=RECIPE,
-                        toolchain_digest=TOOLCHAIN)
+                        toolchain_digest=TOOLCHAIN,
+                        required_kinds=("x",))
 
 
-def test_manifest_below_min_level_never_seals(tmp_path):
+def test_foreign_manifest_bytes_never_seal_the_intent_id(tmp_path):
+    """A manifest-{build}-* object holding byte-identical content under a
+    DIFFERENT object id is not the intent publication — it stays
+    SEAL_UNKNOWN and both objects are preserved."""
+    c, backend, key = begun(tmp_path)
+
+    def boom(object_id, data):
+        if object_id.startswith("manifest-"):
+            raise RuntimeError("crash before publish")
+        return FakeDriveBackend.put_object(backend, object_id, data)
+
+    backend.put_object = boom
+    with pytest.raises(RuntimeError):
+        c.run(key)
+    delattr(backend, "put_object")
+    target = c.commits[key]["manifest_object_id"]
+    manifest_raw = canon_bytes(c.commits[key]["manifest"])
+    foreign_id = "manifest-build-1-foreign-copy"
+    backend.put_object(foreign_id, manifest_raw)   # same bytes, wrong id
+    outcome = c.reconcile(key)
+    assert outcome["state"] == "SEAL_UNKNOWN"
+    assert c.commits[key]["state"] == "SEAL_UNKNOWN"
+    assert backend._objects[foreign_id] == manifest_raw    # preserved
+    assert target not in backend._objects                  # never sealed
+
+
+def test_lost_manifest_put_never_republishes_on_the_allowance(tmp_path):
+    """One dropped manifest put_object leaves SEAL_UNKNOWN; the HTTP
+    allowance never mints a second put — reconcile alone resolves it."""
+    c, backend, key = begun(tmp_path)
+    real_put = backend.put_object
+    calls = []
+
+    def lose(object_id, data):
+        if object_id.startswith("manifest-"):
+            calls.append(object_id)
+            raise ConnectionDropped("publish answer lost")
+        return real_put(object_id, data)
+
+    backend.put_object = lose
+    result = c.run(key)
+    assert result["state"] == "SEAL_UNKNOWN"
+    assert calls == [c.commits[key]["manifest_object_id"]]   # exactly one
+    assert "SEAL_UNKNOWN" in events(c.journal)
+    delattr(backend, "put_object")
+    c2, _ = committer(tmp_path, backend, name="commit")
+    outcome = c2.reconcile(key)
+    assert outcome["state"] == "SEALED"
+    puts = [r for r in backend.requests
+            if r["op"] == "put_object"
+            and r["object_id"].startswith("manifest-")]
+    assert len(puts) == 1                       # the single reconciled put
+
+
+def test_full_readback_floor_reads_back_despite_provider_checksum(tmp_path):
+    """A readback-required profile is never cleared by a provider
+    SHA-256: the whole object is re-read and hashed even though the
+    endpoint reports a matching checksum."""
     c, backend = committer(tmp_path)
     key = c.begin_commit(
         "build-1", [{"kind": "preview", "data": make_png(12)}],
         snapshot_digest=SNAP, recipe_digest=RECIPE,
-        toolchain_digest=TOOLCHAIN,
+        toolchain_digest=TOOLCHAIN, required_kinds=("preview",),
         verification_profile={"min_level": "FULL_READBACK"})
-    # The fake provider answers a sha256 checksum — UPLOAD_HASH_MATCHED
-    # evidence — below the declared FULL_READBACK minimum.
-    with pytest.raises(FilmError, match="OBJECT_LEVEL_INSUFFICIENT"):
-        c.run(key)
-    assert c.commits[key]["state"] == "OBJECTS_PENDING"
-    assert not [o for o in backend._objects if o.startswith("manifest-")]
+    assert c.run(key)["state"] == "SEALED"
+    reads = [r for r in backend.requests
+             if r["op"] == "get_object"
+             and not r["object_id"].startswith("manifest-")]
+    assert reads                                     # the readback ran
+    manifest = [json.loads(backend._objects[o])
+                for o in backend._objects
+                if o.startswith("manifest-")][0]
+    assert manifest["artifacts"][0]["objects"][0]["level"] == \
+        "FULL_READBACK"
+    # A readback that cannot run refuses — the checksum never substitutes.
+    c2, backend2 = committer(tmp_path, name="commit-cap")
+    key2 = c2.begin_commit(
+        "build-1", [{"kind": "preview", "data": make_png(12)}],
+        snapshot_digest=SNAP, recipe_digest=RECIPE,
+        toolchain_digest=TOOLCHAIN, required_kinds=("preview",),
+        verification_profile={"min_level": "FULL_READBACK",
+                              "readback_cap_bytes": 8})
+    with pytest.raises(FilmError, match="READBACK_CAP_EXCEEDED"):
+        c2.run(key2)
+    assert c2.commits[key2]["state"] == "OBJECTS_PENDING"
+    assert not [o for o in backend2._objects if o.startswith("manifest-")]
 
 
 def test_full_readback_satisfies_when_no_provider_checksum(tmp_path):
@@ -834,7 +1072,8 @@ def test_full_readback_satisfies_when_no_provider_checksum(tmp_path):
     key = c.begin_commit("build-1", [{"kind": "preview",
                                     "data": make_png(13)}],
                          snapshot_digest=SNAP, recipe_digest=RECIPE,
-                         toolchain_digest=TOOLCHAIN)
+                         toolchain_digest=TOOLCHAIN,
+                         required_kinds=("preview",))
     assert c.run(key)["state"] == "SEALED"
     manifest = [json.loads(backend._objects[o])
                 for o in backend._objects if o.startswith("manifest-")][0]
@@ -854,7 +1093,16 @@ def test_orphan_sweep_deletes_only_explicit_approvals(tmp_path):
     with pytest.raises(FilmError, match="ORPHAN_REFUSED"):
         c.sweep_orphans([referenced])
     assert c.sweep_orphans([])["deleted"] == []   # nothing without approval
+    journaled_first = []
+    real_delete = backend.delete_object
+
+    def delete(object_id):
+        journaled_first.append("ORPHAN_DELETED" in events(c.journal))
+        return real_delete(object_id)
+
+    backend.delete_object = delete
     assert c.sweep_orphans(["stray-1"])["deleted"] == ["stray-1"]
+    assert journaled_first == [True]          # durable before the delete
     assert "stray-1" not in backend._objects
     assert "ORPHAN_DELETED" in events(c.journal)
     # The seal and every referenced object are preserved.
@@ -908,7 +1156,8 @@ def test_archive_seal_reconcile_cli(tmp_path):
     key = c.begin_commit("build-1", [{"kind": "preview",
                                     "data": make_png(14)}],
                          snapshot_digest=SNAP, recipe_digest=RECIPE,
-                         toolchain_digest=TOOLCHAIN)
+                         toolchain_digest=TOOLCHAIN,
+                         required_kinds=("preview",))
     crash_on_event(c.journal, "SEALED")           # crash after publication
     with pytest.raises(RuntimeError):
         c.run(key)

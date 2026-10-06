@@ -859,6 +859,23 @@ class Coordinator:
                        "output_range": list(operation["output_range"]),
                        "route": operation["route"],
                        "worker_id": operation["worker"],
+                       # Schema 13.1: the spend the submit will bind is the
+                       # plan's own charge terms and reservations — not a
+                       # fixed placeholder.
+                       "quote": {
+                           "allow_additional_charges":
+                               plan["execution"]
+                               ["allow_additional_charges"],
+                           "additional_charges_approved":
+                               additional_charges_approved,
+                           "terms_sha256": hashlib.sha256(canon_bytes({
+                               "execution": plan["execution"],
+                               "workspace": plan["workspace"],
+                               "resource_reservations":
+                                   plan["resource_reservations"],
+                           })).hexdigest()},
+                       "reservations": [dict(r) for r in
+                                        plan["resource_reservations"]],
                        "input_object_digests": input_objects,
                        "input_member_ids": input_members,
                        "attempt_id": 0, "request_id": None, "nonce": None,
@@ -1071,11 +1088,12 @@ class Coordinator:
                     list(job.get("input_object_digests", ())),
                 "input_member_ids": list(job.get("input_member_ids", ())),
                 "input_bytes": input_bytes,
-                # quote/entitlement binding lives in plan_sha — the
-                # approved plan pins them; the journal records the pin.
-                "quote": None,
-                "reservations": {"location": "USER_DESKTOP",
-                                 "kind": "resource_reservation"}})
+                # The actual charge terms and the reservation the job
+                # booked — plan_sha alone is not the durable binding.
+                # (Pre-journal migrated jobs may carry neither field.)
+                "quote": dict(job.get("quote") or {}),
+                "reservations": [dict(r)
+                                 for r in job.get("reservations", ())]})
             packet = {"job_key": job["job_key"],
                       "attempt_id": job["attempt_id"],
                       "request_id": job["request_id"],
