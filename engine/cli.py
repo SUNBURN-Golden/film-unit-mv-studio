@@ -76,6 +76,22 @@ def main(argv=None):
     listing_anim.add_argument("project")
     check_anim = sub.add_parser("animation-validate", help="FRAME_ANIMATION_V1: check the edit timeline and per-shot sequence coverage")
     check_anim.add_argument("project")
+    for name in ["review-cut", "review-transition"]:
+        review = sub.add_parser(name, help="FRAME_ANIMATION_V1: record a human review bound to the current adopted digests")
+        review.add_argument("project")
+        review.add_argument("target", help="Instance id (I001) or transition id (T001)")
+        review.add_argument("--reviewer", required=True)
+        review.add_argument("--methods", required=True, help="Comma-separated review methods, e.g. CUT_FULL_SPEED_PLAYBACK")
+        review.add_argument("--decision", choices=["APPROVED", "FIX_REQUIRED"], default="APPROVED")
+    approve_film = sub.add_parser("approve-film", help="FRAME_ANIMATION_V1: record a FINAL_FILM review bound to a sealed Build 2 manifest and deliverable")
+    approve_film.add_argument("project")
+    approve_film.add_argument("--build", required=True)
+    approve_film.add_argument("--deliverable", default="MASTER_SUBBED.mp4")
+    approve_film.add_argument("--reviewer", required=True)
+    approve_film.add_argument("--methods", required=True, help="Comma-separated review methods")
+    approve_film.add_argument("--decision", choices=["APPROVED", "FIX_REQUIRED"], default="APPROVED")
+    review_list = sub.add_parser("animation-reviews", help="Show per-cut/per-transition review state (CURRENT/STALE/UNREVIEWED)")
+    review_list.add_argument("project")
     packets = sub.add_parser("packets", help="Write per-shot prompts and import commands for making media by hand in subscription apps; no provider calls")
     packets.add_argument("project")
     packets.add_argument("--shots", help="Comma-separated shot IDs; default all shots")
@@ -179,6 +195,25 @@ def main(argv=None):
         elif a.command == "animation-validate":
             from .frame_sequence import animation_validate
             result = animation_validate(a.project)
+        elif a.command == "review-cut":
+            from .animation_review import record_cut_review
+            with project_mutex(a.project):
+                result = record_cut_review(a.project, a.target, reviewer=a.reviewer,
+                                           methods=a.methods.split(","), decision=a.decision)
+        elif a.command == "review-transition":
+            from .animation_review import record_transition_review
+            with project_mutex(a.project):
+                result = record_transition_review(a.project, a.target, reviewer=a.reviewer,
+                                                  methods=a.methods.split(","), decision=a.decision)
+        elif a.command == "approve-film":
+            from .animation_review import record_film_review
+            with project_mutex(a.project):
+                result = record_film_review(a.project, a.build, reviewer=a.reviewer,
+                                            methods=a.methods.split(","),
+                                            deliverable=a.deliverable, decision=a.decision)
+        elif a.command == "animation-reviews":
+            from .animation_review import review_status
+            result = review_status(a.project)
         elif a.command == "builds":
             from .builds import list_builds
             result = list_builds(a.project)

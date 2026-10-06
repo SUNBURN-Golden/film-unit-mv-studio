@@ -357,9 +357,11 @@ def test_legacy_preview_and_final_are_unchanged(tmp_path):
 
 def test_animation_project_final_is_not_a_draft_fallback(tmp_path):
     p = animation_project(tmp_path, shot_count=1)
-    make_sequence(tmp_path / "seq")
+    make_sequence(tmp_path / "seq", count=48)
     import_frame_sequence(p, "S001", folder=tmp_path / "seq")
-    with pytest.raises(FilmError, match="Final compile"):
+    # ANIM-006: the real Final-candidate path runs, and an unreviewed cut
+    # blocks it — still no draft fallback and no build directory.
+    with pytest.raises(FilmError, match="current review"):
         compile_final(p)
     assert not list(p.glob("builds/B*"))
 

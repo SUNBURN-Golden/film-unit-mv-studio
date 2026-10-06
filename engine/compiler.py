@@ -165,10 +165,11 @@ def compile_preview(project, quality="draft", progress=None):
     return _compile(project, False, quality, progress)
 
 
-def compile_final(project, quality="final", progress=None):
+def compile_final(project, quality="final", progress=None, exposure=None):
     if _animation_project(project):
-        raise FilmError("Final compile for FRAME_ANIMATION_V1 arrives with the "
-                        "review/output node; a draft Preview never substitutes")
+        from .animation_compiler import compile_final_candidate
+        return compile_final_candidate(project, exposure=exposure,
+                                       progress=progress)
     return _compile(project, True, quality, progress)
 
 
