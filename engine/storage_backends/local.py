@@ -139,3 +139,10 @@ class LocalArchiveBackend:
         if len(state["buffer"]) != state["expected_length"]:
             raise FilmError("Upload incomplete at session close")
         return self.put_object(state["object_id"], bytes(state["buffer"]))
+
+    def delete_object(self, object_id):
+        """Delete one stored object; only the committer's explicit
+        approval path calls this — nothing else is ever removed."""
+        path, _ = self._stat(object_id)
+        path.unlink()
+        return {"object_id": object_id, "deleted": True}

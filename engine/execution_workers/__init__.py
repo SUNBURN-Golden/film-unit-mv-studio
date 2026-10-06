@@ -44,12 +44,21 @@ object/member, range, max_bytes, expiry and nonce — all secret-free
 digests. User OAuth/refresh tokens never enter a worker packet; this
 package runs no listener, no inbound port, no arbitrary URL fetch.
 
-The coordinator keeps one minimal durable state file (the full
-append-only journal is ANIM-021): after a runtime termination a
-restarted coordinator reloads the same job identity and resolves
-UNKNOWN, late completion and cancel-unknown through explicit
-reconciliation — never by resubmitting.
+The coordinator's durable truth is the append-only hash-chained
+`job_journal` (ANIM-021, schema 13.1): every mutation — attempt minting,
+SUBMIT_INTENT before the first worker side effect, receipts, state
+transitions, verified checkpoints, the seal — is fsync'd to
+`job_journal.jsonl` before it lands. `runtime_state.json` stays as a
+derived snapshot for older readers, but a restarted coordinator rebuilds
+jobs, seals and revocations by replaying the journal and treats the
+state file as unauthoritative. A truncated or chain-broken tail fences
+every new side effect as JOURNAL_RECONCILIATION_REQUIRED; nothing is
+appended past it and nothing is silently repaired into success. After a
+runtime termination the reloaded identity keeps the same job key /
+attempt / request id and resolves UNKNOWN, late completion and
+cancel-unknown through explicit reconciliation — never by resubmitting.
 """
+import copy
 from pathlib import Path
 import hashlib
 import json
@@ -60,6 +69,7 @@ import uuid
 
 from ..animation_schema import canon_bytes
 from ..core import FilmError, atomic_text
+from ..durable_journal import DurableJournal
 from ..execution_plan import assert_executable, job_key, plan_sha
 from ..frame_stream import check_frame, contract_buffer_bytes
 from ..storage_backends import ConnectionDropped
@@ -470,6 +480,8 @@ class Coordinator:
     way an UNKNOWN job moves. No automatic retry, no standing polling.
     """
 
+    JOURNAL_NAME = "job_journal.jsonl"
+
     def __init__(self, state_dir=None, *, now_ms=None):
         self.state_dir = Path(state_dir) if state_dir else None
         self.now_ms = now_ms or (lambda: int(time.time() * 1000))
@@ -487,16 +499,45 @@ class Coordinator:
         # Raw request nonces for live attempts, keyed by job key —
         # memory only; persisted jobs and receipts carry digests.
         self._nonces = {}
+        # The durable append-only journal (ANIM-021). When present it is
+        # the source of truth; runtime_state.json is a derived snapshot.
+        self._journal = DurableJournal(
+            self.state_dir / self.JOURNAL_NAME) if self.state_dir else None
         if self.state_dir:
             self.state_dir.mkdir(parents=True, exist_ok=True)
             self._load()
 
-    # -- durable state (minimal; the append-only journal is ANIM-021) -------
+    # -- durable state: the append-only journal is authoritative ------------
     @property
     def _state_file(self):
         return self.state_dir / "runtime_state.json"
 
+    @property
+    def journal(self):
+        return self._journal
+
+    @property
+    def journal_fenced(self):
+        return self._journal is not None and self._journal.fenced
+
+    def _require_writable(self):
+        """A fenced journal (truncated/corrupt tail or a replayed
+        inconsistency) blocks every new side effect — reconcile first."""
+        if self.journal_fenced:
+            status = self._journal.status()
+            raise FilmError(
+                "JOURNAL_RECONCILIATION_REQUIRED: the durable journal "
+                f"is fenced ({status['tail_reason'] or status['fence_reason']}); "
+                "inspect and reconcile before any new side effect")
+
+    def _j(self, event, data):
+        """Append one coordinator record before the act it authorises."""
+        if self._journal is not None:
+            self._journal.append("coordinator", event, data)
+
     def _persist(self):
+        """Derived snapshot for older readers; the journal stays the
+        authoritative record and is replayed on restart."""
         if not self.state_dir:
             return
         document = {"record_type": "coordinator_runtime_state",
@@ -507,7 +548,41 @@ class Coordinator:
         atomic_text(self._state_file, json.dumps(document, indent=2,
                                                  ensure_ascii=False) + "\n")
 
+    def _finish_load(self, pending_intents=None):
+        pending_intents = pending_intents or {}
+        for worker in self.workers.values():
+            worker.revocations = self.revoked_grants
+        for job in self.jobs.values():
+            job["sealing"] = False        # a crashed seal never held
+            if job["state"] == "SUBMITTING" \
+                    or (pending_intents.get(job["job_key"])
+                        and job["state"] in {"PLANNED", "RESERVED",
+                                             "WAITING_USER"}):
+                # 응답 불명: a durable SUBMIT_INTENT whose outcome was never
+                # recorded — the persisted intent reloads as UNKNOWN and
+                # reconciles under the same job key / attempt / request id.
+                job["state"] = "UNKNOWN"
+
     def _load(self):
+        """Rebuild durable state; the journal wins over runtime_state.json."""
+        if self._journal is not None and (self._journal.records
+                                        or self._journal.fenced):
+            # An empty clean journal carries no history — fall through to
+            # the snapshot migration below; a fenced or written journal is
+            # authoritative even when it overrides a stale state file.
+            try:
+                pending = self._replay(self._journal.records)
+            except FilmError as e:
+                # Semantically inconsistent history: keep the valid prefix
+                # state, fence every new side effect — never repair.
+                self._journal.fence(f"replay inconsistency: {e}")
+                pending = {}
+            if self._journal.fenced:
+                log.error("coordinator journal is fenced: %s",
+                          self._journal.tail_reason
+                          or self._journal.fence_reason)
+            self._finish_load(pending)
+            return
         path = self._state_file
         if not path.exists():
             return
@@ -519,15 +594,145 @@ class Coordinator:
         # In-place restore keeps the registry object — every attached
         # worker sees the revocations that survived the restart.
         self.revoked_grants.restore(document.get("revoked_grants", ()))
-        for worker in self.workers.values():
-            worker.revocations = self.revoked_grants
-        for job in self.jobs.values():
-            job["sealing"] = False        # a crashed seal never held
-            if job["state"] == "SUBMITTING":
-                # 응답 불명: a persisted SUBMITTING never confirmed
-                # acceptance — it reloads as UNKNOWN and reconciles under
-                # the same job key / attempt / request id.
-                job["state"] = "UNKNOWN"
+        self._finish_load()
+        if self._journal is not None and not self._journal.records:
+            # Migrate the pre-journal snapshot into the chain once so the
+            # next restart rebuilds from durable history.
+            self._journal.append("coordinator", "STATE_SNAPSHOT",
+                                 {"jobs": self.jobs, "seals": self.seals,
+                                  "revoked_grants":
+                                  sorted(self.revoked_grants)})
+
+    def _replay(self, records):
+        """Replay verified journal records into jobs/seals/revocations.
+
+        Returns {job_key: seq} for SUBMIT_INTENT records whose outcome was
+        never journaled — the unresolved intents _finish_load fences as
+        UNKNOWN. Any semantic inconsistency (a record for an unknown job,
+        a checkpoint whose members do not re-derive, a seal on a
+        non-VERIFIED job) raises and fences the journal.
+        """
+        pending = {}
+
+        def job(key, event):
+            found = self.jobs.get(key)
+            if found is None:
+                raise FilmError(f"journal {event} names unknown job {key}")
+            return found
+
+        def revoke(job_record):
+            if job_record.get("grant_digest"):
+                self.revoked_grants.add(job_record["grant_digest"])
+
+        for record in records:
+            event, data = record["event"], record["data"]
+            if record["scope"] != "coordinator":
+                continue            # only this file's owner replayed here
+            key = data.get("job_key")
+            if event == "STATE_SNAPSHOT":
+                self.jobs = copy.deepcopy(data.get("jobs", {}))
+                self.seals = copy.deepcopy(data.get("seals", {}))
+                self.revoked_grants.restore(
+                    data.get("revoked_grants", ()))
+                pending = {}
+            elif event == "JOB_PLANNED":
+                if key in self.jobs:
+                    raise FilmError(f"journal replans job {key}")
+                planned = copy.deepcopy(data["job"])
+                planned["sealing"] = False
+                self.jobs[key] = planned
+            elif event == "STATE":
+                target_job = job(key, event)
+                target_job["state"] = data["to"]
+                pending.pop(key, None)
+                if data["to"] in {"OUTPUT_PENDING_VERIFY", "VERIFIED",
+                                  "ARCHIVED", "CANCEL_CONFIRMED",
+                                  "FAILED_CONFIRMED"}:
+                    revoke(target_job)
+            elif event == "ATTEMPT":
+                target_job = job(key, event)
+                revoke(target_job)          # the prior grant is voided
+                for field in ("attempt_id", "request_id", "nonce",
+                              "grant_digest", "attempts_used"):
+                    target_job[field] = data[field]
+                if data.get("frame_contract") is not None:
+                    target_job["frame_contract"] = copy.deepcopy(
+                        data["frame_contract"])
+            elif event == "ATTEMPT_ROLLBACK":
+                target_job = job(key, event)
+                for field in ("attempt_id", "request_id", "nonce",
+                              "grant_digest", "attempts_used"):
+                    target_job[field] = data.get(field)
+                target_job["frame_contract"] = copy.deepcopy(
+                    data.get("frame_contract"))
+                if data.get("voided_grant"):
+                    self.revoked_grants.add(data["voided_grant"])
+                pending.pop(key, None)
+            elif event == "SUBMIT_INTENT":
+                target_job = job(key, event)
+                if (data["request_id"], data["attempt_id"],
+                        data["nonce_digest"]) != (
+                        target_job["request_id"],
+                        target_job["attempt_id"], target_job["nonce"]):
+                    raise FilmError("journal SUBMIT_INTENT is not bound to "
+                                    f"the job's minted attempt ({key})")
+                pending[key] = record["seq"]
+            elif event in {"SUBMIT_LOST", "CANCEL_INTENT", "CANCEL_LOST"}:
+                job(key, event)             # durable observation markers
+            elif event == "RECEIPT":
+                target_job = job(key, event)
+                receipt = copy.deepcopy(data["receipt"])
+                target_job["receipts"].append(receipt)
+                if receipt["kind"] == "COMPLETE":
+                    target_job["covered"].append(list(receipt["covered_range"]))
+                    for member in receipt["members"]:
+                        target_job["members"][str(member["frame_index"])] = \
+                            member["sha256"]
+            elif event == "LATE_RECEIPT":
+                target_job = job(key, event)
+                target_job.setdefault("late_receipts", []).append(
+                    copy.deepcopy(data["record"]))
+            elif event == "OBSERVATION":
+                target_job = job(key, event)
+                target_job.setdefault("worker_observations", []).append(
+                    copy.deepcopy(data["record"]))
+            elif event == "VERIFY_FAILED":
+                job(key, event)["verify_failed"] = True
+            elif event == "CHECKPOINT":
+                target_job = job(key, event)
+                contract = target_job.get("frame_contract")
+                if contract is None:
+                    raise FilmError("journal checkpoint lacks the pinned "
+                                    "frame contract")
+                expected = {str(i): expected_frame_digest(
+                    i, contract, target_job["snapshot_digest"],
+                    target_job["operation"]["recipe_digest"])
+                    for i in range(*target_job["output_range"])}
+                if data.get("members") != expected \
+                        or target_job["members"] != expected:
+                    raise FilmError("journal checkpoint members fail the "
+                                    "coverage/hash re-derivation")
+                if sorted(map(list, data.get("covered", []))) != \
+                        sorted(map(list, target_job["covered"])):
+                    raise FilmError("journal checkpoint coverage differs "
+                                    "from the replayed receipts")
+            elif event == "JOB_SEALED":
+                target_job = job(key, event)
+                if target_job["state"] != "VERIFIED":
+                    raise FilmError("journal seals a job that was never "
+                                    "VERIFIED")
+                target_job["state"] = "ARCHIVED"
+                target_job["sealed"] = True
+                self.seals[key] = copy.deepcopy(data["seal"])
+                revoke(target_job)
+            elif event == "RESET_COVERAGE":
+                target_job = job(key, event)
+                target_job["covered"] = []
+                target_job["members"] = {}
+                target_job.pop("verify_failed", None)
+            elif event == "RESERVATION_RELEASED":
+                job(key, event)["reservation_released"] = True
+        return pending
 
     # -- helpers ------------------------------------------------------------
     def _job(self, key):
@@ -536,7 +741,7 @@ class Coordinator:
             raise FilmError(f"Unknown job key: {key}")
         return job
 
-    def _set_state(self, job, target, why):
+    def _set_state(self, job, target, why, *, journal="STATE"):
         allowed = TRANSITIONS.get(job["state"], set())
         if target not in allowed:
             raise FilmError(
@@ -551,6 +756,9 @@ class Coordinator:
                 f"COMPLETION_CONFIRMED_FIRST: {job['state']} -> {target} "
                 f"refused ({why}); the confirmed completion goes to "
                 f"OUTPUT_PENDING_VERIFY")
+        if journal is not None:
+            self._j(journal, {"job_key": job["job_key"], "to": target,
+                              "why": why})
         job["state"] = target
         # Completion confirmation (exec/storage §3.1, evolution
         # §2.1.1), termination and failure confirmations void the
@@ -586,9 +794,11 @@ class Coordinator:
         if job["state"] in {"RUNNING", "UNKNOWN", "CANCEL_REQUESTED"}:
             self._set_state(job, "OUTPUT_PENDING_VERIFY", why)
         if answer in ADVERSE_ANSWERS:
-            job.setdefault("worker_observations", []).append(
-                {"answer": answer, "state": job["state"],
-                 "attempt_id": job["attempt_id"]})
+            record = {"answer": answer, "state": job["state"],
+                      "attempt_id": job["attempt_id"]}
+            self._j("OBSERVATION", {"job_key": job["job_key"],
+                                    "record": record})
+            job.setdefault("worker_observations", []).append(record)
             log.warning("job %s attempt %s: worker answered %s after its "
                         "completion was confirmed; kept in %s",
                         job["job_key"], job["attempt_id"], answer,
@@ -632,6 +842,7 @@ class Coordinator:
                                 for m in e["member_ids"]})
         made = []
         with self._lock:
+            self._require_writable()
             for operation in plan["operations"]:
                 key = job_key(plan, operation)
                 if key in self.jobs:
@@ -656,6 +867,7 @@ class Coordinator:
                        "covered": [], "receipts": [],
                        "members": {}, "sealing": False, "sealed": False,
                        "qualification_state": "UNQUALIFIED"}
+                self._j("JOB_PLANNED", {"job_key": key, "job": job})
                 self.jobs[key] = job
                 made.append(key)
             self._persist()
@@ -663,6 +875,7 @@ class Coordinator:
 
     def reserve(self, key):
         with self._lock:
+            self._require_writable()
             job = self._job(key)
             self._fence_unknown(job, "reserve")
             self._set_state(job, "RESERVED", "resource reservation")
@@ -672,10 +885,12 @@ class Coordinator:
     def release_reservation(self, key):
         """Fenced while UNKNOWN: the spend stays booked until reconcile."""
         with self._lock:
+            self._require_writable()
             job = self._job(key)
             self._fence_unknown(job, "release_reservation")
             if job["state"] in {"CANCEL_CONFIRMED", "FAILED_CONFIRMED",
                                 "ARCHIVED"}:
+                self._j("RESERVATION_RELEASED", {"job_key": key})
                 job["reservation_released"] = True
             else:
                 raise FilmError("Reservations release only after a "
@@ -686,6 +901,7 @@ class Coordinator:
     def waiting_user(self, key):
         """MANUAL_PACKET: the reservation waits for the user's own run."""
         with self._lock:
+            self._require_writable()
             job = self._job(key)
             self._fence_unknown(job, "waiting_user")
             self._set_state(job, "WAITING_USER",
@@ -701,6 +917,7 @@ class Coordinator:
         pseudo grant digest ties them to this exact attempt.
         """
         with self._lock:
+            self._require_writable()
             job = self._job(key)
             self._set_state(job, "SUBMITTING",
                             "user attached a manual packet run")
@@ -711,6 +928,14 @@ class Coordinator:
                 "manual_packet": job["request_id"], "nonce": job["nonce"],
                 "job_key": key,
                 "attempt_id": job["attempt_id"]})).hexdigest()
+            self._j("ATTEMPT", {"job_key": key,
+                                "attempt_id": job["attempt_id"],
+                                "request_id": job["request_id"],
+                                "nonce": job["nonce"],
+                                "grant_digest": job["grant_digest"],
+                                "attempts_used": job["attempts_used"],
+                                "frame_contract":
+                                job.get("frame_contract")})
             self._persist()
             return job["state"]
 
@@ -766,6 +991,7 @@ class Coordinator:
     def collect(self, worker, key):
         """Explicit drain of the worker's pending receipts — one call,
         no standing poll."""
+        self._require_writable()
         self._attach(worker)
         job = self._job(key)
         self._drain(worker.collect_receipts(job["request_id"]), worker)
@@ -779,6 +1005,7 @@ class Coordinator:
         identity.
         """
         with self._lock:
+            self._require_writable()
             job = self._job(key)
             self._attach(worker)
             self._fence_unknown(job, "submit")
@@ -806,6 +1033,49 @@ class Coordinator:
                                 "contract")
             self._new_attempt(job)
             grant = self._issue_grant(job, worker, input_bytes)
+            # Schema 13.1: the minted attempt identity and the submit
+            # intent — request id, nonce digest, grant, credential epoch,
+            # reservations and the snapshot/range/recipe/toolchain binding
+            # — are durable before any worker side effect (preflight or
+            # submit). The raw nonce stays memory-only; the journal holds
+            # its digest.
+            self._j("ATTEMPT", {"job_key": key,
+                                "attempt_id": job["attempt_id"],
+                                "request_id": job["request_id"],
+                                "nonce": job["nonce"],
+                                "grant_digest": job["grant_digest"],
+                                "attempts_used": job["attempts_used"],
+                                "frame_contract":
+                                job.get("frame_contract")})
+            operation = job["operation"]
+            self._j("SUBMIT_INTENT", {
+                "job_key": key,
+                "request_id": job["request_id"],
+                "attempt_id": job["attempt_id"],
+                "nonce_digest": job["nonce"],
+                "grant_digest": job["grant_digest"],
+                "snapshot_digest": job["snapshot_digest"],
+                "plan_sha": job["plan_sha"],
+                "plan_revision": job["plan_revision"],
+                "operation_id": operation["operation_id"],
+                "kind": operation["kind"],
+                "output_range": list(job["output_range"]),
+                "halo_ranges": [list(r)
+                                for r in operation["halo_ranges"]],
+                "recipe_digest": operation["recipe_digest"],
+                "runtime_contract": operation["runtime_contract"],
+                "worker_id": job["worker_id"],
+                "endpoint": getattr(worker, "endpoint", worker.worker_id),
+                "credential_epoch": worker.credential_epoch,
+                "input_object_digests":
+                    list(job.get("input_object_digests", ())),
+                "input_member_ids": list(job.get("input_member_ids", ())),
+                "input_bytes": input_bytes,
+                # quote/entitlement binding lives in plan_sha — the
+                # approved plan pins them; the journal records the pin.
+                "quote": None,
+                "reservations": {"location": "USER_DESKTOP",
+                                 "kind": "resource_reservation"}})
             packet = {"job_key": job["job_key"],
                       "attempt_id": job["attempt_id"],
                       "request_id": job["request_id"],
@@ -831,7 +1101,11 @@ class Coordinator:
                 # scratch cap, unreachable): no SUBMITTING is recorded,
                 # the attempt is not consumed and the minted grant is
                 # void. Another submit is the user's explicit call.
-                self.revoked_grants.add(job["grant_digest"])
+                voided = job["grant_digest"]
+                self._j("ATTEMPT_ROLLBACK", {"job_key": key,
+                                             "voided_grant": voided,
+                                             **saved})
+                self.revoked_grants.add(voided)
                 job.update(saved)
                 if saved_nonce is None:
                     self._nonces.pop(key, None)
@@ -845,6 +1119,9 @@ class Coordinator:
             receipt = worker.submit(packet, now_ms=self.now_ms())
         except ConnectionDropped:
             with self._lock:
+                self._j("SUBMIT_LOST", {"job_key": key,
+                                        "request_id": job["request_id"],
+                                        "attempt_id": job["attempt_id"]})
                 self._set_state(job, "UNKNOWN",
                                 "submission response lost")
                 self._persist()
@@ -859,6 +1136,7 @@ class Coordinator:
         """Bind and gate one callback. Out-of-order is fine; forged is not."""
         check_receipt(receipt)
         with self._lock:
+            self._require_writable()
             self._attach(worker)
             job = self._job(receipt["job_key"])
             if receipt["actor"] != worker.worker_id:
@@ -897,6 +1175,8 @@ class Coordinator:
                         "state": job["state"],
                         "receipt_sha256": hashlib.sha256(
                             canon_bytes(receipt)).hexdigest()}
+                self._j("LATE_RECEIPT", {"job_key": job["job_key"],
+                                         "record": late})
                 job.setdefault("late_receipts", []).append(late)
                 log.warning("job %s attempt %s: late %s receipt after %s "
                             "recorded as an observation", job["job_key"],
@@ -912,6 +1192,8 @@ class Coordinator:
                 raise FilmError("RECEIPT_REJECTED: overlapping range "
                                 "already covered")
             record = dict(receipt)
+            self._j("RECEIPT", {"job_key": job["job_key"],
+                                "receipt": receipt})
             job["receipts"].append(record)
             kind = receipt["kind"]
             if kind == "COMPLETE":
@@ -969,6 +1251,7 @@ class Coordinator:
         """Independent verification: the worker's COMPLETE is re-derived
         from pinned inputs, never trusted. Mismatch -> FAILED_CONFIRMED."""
         with self._lock:
+            self._require_writable()
             job = self._job(key)
             if job["state"] != "OUTPUT_PENDING_VERIFY":
                 raise FilmError("verify_outputs requires "
@@ -990,7 +1273,20 @@ class Coordinator:
                 # Verification ran and failed the confirmed output — a
                 # later resume re-runs the range; the coverage is not a
                 # completion still pending verification.
+                self._j("VERIFY_FAILED", {"job_key": key})
                 job["verify_failed"] = True
+            else:
+                # The verified checkpoint is durable BEFORE the VERIFIED
+                # transition: a restart may reuse only this coverage whose
+                # members re-derive against the pinned contract inputs.
+                self._j("CHECKPOINT", {
+                    "job_key": key,
+                    "output_range": list(job["output_range"]),
+                    "covered": sorted(map(list, job["covered"])),
+                    "members": dict(job["members"]),
+                    "snapshot_digest": job["snapshot_digest"],
+                    "recipe_digest": job["operation"]["recipe_digest"],
+                    "frame_contract": dict(contract)})
             self._set_state(job, "VERIFIED" if ok else "FAILED_CONFIRMED",
                             "coordinator re-derived frame digests")
             self._persist()
@@ -1004,6 +1300,7 @@ class Coordinator:
         identity, never duplicated).
         """
         with self._lock:
+            self._require_writable()
             job = self._job(key)
             if job["sealed"]:
                 return self.seals[key]
@@ -1027,6 +1324,10 @@ class Coordinator:
                         "members": dict(job["members"]),
                         "plan_sha": job["plan_sha"],
                         "qualification_state": "UNQUALIFIED"}
+                # The durable JOB_SEALED record is written BEFORE the
+                # state flip and replay itself drives ARCHIVED — a crash
+                # can never split the chain into a sealed-less ARCHIVED.
+                self._j("JOB_SEALED", {"job_key": key, "seal": seal})
                 self._set_state(job, "ARCHIVED", "coverage sealed")
                 job["sealed"] = True
                 self.seals[key] = seal
@@ -1046,6 +1347,7 @@ class Coordinator:
         is verified, not dropped. A lost cancel answer is UNKNOWN.
         """
         with self._lock:
+            self._require_writable()
             job = self._job(key)
             self._attach(worker)
             if job["state"] == "PLANNED":
@@ -1061,11 +1363,18 @@ class Coordinator:
                 raise FilmError(f"Cannot cancel a job in {job['state']}; "
                                 "past seals are not rewritten")
             self._set_state(job, "CANCEL_REQUESTED", "cancel requested")
+            # The cancel intent is durable before the worker call — a
+            # request, not a confirmed termination.
+            self._j("CANCEL_INTENT", {"job_key": key,
+                                      "request_id": job["request_id"],
+                                      "attempt_id": job["attempt_id"]})
             self._persist()
         try:
             outcome = worker.cancel(job["request_id"])
         except ConnectionDropped:
             with self._lock:
+                self._j("CANCEL_LOST", {"job_key": key,
+                                        "request_id": job["request_id"]})
                 self._set_state(job, "UNKNOWN", "cancel outcome unknown")
                 self._persist()
             return job["state"]
@@ -1098,6 +1407,7 @@ class Coordinator:
         is resubmitted and no reservation is released here.
         """
         with self._lock:
+            self._require_writable()
             job = self._job(key)
             self._attach(worker)
             if job["state"] == "SUBMITTING":
@@ -1168,6 +1478,7 @@ class Coordinator:
         new attempt id and submission request id.
         """
         with self._lock:
+            self._require_writable()
             job = self._job(key)
             self._attach(worker)
             if job["state"] != "FAILED_CONFIRMED":
@@ -1193,6 +1504,7 @@ class Coordinator:
             # through the FAILED_CONFIRMED -> RESERVED edge only.
             self._set_state(job, "RESERVED",
                             "explicit user resume: new attempt")
+            self._j("RESET_COVERAGE", {"job_key": key})
             job["covered"] = []
             job["members"] = {}
             job.pop("verify_failed", None)
@@ -1200,6 +1512,31 @@ class Coordinator:
         return self.submit(worker, key)
 
     # -- reporting -------------------------------------------------------------
+    def journal_status(self):
+        """Journal head/tail plus the rebuilt per-job identity picture."""
+        report = {"journal": (self._journal.status()
+                              if self._journal is not None else None),
+                  "fenced": self.journal_fenced,
+                  "jobs": [],
+                  "unresolved": []}
+        for key in sorted(self.jobs):
+            job = self.jobs[key]
+            entry = {"job_key": key, "state": job["state"],
+                     "attempt_id": job["attempt_id"],
+                     "request_id": job["request_id"],
+                     "covered": sorted(map(list, job["covered"])),
+                     "complete": self._complete(job),
+                     "sealed": job["sealed"],
+                     "receipts": len(job["receipts"]),
+                     "late_receipts": len(job.get("late_receipts", []))}
+            report["jobs"].append(entry)
+            if job["state"] in {"UNKNOWN", "CANCEL_REQUESTED"}:
+                report["unresolved"].append(
+                    {"job_key": key, "state": job["state"],
+                     "request_id": job["request_id"],
+                     "needs": "reconcile"})
+        return report
+
     def facet_report(self):
         """Draft completion facets — fake results never qualify a route."""
         return {"node_state": "IN_PROGRESS",
