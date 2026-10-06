@@ -33,6 +33,9 @@ DOCUMENT_SCHEMAS = {
     "animation_work_packet": 1,
     "animation_draft_frames": 1,
     "execution_plan": 1,
+    "subscription_entitlement": 1,
+    "subscription_packet": 1,
+    "subscription_result": 1,
 }
 
 TIMELINE_FIELDS = {"document_type", "schema_version", "target_frames", "entries"}
