@@ -355,7 +355,7 @@ def test_preview_still_consumes_member_map(tmp_path):
     assert record["frames"]["total"] == 24
     assert record["frames"]["placeholder_frames"] == 0
     rows = [json.loads(line) for line in
-            (folder / "frame_map.jsonl").read_text().splitlines()]
+            (folder / "draft_frame_map.jsonl").read_text().splitlines()]
     assert len(rows) == 24
     assert rows[0]["file"] == "draft_frames/F_000001.png"
     assert rows[0]["sources"][0]["local_frame_index"] == 0

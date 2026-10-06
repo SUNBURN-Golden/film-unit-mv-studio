@@ -86,7 +86,10 @@ def _content_fields(record):
     content = {"kind": record["kind"], "members": members,
                "coordinate_space": record["coordinate_space"],
                "canvas": record.get("canvas")}
-    if record["kind"] == "LAYER_RGBA":
+    if record["kind"] == "FRAME_SEQUENCE":
+        content.update({"exposure_recipe_ref": record["exposure_recipe_ref"],
+                        "composite_recipe_ref": record["composite_recipe_ref"]})
+    elif record["kind"] == "LAYER_RGBA":
         content.update({"alpha": {"present": record["alpha"]["present"]},
                         "crop_origin": record["crop_origin"],
                         "pivot": record["pivot"], "z_order": record["z_order"]})
@@ -228,7 +231,12 @@ def _decode_png(data, name):
 def _inside(root, relative):
     if Path(relative).is_absolute() or ".." in Path(relative).parts:
         raise FilmError(f"Disallowed path in index: {relative}")
-    resolved = (root / relative).resolve()
+    candidate = root
+    for part in Path(relative).parts:
+        candidate = candidate / part
+        if candidate.is_symlink():
+            raise FilmError(f"Index member passes through a symlink: {relative}")
+    resolved = candidate.resolve()
     if not resolved.is_relative_to(root.resolve()):
         raise FilmError(f"Path escapes the index directory: {relative}")
     return resolved
@@ -345,6 +353,9 @@ def _commit_revision(p, registry, asset_id, kind, staged, record):
             raise FilmError(f"{asset_id} is already registered as a different kind")
         for existing in asset["revisions"].values():
             if content_digest(existing) == content_digest(record):
+                # An identical content digest does not prove the stored bytes
+                # survived; re-verify before reporting the revision as reused.
+                _verify_member_bytes(p, existing)
                 asset["current_revision"] = existing["revision"]
                 return existing, False
         revision = max(int(r) for r in asset["revisions"]) + 1

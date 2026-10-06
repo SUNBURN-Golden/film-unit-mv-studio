@@ -5,21 +5,31 @@ shot's assigned frame sequence, with LINEAR_INTERIOR_V1 weights inside
 transition overlaps and a labelled placeholder wherever a shot's sequence is
 unresolved (missing, changed, tampered or too short). Output is a draft MP4
 muxed with the original master audio, plus the composed PNG frames and a
-per-frame `frame_map.jsonl` under the new build directory.
+per-frame `draft_frame_map.jsonl` under the new build directory.
+
+The build record is `document_type: animation_draft_preview`, `schema_version`
+1 — deliberately not a Build 2 `animation_build` and carrying no
+`storage_profile`. Every resolved asset member the compose can touch is
+captured under `snapshot/` before the first frame is drawn and the compose
+reads those frozen copies, so the draft is reproducible from the build folder
+and a member changed mid-compile cannot leak in. `draft_frame_map.jsonl` is a
+draft-only map (one CANON_JSON_V1 document per line); its per-source
+`resolved` flag marks draft placeholder substitution and is not part of the
+schema section 9 `frame_map.jsonl` contract.
 
 This is a draft review artifact: it performs no provider calls, creates no
-approval and does not satisfy Final. Full Build 2 inventory, subtitle
-application and seal semantics arrive with their own nodes.
+approval and does not satisfy Final. Build 2 inventory and replay, subtitle
+application and seal semantics arrive with their own nodes (ANIM-006 onward).
 """
 from pathlib import Path
 import copy
-import json
 from fractions import Fraction
 
 from PIL import Image, ImageDraw
 
 from .animation_assets import resolve_shot_sequence
-from .animation_schema import (load_animation_timeline, require_animation_profile,
+from .animation_schema import (canon_bytes, load_animation_timeline,
+                               require_animation_profile,
                                validate_animation_timeline)
 from .frame_clock import frame_filename
 from .frame_sequence import member_map_for_entry
@@ -71,6 +81,10 @@ def _frame_resolvers(document, layout, p):
             resolved[row["instance_id"]] = {
                 "members": dict(found["members"]),
                 "member_map": member_map_for_entry(entry),
+                "member_sha256": {f.get("frame_index"): f["sha256"]
+                                  for f in found["record"]["files"]},
+                "used_start": entry["used_source_range"][0],
+                "used_end": entry["used_source_range"][1],
                 "pin": {"asset_id": found["asset_id"],
                         "revision": found["revision"],
                         "content_sha256": found["content_sha256"]}}
@@ -88,17 +102,17 @@ def _frame_resolvers(document, layout, p):
 
 
 def _member_image(resolved_entry, local_index):
-    """Verified member pixels for one local source frame, or None."""
+    """(Member pixels, None) on success, (None, reason) on decode failure."""
     if resolved_entry is None:
-        return None
+        return None, None
     path = resolved_entry["members"].get(local_index)
     if path is None:
-        return None
+        return None, None
     try:
         with Image.open(path) as im:
-            return im.convert("RGB")
-    except Exception:
-        return None
+            return im.convert("RGB"), None
+    except Exception as e:
+        return None, f"member failed to decode ({path.name}): {e}"
 
 
 def _contributors(frame_index, layout):
@@ -118,16 +132,19 @@ def _contributors(frame_index, layout):
 
 
 def _compose(frame_index, layout, resolved, width, height):
-    """One output frame plus its draft frame_map source rows."""
+    """One output frame plus its draft frame-map source rows and warnings."""
     pairs, transition = _contributors(frame_index, layout)
-    layer, sources = None, []
+    layer, sources, warnings = None, [], []
     for row, weight in pairs:
         entry = resolved[row["instance_id"]]
         local = frame_index - row["output_range"][0]
         source_index = (entry["member_map"][local]["member"]
                         if entry is not None else None)
-        image = _member_image(entry, source_index)
+        image, error = _member_image(entry, source_index)
         present = image is not None
+        if error is not None:
+            warnings.append(f"{row['shot_id']} output frame {frame_index}: "
+                            f"{error}; a labelled placeholder was used")
         if image is None:
             image = _placeholder(width, height,
                                  f"{row['shot_id']} / NO SEQUENCE — DRAFT")
@@ -135,6 +152,7 @@ def _compose(frame_index, layout, resolved, width, height):
         layer = fitted if layer is None else Image.blend(layer, fitted, float(weight))
         sources.append({"instance_id": row["instance_id"], "shot_id": row["shot_id"],
                         "local_frame_index": source_index,
+                        "sequence_revision": entry["pin"]["revision"] if present else None,
                         "weight": [weight.numerator, weight.denominator],
                         "resolved": present})
     operations = ["DRAFT_TAG"]
@@ -142,7 +160,7 @@ def _compose(frame_index, layout, resolved, width, height):
         operations += ["CROSSFADE", "LINEAR_INTERIOR_V1"]
     if any(not s["resolved"] for s in sources):
         operations.append("PLACEHOLDER_DRAFT")
-    return _tag(layer, f"DRAFT {frame_index + 1}"), sources, operations
+    return _tag(layer, f"DRAFT {frame_index + 1}"), sources, operations, warnings
 
 
 def _encode(frames_dir, count, fmt, master, target, seconds):
@@ -191,8 +209,8 @@ def compile_draft_preview(project, quality="draft", progress=None):
         resolved, report = _frame_resolvers(document, layout, p)
         folder = allocate_build(p, "PREVIEW")
         record = read(folder / "build.json")
-        record.update({"document_type": "animation_build", "schema_version": 2,
-                       "storage_profile": "LOCAL_FULL", "draft": True,
+        record.update({"document_type": "animation_draft_preview",
+                       "schema_version": 1, "draft": True,
                        "profile": "FRAME_ANIMATION_V1", "format": fmt,
                        "output_frames": output_frames, "warnings": [],
                        "audio": {"sha256": digest(master),
@@ -207,15 +225,33 @@ def compile_draft_preview(project, quality="draft", progress=None):
                     copied = capture(source, folder / "snapshot" / relative)
                     if relative == config["audio"]["path"] and copied != config["audio"]["sha256"]:
                         raise FilmError("Master changed before snapshot")
+            # Freeze every member byte the compose can touch into the build,
+            # then repoint members at the snapshot copies so a member changed
+            # mid-compile cannot leak into the draft frames.
+            for entry in resolved.values():
+                if entry is None:
+                    continue
+                for frame_index, source in sorted(entry["members"].items()):
+                    if not entry["used_start"] <= frame_index < entry["used_end"]:
+                        continue
+                    relative = source.relative_to(p)
+                    copied = capture(source, folder / "snapshot" / relative)
+                    if copied != entry["member_sha256"][frame_index]:
+                        raise FilmError(
+                            f"Resolved member changed before snapshot: {relative}")
+                    entry["members"][frame_index] = folder / "snapshot" / relative
             frames_dir = folder / "draft_frames"
             frames_dir.mkdir()
             incomplete = 0
             frame_map = []
+            member_warnings = {}
             for index in range(output_frames):
                 if progress:
                     progress(index, output_frames, f"frame {index + 1}")
-                frame, sources, operations = _compose(index, layout, resolved,
-                                                      fmt["width"], fmt["height"])
+                frame, sources, operations, notes = _compose(
+                    index, layout, resolved, fmt["width"], fmt["height"])
+                for note in notes:
+                    member_warnings.setdefault(note)
                 name = frame_filename(index)
                 frame.save(frames_dir / name)
                 incomplete += any(not s["resolved"] for s in sources)
@@ -223,11 +259,17 @@ def compile_draft_preview(project, quality="draft", progress=None):
                                   "file": f"draft_frames/{name}",
                                   "output_sha256": digest(frames_dir / name),
                                   "sources": sources, "operations": operations})
-            map_path = folder / "frame_map.jsonl"
-            with map_path.open("w", encoding="utf-8", newline="\n") as stream:
+            for entry in resolved.values():
+                if entry is None:
+                    continue
+                for frame_index in range(entry["used_start"], entry["used_end"]):
+                    snap = entry["members"].get(frame_index)
+                    if snap is None or digest(snap) != entry["member_sha256"][frame_index]:
+                        raise FilmError("Snapshotted member changed during draft compile")
+            map_path = folder / "draft_frame_map.jsonl"
+            with map_path.open("wb") as stream:
                 for row in frame_map:
-                    stream.write(json.dumps(row, ensure_ascii=False, sort_keys=True)
-                                 + "\n")
+                    stream.write(canon_bytes(row))
             target = folder / "DRAFT_PREVIEW.mp4"
             _encode(frames_dir, output_frames, fmt, master, target, seconds)
             if digest(master) != config["audio"]["sha256"]:
@@ -237,6 +279,7 @@ def compile_draft_preview(project, quality="draft", progress=None):
                 record["warnings"].append(
                     "Unresolved sequences rendered as labelled placeholders: "
                     + ", ".join(incomplete_entries))
+            record["warnings"].extend(member_warnings)
             record["warnings"].append(
                 "Draft Preview: no subtitle overlay, no review, no approval — "
                 "not a Final candidate")
@@ -244,7 +287,7 @@ def compile_draft_preview(project, quality="draft", progress=None):
                                 "placeholder_frames": incomplete,
                                 "resolved_frames": output_frames - incomplete}
             record.update(output="DRAFT_PREVIEW.mp4",
-                          frame_map="frame_map.jsonl",
+                          draft_frame_map="draft_frame_map.jsonl",
                           toolchain_note="PNG sequence -> image2 -framerate "
                           f"{fmt['fps']} -start_number 1 -> master AAC mux")
             seal_build(folder, record)

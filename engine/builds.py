@@ -91,6 +91,9 @@ def replay_build(build_dir, output_dir):
     if out.exists():
         raise FilmError("Replay output already exists; choose a new directory")
     data = read(p / "build.json")
+    if data.get("document_type") is not None or data.get("schema_version") != 1:
+        raise FilmError("Draft previews are not replayable; Build 2 replay "
+                        "arrives with ANIM-006")
     out.mkdir(parents=True)
     clips = [safe_path(p, s["clip_path"]) for s in data["shots"]]
     clean = out / "MASTER_CLEAN.mp4"

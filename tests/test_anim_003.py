@@ -4,6 +4,7 @@ Fixtures are real Pillow-drawn PNGs (RGBA gradients, distinct frames) and the
 existing synthetic project; nothing here is an artistic approval, a production
 qualification or a Final.
 """
+import copy
 import hashlib
 import json
 from pathlib import Path
@@ -12,12 +13,13 @@ import pytest
 from PIL import Image
 
 from engine import cli
-from engine.animation_assets import (asset_status, import_frame_sequence,
-                                     import_layer_rgba, load_registry,
-                                     resolve_asset, resolve_shot_sequence)
+from engine.animation_assets import (asset_status, content_digest,
+                                     import_frame_sequence, import_layer_rgba,
+                                     load_registry, resolve_asset,
+                                     resolve_shot_sequence, save_registry)
 from engine.animation_migrate import animation_init
-from engine.animation_schema import read_canon, write_canon
-from engine.builds import verify_build
+from engine.animation_schema import canon_bytes, read_canon, write_canon
+from engine.builds import replay_build, verify_build
 from engine.compiler import compile_final, compile_preview
 from engine.core import FilmError, digest, probe, read
 from test_compiler_v03 import assert_master, fixture_project, newest_build
@@ -227,7 +229,7 @@ def test_disallowed_index_paths_are_rejected(tmp_path):
     index = folder / "index.json"
     index.write_text(json.dumps(
         {"frames": [{"file": "linked.png", "sha256": sha(outside)}]}))
-    with pytest.raises(FilmError, match="regular file|escapes|Disallowed"):
+    with pytest.raises(FilmError, match="regular file|escapes|Disallowed|ymlink"):
         import_frame_sequence(p, "S001", index=index)
     # And a symlink inside a folder import is refused, not silently skipped.
     with pytest.raises(FilmError, match="symlink"):
@@ -298,8 +300,10 @@ def test_draft_preview_renders_sequences_and_marks_incomplete(tmp_path):
     result = compile_preview(p)
     folder, record = newest_build(p)
     assert result["status"] == "COMPLETE" and result["draft"] is True
-    assert record["document_type"] == "animation_build"
-    assert record["schema_version"] == 2 and record["mode"] == "PREVIEW"
+    # A draft preview record, not a Build 2 animation_build.
+    assert record["document_type"] == "animation_draft_preview"
+    assert record["schema_version"] == 1 and record["mode"] == "PREVIEW"
+    assert record["draft"] is True and "storage_profile" not in record
     assert record["frames"]["total"] == 48 and record["frames"]["placeholder_frames"] == 24
     assert result["incomplete_entries"] == ["I002"]
     assert any("placeholder" in w for w in record["warnings"])
@@ -307,16 +311,20 @@ def test_draft_preview_renders_sequences_and_marks_incomplete(tmp_path):
     assert output.is_file() and record["output"] == "DRAFT_PREVIEW.mp4"
     video = [s for s in probe(output)["streams"] if s["codec_type"] == "video"]
     assert video[0]["avg_frame_rate"] == "24/1" and int(video[0]["nb_frames"]) == 48
-    # The composed frames and their per-frame map are sealed in the build.
+    # The composed frames, used member snapshots and per-frame draft map are sealed.
     assert (folder / "draft_frames/F_000001.png").is_file()
+    assert "snapshot/animation/assets/A0001/r1/f000000.png" in record["files"]
+    assert not (folder / "frame_map.jsonl").exists()
     rows = [json.loads(line) for line in
-            (folder / "frame_map.jsonl").read_text().splitlines()]
+            (folder / "draft_frame_map.jsonl").read_text().splitlines()]
     assert len(rows) == 48
     first, in_s002 = rows[0], rows[24]
     assert first["file"] == "draft_frames/F_000001.png"
     assert first["sources"][0]["resolved"] is True
     assert first["sources"][0]["local_frame_index"] == 0
+    assert first["sources"][0]["sequence_revision"] == 1
     assert in_s002["sources"][0]["resolved"] is False
+    assert in_s002["sources"][0]["sequence_revision"] is None
     assert "PLACEHOLDER_DRAFT" in in_s002["operations"]
     assert verify_build(folder)["valid"]
     # A resolved draft frame carries the imported pixels (RGBA composited).
@@ -402,10 +410,172 @@ def test_registry_is_canonical_and_version_gated(tmp_path):
     assert document["document_type"] == "animation_asset_registry"
     assert document["schema_version"] == 1
     # Stored bytes are byte-exact canonical form (sorted keys, one trailing LF).
-    from engine.animation_schema import canon_bytes
     assert raw == canon_bytes(document)
     assert read_canon(p / "manifest/animation_assets.json") == document
     document["schema_version"] = 2
     write_canon(p / "manifest/animation_assets.json", document)
     with pytest.raises(FilmError, match="Unsupported"):
         load_registry(p)
+
+
+def test_draft_preview_is_not_replayable(tmp_path):
+    p = animation_project(tmp_path, shot_count=1)
+    make_sequence(tmp_path / "seq", count=48)
+    import_frame_sequence(p, "S001", folder=tmp_path / "seq")
+    compile_preview(p)
+    folder, record = newest_build(p)
+    assert verify_build(folder)["valid"]  # sealed and intact, just not Build 1
+    with pytest.raises(FilmError, match="not replayable"):
+        replay_build(folder, tmp_path / "replayed")
+    assert not (tmp_path / "replayed").exists()
+
+
+def test_draft_preview_crossfade_weights_and_snapshot_pixels(tmp_path):
+    p = animation_project(tmp_path, shot_count=2)
+    make_sequence(tmp_path / "seq_s001", count=30, seed=10)
+    make_sequence(tmp_path / "seq_s002", count=30, seed=200)
+    import_frame_sequence(p, "S001", folder=tmp_path / "seq_s001")
+    import_frame_sequence(p, "S002", folder=tmp_path / "seq_s002")
+    # A real CROSSFADE: extend I001's used range so sum(L) - sum(O) stays 48.
+    timeline = read_canon(p / "timeline/edit.json")
+    timeline["entries"][0]["used_source_range"] = [0, 26]
+    timeline["entries"][0]["transition_out"] = {
+        "id": "T001", "type": "CROSSFADE", "to_instance": "I002",
+        "overlap_frames": 2, "curve": "LINEAR_INTERIOR_V1"}
+    write_canon(p / "timeline/edit.json", timeline)
+    result = compile_preview(p)
+    assert result["status"] == "COMPLETE" and result["incomplete_entries"] == []
+    folder, record = newest_build(p)
+    rows = [json.loads(line) for line in
+            (folder / "draft_frame_map.jsonl").read_text().splitlines()]
+    assert len(rows) == 48
+    # Every line is one CANON_JSON_V1 document plus its trailing LF.
+    raw = (folder / "draft_frame_map.jsonl").read_bytes()
+    assert raw.endswith(b"\n") and b"\r" not in raw
+    for line in raw.split(b"\n")[:-1]:
+        assert line + b"\n" == canon_bytes(json.loads(line))
+    # The overlap covers global frames 24-25; LINEAR_INTERIOR_V1 gives
+    # incoming (k + 1) / (O + 1) and outgoing 1 - incoming for O = 2.
+    for index, weights in ((24, ([2, 3], [1, 3])), (25, ([1, 3], [2, 3]))):
+        sources = rows[index]["sources"]
+        assert [s["shot_id"] for s in sources] == ["S001", "S002"]
+        assert [s["weight"] for s in sources] == [list(w) for w in weights]
+        assert sources[0]["local_frame_index"] == index
+        assert sources[1]["local_frame_index"] == index - 24
+        assert all(s["resolved"] and s["sequence_revision"] == 1
+                   for s in sources)
+        assert rows[index]["operations"] == ["DRAFT_TAG", "CROSSFADE",
+                                             "LINEAR_INTERIOR_V1"]
+    # Outside the overlap each frame has a single full-weight source.
+    assert [s["weight"] for s in rows[0]["sources"]] == [[1, 1]]
+    assert len(rows[23]["sources"]) == len(rows[26]["sources"]) == 1
+    # The compose reads the snapshot copies frozen inside the build folder.
+    offset = ((320 - 96) // 2, (240 - 72) // 2)  # _fit centers a 96x72 source
+    spot = (offset[0] + 8, offset[1] + 6)        # clear of the DRAFT tag area
+    snap = folder / "snapshot" / "animation" / "assets"
+    with Image.open(snap / "A0001/r1/f000000.png") as im:
+        expected = im.convert("RGB").getpixel((8, 6))
+    with Image.open(folder / "draft_frames/F_000001.png") as im:
+        assert im.convert("RGB").getpixel(spot) == expected
+    # Inside the crossfade the pixel is the weighted blend of both members.
+    with Image.open(snap / "A0001/r1/f000024.png") as im:
+        outgoing = im.convert("RGB").getpixel((8, 6))
+    with Image.open(snap / "A0002/r1/f000000.png") as im:
+        incoming = im.convert("RGB").getpixel((8, 6))
+    with Image.open(folder / "draft_frames/F_000025.png") as im:
+        blended = im.convert("RGB").getpixel(spot)
+    for left, right, got in zip(outgoing, incoming, blended):
+        assert abs(got - round(left * 2 / 3 + right / 3)) <= 2
+    # Used members are sealed in the build inventory; unused tails are not.
+    assert "snapshot/animation/assets/A0001/r1/f000025.png" in record["files"]
+    assert "snapshot/animation/assets/A0001/r1/f000026.png" not in record["files"]
+    assert verify_build(folder)["valid"]
+
+
+def test_recipe_refs_participate_in_content_digest(tmp_path):
+    p = animation_project(tmp_path)
+    make_sequence(tmp_path / "seq", count=4)
+    result = import_frame_sequence(p, "S001", folder=tmp_path / "seq")
+    record = load_registry(p)["assets"][result["asset_id"]]["revisions"]["1"]
+    assert content_digest(record) == record["content_sha256"]
+    # A recipe-only change opens a new revision identity (design section 11.4).
+    changed = copy.deepcopy(record)
+    changed["exposure_recipe_ref"] = "production/recipes/exposure_v1.json"
+    assert content_digest(changed) != record["content_sha256"]
+    changed = copy.deepcopy(record)
+    changed["composite_recipe_ref"] = "production/recipes/composite_v1.json"
+    assert content_digest(changed) != record["content_sha256"]
+
+
+def test_index_member_symlink_inside_root_is_rejected(tmp_path):
+    p = animation_project(tmp_path)
+    folder = tmp_path / "seq"
+    folder.mkdir()
+    target = rgba_frame(folder / "real.png")
+    sha = hashlib.sha256(target.read_bytes()).hexdigest()
+    (folder / "link.png").symlink_to("real.png")  # resolves inside the index dir
+    index = folder / "index.json"
+    index.write_text(json.dumps({"frames": [{"file": "link.png", "sha256": sha}]}),
+                     encoding="utf-8")
+    with pytest.raises(FilmError, match="ymlink"):
+        import_frame_sequence(p, "S001", index=index)
+    # A member reached through a symlinked directory is refused the same way.
+    real_dir = folder / "real_dir"
+    real_dir.mkdir()
+    inner = rgba_frame(real_dir / "inner.png")
+    (folder / "linked_dir").symlink_to("real_dir", target_is_directory=True)
+    inner_sha = hashlib.sha256(inner.read_bytes()).hexdigest()
+    index.write_text(json.dumps(
+        {"frames": [{"file": "linked_dir/inner.png", "sha256": inner_sha}]}),
+        encoding="utf-8")
+    with pytest.raises(FilmError, match="ymlink"):
+        import_frame_sequence(p, "S001", index=index)
+
+
+def test_tampered_stored_member_blocks_revision_reuse(tmp_path):
+    p = animation_project(tmp_path)
+    folder = make_sequence(tmp_path / "seq", count=8)
+    first = import_frame_sequence(p, "S001", folder=folder)
+    record = load_registry(p)["assets"][first["asset_id"]]["revisions"]["1"]
+    target = member_path(p, record, 2)
+    data = bytearray(target.read_bytes())
+    data[len(data) // 2] ^= 0xFF  # same length, different bytes
+    target.write_bytes(bytes(data))
+    # Re-importing identical external content matches r1's digest, but its
+    # stored bytes no longer verify, so reuse is refused, not reported.
+    with pytest.raises(FilmError, match="hash mismatch|length changed|Missing"):
+        import_frame_sequence(p, "S001", folder=folder)
+    entry = load_registry(p)["assets"][first["asset_id"]]
+    assert entry["current_revision"] == 1 and list(entry["revisions"]) == ["1"]
+
+
+def test_decode_error_marks_frame_unresolved(tmp_path):
+    p = animation_project(tmp_path, shot_count=1)
+    make_sequence(tmp_path / "seq", count=48)
+    result = import_frame_sequence(p, "S001", folder=tmp_path / "seq")
+    registry = load_registry(p)
+    record = registry["assets"][result["asset_id"]]["revisions"]["1"]
+    # Corrupt the stored member so the bytes pass the pinned hash check but
+    # fail PNG decode at compose time.
+    target = member_path(p, record, 0)
+    broken = target.read_bytes()[: len(target.read_bytes()) // 3]
+    target.write_bytes(broken)
+    record["files"][0]["sha256"] = hashlib.sha256(broken).hexdigest()
+    record["files"][0]["byte_length"] = len(broken)
+    record["content_sha256"] = content_digest(record)
+    registry["assignments"]["S001"]["content_sha256"] = record["content_sha256"]
+    save_registry(p, registry)
+    result = compile_preview(p)
+    folder, record = newest_build(p)
+    assert result["status"] == "COMPLETE"
+    rows = [json.loads(line) for line in
+            (folder / "draft_frame_map.jsonl").read_text().splitlines()]
+    source = rows[0]["sources"][0]
+    assert source["resolved"] is False
+    assert source["sequence_revision"] is None
+    assert "PLACEHOLDER_DRAFT" in rows[0]["operations"]
+    assert any("decode" in w for w in record["warnings"])
+    assert record["frames"]["placeholder_frames"] == 1
+    # Later frames still resolve and compose normally.
+    assert rows[1]["sources"][0]["resolved"] is True
+    assert rows[1]["sources"][0]["sequence_revision"] == 1
