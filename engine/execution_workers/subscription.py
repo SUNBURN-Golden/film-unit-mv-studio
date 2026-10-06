@@ -31,10 +31,11 @@ import os
 import re
 import subprocess
 import sys
+import time
 
 from ..animation_schema import (canon_bytes, check_document, read_canon,
                                 write_canon)
-from ..core import FilmError, now
+from ..core import FilmError, now, safe_path
 from ..storage_backends import ConnectionDropped
 from . import Worker, expected_frame_digest
 
@@ -53,7 +54,7 @@ USAGE_PATHS = {"CODE_RUNTIME_FILE_PACKET", "HOSTED_NOTEBOOK_UI"}
 INCLUSION_STATES = {"CONFIRMED", "UNKNOWN", "NO"}
 ROUTE_LABELS = {"AUTOMATIC", "MANUAL"}
 VERDICTS = {"COVERED", "EXTRA_CHARGE_APPROVED", "ADDITIONAL_CHARGE_REFUSED",
-            "ALLOWANCE_EXHAUSTED", "INCLUSION_UNKNOWN"}
+            "ALLOWANCE_EXHAUSTED", "INCLUSION_UNKNOWN", "NOT_INCLUDED"}
 
 ENTITLEMENT_FIELDS = {"document_type", "schema_version", "entitlement_id",
                       "service", "usage_path", "account_binding",
@@ -67,6 +68,9 @@ CAP_FIELDS = {"max_input_bytes", "max_output_bytes", "max_file_count",
               "cancel_method", "complete_method"}
 
 _SHA_RE = re.compile(r"[0-9a-f]{64}")
+# Identifiers that become path segments are slugs — never free text.
+_SLUG_RE = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}")
+_SEGMENT_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}")
 
 # The shipped worker script may only ever use a pure-stdlib, offline
 # subset; anything else means the artifact is not what the app ships.
@@ -154,6 +158,9 @@ def validate_entitlement(document):
                         f"{sorted(ENTITLEMENT_FIELDS)}")
     _str(document["entitlement_id"], "entitlement_id")
     _str(document["service"], "entitlement.service")
+    if not _SLUG_RE.fullmatch(document["service"]):
+        raise FilmError("entitlement.service is used as a path segment — "
+                        "a lowercase slug ^[a-z0-9][a-z0-9_-]{0,63}$ only")
     if document["usage_path"] not in USAGE_PATHS:
         raise FilmError(f"usage_path must be one of {sorted(USAGE_PATHS)}")
     # Secret-free binding only: a digest, never an email or a token.
@@ -185,6 +192,10 @@ def validate_entitlement(document):
             and not inclusion.get("note"):
         raise FilmError("UNKNOWN inclusion must carry a note — it is "
                         "never shown as 'no extra charge'")
+    if inclusion["execution_in_subscription"] == "CONFIRMED" \
+            and not inclusion.get("note"):
+        raise FilmError("CONFIRMED inclusion must record its evidence "
+                        "source — only then is a run reported as covered")
     prices = document["prices"]
     if prices is not None and (type(prices) is not dict or any(
             type(k) is not str or type(v) is not int or v < 0
@@ -267,7 +278,10 @@ def subscriptions_dir(state_dir):
 
 
 def entitlement_path(state_dir, service):
-    return subscriptions_dir(state_dir) / f"{service}.json"
+    if type(service) is not str or not _SLUG_RE.fullmatch(service):
+        raise FilmError("service is used as a path segment — a lowercase "
+                        "slug ^[a-z0-9][a-z0-9_-]{0,63}$ only")
+    return safe_path(subscriptions_dir(state_dir), f"{service}.json")
 
 
 def save_entitlement(state_dir, document):
@@ -299,21 +313,52 @@ def remaining(entitlement, unit):
     return allowance
 
 
+def entitlement_expired(entitlement, *, now_ms=None):
+    """`expires_at_ms` is a hard wall: past it the binding is STALE and
+    must be re-registered, never silently reused."""
+    expires = entitlement.get("expires_at_ms")
+    if expires is None:
+        return False
+    if now_ms is None:
+        now_ms = int(time.time() * 1000)
+    return now_ms >= expires
+
+
 def charge_check(entitlement, cost, *, allow_additional_charges=False,
                  additional_charges_approved=False):
     """Whether `cost` ({unit: amount}) can run on this entitlement.
 
-    Verdicts are explicit: INCLUSION_UNKNOWN is never reported as "no
-    extra charge", a paid unit is refused while the plan does not allow
-    additional charges (and even then only with a separate approval),
-    and exhaustion just stops — nothing here reroutes to another account
-    or provider.
+    The inclusion gate runs before any allowance arithmetic:
+    `execution_in_subscription` UNKNOWN — or CONFIRMED without its
+    evidence source recorded — is INCLUSION_UNKNOWN and is never
+    reported as "no extra charge"; NO means the run is charged outside
+    the subscription (NOT_INCLUDED, refused like any extra charge unless
+    separately approved). Only a confirmed inclusion that also fits the
+    allowance is COVERED. Paid units are refused while the plan does not
+    allow additional charges, and exhaustion just stops — nothing here
+    reroutes to another account or provider.
     """
-    detail = {}
-    needs_paid = False
-    for unit, amount in sorted(cost.items()):
+    for unit in cost:
         if unit not in ALLOWANCE_UNITS:
             raise FilmError(f"Unknown allowance unit: {unit}")
+    inclusion = entitlement.get("inclusion") or {}
+    state = inclusion.get("execution_in_subscription")
+    if state != "CONFIRMED" and state != "NO":
+        return {"verdict": "INCLUSION_UNKNOWN", "detail": {},
+                "reason": "execution_in_subscription is UNKNOWN — never "
+                          "presented as 'no extra charge'"}
+    if state == "CONFIRMED" and not inclusion.get("note"):
+        return {"verdict": "INCLUSION_UNKNOWN", "detail": {},
+                "reason": "CONFIRMED inclusion carries no recorded "
+                          "evidence source — never presented as 'no "
+                          "extra charge'"}
+    not_included = state == "NO"
+    detail = {}
+    if not_included:
+        detail["inclusion"] = ("execution_in_subscription is NO — the "
+                               "run is an extra charge")
+    needs_paid = not_included
+    for unit, amount in sorted(cost.items()):
         amount = _int(amount, f"cost.{unit}")
         if unit in PAID_UNITS and amount:
             needs_paid = True
@@ -337,9 +382,20 @@ def charge_check(entitlement, cost, *, allow_additional_charges=False,
                                   "another account, provider or paid API"}
             detail[unit] = f"{amount} of {left} remaining"
     if needs_paid and not allow_additional_charges:
+        if not_included:
+            return {"verdict": "NOT_INCLUDED", "detail": detail,
+                    "reason": "execution_in_subscription is NO — the "
+                              "run charges outside the subscription and "
+                              "the plan keeps "
+                              "allow_additional_charges=false"}
         return {"verdict": "ADDITIONAL_CHARGE_REFUSED", "detail": detail,
                 "reason": "the plan keeps allow_additional_charges=false"}
     if needs_paid and not additional_charges_approved:
+        if not_included:
+            return {"verdict": "NOT_INCLUDED", "detail": detail,
+                    "reason": "execution_in_subscription is NO — the "
+                              "extra charge still needs a separate "
+                              "explicit approval"}
         return {"verdict": "ADDITIONAL_CHARGE_REFUSED", "detail": detail,
                 "reason": "allow_additional_charges=true still needs a "
                           "separate explicit approval"}
@@ -440,7 +496,12 @@ def probe_subscription(service, *, entitlement=None, runtime=None,
 
 
 def save_evidence(state_dir, evidence):
-    path = capability_dir(state_dir) / f"{evidence['evidence_id']}.json"
+    evidence_id = evidence["evidence_id"]
+    if type(evidence_id) is not str or not _SEGMENT_RE.fullmatch(
+            evidence_id):
+        raise FilmError("evidence_id is used as a path segment — a slug "
+                        "only, never free text")
+    path = safe_path(capability_dir(state_dir), f"{evidence_id}.json")
     write_canon(path, evidence)
     return path
 
@@ -520,11 +581,14 @@ def subscription_scope_covered(evidence_scope, requested_scope):
     return True
 
 
-def route_label(entitlement):
-    """AUTOMATIC only for a service with a real official execution API;
-    a consumer site is MANUAL — the user runs the shipped script inside
+def route_label(entitlement, worker=None):
+    """AUTOMATIC only for a service with a real official execution API
+    *and* a worker that can actually submit; a MANUAL_ONLY worker or a
+    consumer site is MANUAL — the user runs the shipped script inside
     the service UI. No UI automation, no standing daemon, no polling."""
-    return "AUTOMATIC" if entitlement["official_execution_api"] else "MANUAL"
+    automatic = entitlement["official_execution_api"] \
+        and not getattr(worker, "manual_only", False)
+    return "AUTOMATIC" if automatic else "MANUAL"
 
 
 def subscription_worker_id(service, account_binding):
@@ -565,6 +629,7 @@ class SubscriptionWorker(Worker):
     kind = "SUBSCRIPTION_CODE_RUNTIME"
     evidence_class = "SUBSCRIPTION_PACKET"
     qualification_state = "UNQUALIFIED"
+    manual_only = True
 
     def __init__(self, entitlement, **kwargs):
         self.entitlement = dict(entitlement)
@@ -611,7 +676,7 @@ class SubscriptionWorker(Worker):
     def probe(self):
         return {"worker_id": self.worker_id, "kind": self.kind,
                 "service": self.service,
-                "route_label": route_label(self.entitlement),
+                "route_label": route_label(self.entitlement, self),
                 "qualification_state": self.qualification_state,
                 "evidence_class": self.evidence_class,
                 "official_execution_api":
@@ -670,10 +735,13 @@ class FakeSubscriptionRuntime(SubscriptionWorker):
         script = Path(packet_dir) / packet["worker"]["script"]
         if not script.is_file():
             raise FilmError("packet is missing its worker script")
-        if hashlib.sha256(script.read_bytes()).hexdigest() \
-                != packet["worker"]["sha256"]:
+        script_sha = hashlib.sha256(script.read_bytes()).hexdigest()
+        if script_sha != packet["worker"]["sha256"]:
             raise FilmError("packet worker script hash mismatch — never "
                             "runs substituted code")
+        if script_sha != worker_script_sha256():
+            raise FilmError("packet worker script is not the app-shipped "
+                            "script — only pinned bytes ever run")
         proc = subprocess.run(
             [self.python, str(script), str(packet_dir), str(result_dir)],
             capture_output=True, timeout=timeout, cwd=str(packet_dir),

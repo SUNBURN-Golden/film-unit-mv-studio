@@ -11,6 +11,9 @@ stays UNQUALIFIED.
 import copy
 import hashlib
 import json
+import subprocess
+import sys
+from pathlib import Path
 
 import pytest
 
@@ -695,3 +698,265 @@ def test_result_manifest_document_shape(tmp_path):
     receipt = read_canon(result_dir / "receipt.json")
     assert receipt["kind"] == "COMPLETE"
     assert receipt["members"]
+
+
+# -- inclusion gate (schema §15: unconfirmed is never "no extra charge") --------
+
+def test_inclusion_gate_unknown_no_confirmed():
+    # UNKNOWN is never "no extra charge" — numeric or UNLIMITED bucket
+    unknown = entitlement(inclusion={
+        "execution_in_subscription": "UNKNOWN",
+        "note": "the service never confirmed inclusion"})
+    assert charge_check(unknown, {"subscription_units": 10})[
+        "verdict"] == "INCLUSION_UNKNOWN"
+    assert charge_check(unknown, {"handoff_minutes": 2})[
+        "verdict"] == "INCLUSION_UNKNOWN"
+    # NO is an extra charge — refused while the plan disallows it and
+    # still needs the separate approval when it does not
+    no = entitlement(inclusion={"execution_in_subscription": "NO",
+                                "note": "this runtime is billed per run"})
+    assert charge_check(no, {"subscription_units": 10})[
+        "verdict"] == "NOT_INCLUDED"
+    assert charge_check(no, {"handoff_minutes": 2})[
+        "verdict"] == "NOT_INCLUDED"
+    assert charge_check(no, {"subscription_units": 10},
+                        allow_additional_charges=True)[
+        "verdict"] == "NOT_INCLUDED"
+    assert charge_check(no, {"subscription_units": 10},
+                        allow_additional_charges=True,
+                        additional_charges_approved=True)[
+        "verdict"] == "EXTRA_CHARGE_APPROVED"
+    # CONFIRMED records its evidence source and covers both bucket kinds
+    assert charge_check(entitlement(), {"subscription_units": 10,
+                                        "handoff_minutes": 2})[
+        "verdict"] == "COVERED"
+    with pytest.raises(FilmError, match="evidence source"):
+        entitlement(inclusion={"execution_in_subscription": "CONFIRMED"})
+    no_source = entitlement()
+    no_source["inclusion"] = {"execution_in_subscription": "CONFIRMED"}
+    assert charge_check(no_source, {"subscription_units": 1})[
+        "verdict"] == "INCLUSION_UNKNOWN"
+
+
+def test_export_refuses_unconfirmed_inclusion(tmp_path):
+    state, ent, plan, c, keys, worker, fake = setup_state(
+        tmp_path / "u",
+        inclusion={"execution_in_subscription": "UNKNOWN",
+                   "note": "never confirmed"})
+    c.reserve(keys[0])
+    with pytest.raises(FilmError, match="INCLUSION_UNKNOWN"):
+        export_manual_packets(c, plan, keys[0],
+                              entitlement_path(state, SERVICE), worker,
+                              tmp_path / "pk-u")
+    state, ent, plan, c, keys, worker, fake = setup_state(
+        tmp_path / "n",
+        inclusion={"execution_in_subscription": "NO",
+                   "note": "billed per run"})
+    c.reserve(keys[0])
+    with pytest.raises(FilmError, match="NOT_INCLUDED"):
+        export_manual_packets(c, plan, keys[0],
+                              entitlement_path(state, SERVICE), worker,
+                              tmp_path / "pk-n")
+
+
+# -- path confinement -------------------------------------------------------------
+
+def test_entitlement_path_is_slug_confined(tmp_path):
+    path = entitlement_path(tmp_path, SERVICE)
+    assert path.name == SERVICE + ".json"
+    assert path.parent == (tmp_path / "subscriptions").resolve()
+    for bad in ("../outside", "a/b", "..", "Name", "has space",
+                "x" * 65, ".hidden", "/absolute"):
+        with pytest.raises(FilmError):
+            entitlement_path(tmp_path, bad)
+    from engine.execution_workers.subscription import \
+        validate_entitlement
+    with pytest.raises(FilmError):
+        validate_entitlement(dict(entitlement(), service="../escape"))
+
+
+def test_worker_confines_inputs_and_verifies_hashes(tmp_path):
+    from engine import subscription_worker
+    packet_dir = fixture_packet_dir(tmp_path / "fix")
+    packet = read_canon(packet_dir / "packet.json")
+    outside = tmp_path / "outside.bin"
+    outside.write_bytes(b"not part of the packet")
+    sha = hashlib.sha256(b"not part of the packet").hexdigest()
+    (packet_dir / "inputs").mkdir(exist_ok=True)
+    result_dir = tmp_path / "res"
+
+    def with_input(path, sha256=sha):
+        doc = dict(packet, inputs={
+            "files": [{"path": path, "sha256": sha256, "bytes": 22}],
+            "permissions": packet["inputs"]["permissions"]})
+        write_canon(packet_dir / "packet.json", doc)
+        return subscription_worker.run_packet(str(packet_dir),
+                                              str(result_dir))
+
+    assert with_input(str(outside)) != 0            # absolute path
+    assert with_input("../outside.bin") != 0        # .. escape
+    link = packet_dir / "inputs" / "link.bin"
+    link.symlink_to(outside)
+    assert with_input("inputs/link.bin") != 0       # symlink refused
+    link.unlink()
+    staged = packet_dir / "inputs" / "staged.bin"
+    staged.write_bytes(b"not part of the packet")
+    assert with_input("inputs/staged.bin", sha256="0" * 64) != 0
+    assert with_input("inputs/staged.bin") == 0     # genuine input runs
+
+
+# -- worker script provenance ------------------------------------------------------
+
+def test_modified_worker_script_never_runs_and_never_imports(tmp_path):
+    state, ent, plan, c, keys, worker, fake = setup_state(tmp_path)
+    exp = export_all(plan, c, keys, worker,
+                     entitlement_path(state, SERVICE), tmp_path / "pk")[0]
+    packet_dir = Path(exp["packets"][0])
+    script = packet_dir / SCRIPT_NAME
+    script.write_bytes(script.read_bytes() + b"\n# tampered bytes\n")
+    # the fake runtime only ever executes bytes equal to the pinned
+    # app-shipped script
+    with pytest.raises(FilmError):
+        fake.execute_packet(packet_dir, tmp_path / "res")
+    # a manifest from a tampered run is foreign on import: the manifest
+    # records the hash of the bytes that actually ran (__file__), and
+    # import compares it with the pinned shipped hash — not the echo
+    packet = read_canon(packet_dir / "packet.json")
+    packet["worker"]["sha256"] = hashlib.sha256(
+        script.read_bytes()).hexdigest()
+    write_canon(packet_dir / "packet.json", packet)
+    result_dir = tmp_path / "res2"
+    proc = subprocess.run([sys.executable, str(script), str(packet_dir),
+                           str(result_dir)], capture_output=True)
+    assert proc.returncode == 0, proc.stderr
+    manifest = read_canon(result_dir / "result_manifest.json")
+    assert manifest["worker_script_sha256"] == packet["worker"]["sha256"]
+    with pytest.raises(FilmError, match="FOREIGN_RESULT"):
+        import_result(c, fake, str(packet_dir), result_dir,
+                      entitlement=load_entitlement(state, SERVICE))
+
+
+# -- expiry, probed scope, encoded budgets, route labels ----------------------------
+
+def test_expired_entitlement_stale_on_export(tmp_path):
+    state, ent, plan, c, keys, worker, fake = setup_state(
+        tmp_path, expires_at_ms=1)
+    c.reserve(keys[0])
+    with pytest.raises(FilmError, match="STALE"):
+        export_manual_packets(c, plan, keys[0],
+                              entitlement_path(state, SERVICE), worker,
+                              tmp_path / "pk")
+
+
+def test_expired_entitlement_stale_on_import(tmp_path):
+    state, ent, plan, c, keys, worker, fake = setup_state(tmp_path)
+    exp = export_all(plan, c, keys, worker,
+                     entitlement_path(state, SERVICE), tmp_path / "pk")[0]
+    packet_dir, result_dir = exp["packets"][0], tmp_path / "res"
+    fake.execute_packet(packet_dir, result_dir)
+    doc = load_entitlement(state, SERVICE)
+    doc["expires_at_ms"] = 1                    # window closed since issue
+    write_canon(entitlement_path(state, SERVICE), doc)
+    with pytest.raises(FilmError, match="STALE"):
+        import_result(c, fake, packet_dir, result_dir, entitlement=doc)
+
+
+def _probed_state(tmp_path, ent=None, expires=None,
+                  runtime_contract=None):
+    """Coordinator state with a saved entitlement and one stored fake
+    probe whose scope is widened to cover an 8-frame job."""
+    state = tmp_path / "state"
+    ent = ent or entitlement()
+    save_entitlement(state, ent)
+    fake = FakeSubscriptionRuntime(ent)
+    evidence = probe_subscription(SERVICE, entitlement=ent, runtime=fake,
+                                  work_dir=tmp_path / "probe")
+    evidence["scope"]["frames"] = 8
+    if expires is not None:
+        evidence["environment"]["session_expires_at_ms"] = expires
+    save_evidence(state, evidence)
+    wid = subscription_worker_id(SERVICE, BINDING)
+    plan = make_plan(
+        [operation("op-a", [0, 4], "SUBSCRIPTION_CODE_RUNTIME", wid)],
+        transfer_route="MANUAL_PACKET", output_frames=4)
+    if runtime_contract is not None:
+        for op in plan["operations"]:
+            op["runtime_contract"] = runtime_contract
+    c = Coordinator(state)
+    keys = c.plan_jobs(plan)
+    c.reserve(keys[0])
+    worker = SubscriptionWorker(load_entitlement(state, SERVICE))
+    return state, plan, c, keys, worker
+
+
+def test_expired_evidence_is_stale_on_export(tmp_path):
+    state, plan, c, keys, worker = _probed_state(tmp_path, expires=1)
+    with pytest.raises(FilmError, match="STALE"):
+        export_manual_packets(c, plan, keys[0],
+                              entitlement_path(state, SERVICE), worker,
+                              tmp_path / "pk")
+
+
+def test_export_needs_probed_scope_not_declared_caps(tmp_path):
+    # service_caps *declare* the GPU contract — the probe never ran it
+    ent = entitlement(service_caps=dict(
+        CAPS, runtimes=["python-deterministic-v1", "cuda-tensor-v1"]))
+    state, plan, c, keys, worker = _probed_state(
+        tmp_path, ent=ent, runtime_contract="cuda-tensor-v1")
+    with pytest.raises(FilmError, match="CAPABILITY_REFUSED"):
+        export_manual_packets(c, plan, keys[0],
+                              entitlement_path(state, SERVICE), worker,
+                              tmp_path / "pk")
+    # the probed CPU contract stays covered and exports
+    cpu = make_plan(
+        [operation("cpu-a", [0, 4], "SUBSCRIPTION_CODE_RUNTIME",
+                   subscription_worker_id(SERVICE, BINDING))],
+        transfer_route="MANUAL_PACKET", output_frames=4)
+    keys = c.plan_jobs(cpu)
+    c.reserve(keys[0])
+    exp = export_manual_packets(c, cpu, keys[0],
+                                entitlement_path(state, SERVICE), worker,
+                                tmp_path / "pk2")
+    assert exp["packet_count"] == 1
+
+
+def test_split_ranges_budgets_encoded_png_bytes():
+    contract = {"width": 8, "height": 6, "stride": 32, "pixel_format":
+                "RGBA8", "color_space": "sRGB", "transfer": "SRGB",
+                "color_range": "FULL", "alpha_policy": "STRAIGHT",
+                "fps": {"num": 24, "den": 1}, "frame_range": [0, 8]}
+    from engine import subscription_worker
+    from engine.execution_workers import render_frame_bytes
+    encoded = len(subscription_worker.png_bytes(
+        8, 6, "RGBA8", render_frame_bytes(0, contract, SNAPSHOT, RECIPE)))
+    assert encoded > 8 * 4 * 6                       # incompressible data
+    # a budget that fits two raw frames but only one encoded PNG
+    caps = dict(CAPS, max_output_bytes=encoded * 2 - 1)
+    sizes = {index: encoded for index in range(8)}
+    assert split_ranges([0, 4], contract, caps) == [[0, 2], [2, 4]]
+    assert split_ranges([0, 4], contract, caps, frame_sizes=sizes) == \
+        [[0, 1], [1, 2], [2, 3], [3, 4]]
+
+
+def test_route_label_manual_whenever_worker_is_manual_only(tmp_path):
+    api = entitlement(official_execution_api=True)
+    assert route_label(api) == "AUTOMATIC"           # the service claims one
+    worker = SubscriptionWorker(api)
+    assert route_label(api, worker) == "MANUAL"      # but cannot submit
+    assert worker.probe()["route_label"] == "MANUAL"
+    state = tmp_path / "state"
+    save_entitlement(state, api)
+    wid = subscription_worker_id(SERVICE, BINDING)
+    plan = make_plan(
+        [operation("op-a", [0, 4], "SUBSCRIPTION_CODE_RUNTIME", wid)],
+        transfer_route="MANUAL_PACKET", output_frames=4)
+    c = Coordinator(state)
+    keys = c.plan_jobs(plan)
+    c.reserve(keys[0])
+    exp = export_manual_packets(
+        c, plan, keys[0], entitlement_path(state, SERVICE),
+        SubscriptionWorker(load_entitlement(state, SERVICE)),
+        tmp_path / "pk")
+    assert exp["route_label"] == "MANUAL"
+    packet = read_canon(exp["packets"][0] + "/packet.json")
+    assert packet["route"]["route_label"] == "MANUAL"

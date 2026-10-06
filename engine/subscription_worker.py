@@ -103,12 +103,23 @@ def run_packet(packet_dir, result_dir):
     if contract["stride"] != contract["width"] * _CHANNELS[fmt][1]:
         return _fail("contract stride must equal width * channels")
     # Verify every declared input before doing any work: the run is bound
-    # to the pinned input set, not whatever happens to be staged.
+    # to the pinned input set, not whatever happens to be staged. No
+    # input may escape the packet dir or arrive through a symlink.
+    packet_root = packet_dir.resolve()
     for entry in packet["inputs"]["files"]:
+        rel = Path(entry["path"])
+        if rel.is_absolute() or ".." in rel.parts:
+            return _fail(f"input {entry['path']} escapes the packet dir")
         path = packet_dir / entry["path"]
-        if not path.is_file():
+        if path.is_symlink():
+            return _fail(f"input {entry['path']} is a symlink")
+        resolved = path.resolve()
+        if not resolved.is_relative_to(packet_root):
+            return _fail(f"input {entry['path']} escapes the packet dir")
+        if not resolved.is_file():
             return _fail(f"missing input {entry['path']}")
-        if hashlib.sha256(path.read_bytes()).hexdigest() != entry["sha256"]:
+        if hashlib.sha256(resolved.read_bytes()).hexdigest() \
+                != entry["sha256"]:
             return _fail(f"input {entry['path']} hash mismatch")
     start, end = packet["execution_unit"]["frame_range"]
     outputs = []
@@ -154,8 +165,11 @@ def run_packet(packet_dir, result_dir):
                 "snapshot_digest": packet["plan"]["snapshot_digest"],
                 "plan_revision": packet["plan"]["plan_revision"],
                 "actor": packet["receipt"]["actor"],
-                "worker_script_sha256": packet["worker"]["sha256"],
-                "worker_script_version": packet["worker"]["version"],
+                # provenance is the bytes that actually ran, hashed at
+                # run time — never the packet's echoed claim
+                "worker_script_sha256": hashlib.sha256(
+                    Path(__file__).resolve().read_bytes()).hexdigest(),
+                "worker_script_version": WORKER_SCRIPT_VERSION,
                 "session_epoch": session_epoch,
                 "frame_range": [start, end],
                 "outputs": outputs,

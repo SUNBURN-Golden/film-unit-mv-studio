@@ -598,7 +598,8 @@ def main(argv=None):
                     worker, a.out, input_files=a.input,
                     additional_charges_approved=a.approve_charges))
             result = {"service": a.service,
-                      "route_label": sub_mod.route_label(entitlement),
+                      "route_label": sub_mod.route_label(entitlement,
+                                                         worker),
                       "jobs": exported,
                       "qualification_state": "UNQUALIFIED"}
         elif a.command == "subscription-import":

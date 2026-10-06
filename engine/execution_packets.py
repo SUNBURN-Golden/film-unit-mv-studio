@@ -19,15 +19,21 @@ from pathlib import Path
 import hashlib
 import shutil
 
+from . import subscription_worker
 from .animation_schema import (canon_bytes, check_document, read_canon,
                                write_canon)
 from .core import FilmError, digest, now, safe_path
 from .execution_plan import plan_sha
-from .execution_workers import (check_receipt, expected_frame_digest)
+from .execution_workers import (check_receipt, expected_frame_digest,
+                                render_frame_bytes)
 from .execution_workers.subscription import (audit_worker_source,
                                              charge_check, consume,
+                                             entitlement_expired,
                                              entitlement_sha,
-                                             quote_digest, route_label,
+                                             evidence_registry_state,
+                                             list_evidence, quote_digest,
+                                             route_label,
+                                             subscription_scope_covered,
                                              worker_script_sha256,
                                              worker_script_version)
 from .fav_pack import png_header, sha256_bytes
@@ -297,9 +303,12 @@ def contract_for_plan(plan):
 
 
 def split_ranges(output_range, contract, caps, input_bytes=0,
-                 input_count=0):
+                 input_count=0, frame_sizes=None):
     """Chunk an output range so each packet fits the declared caps.
 
+    `frame_sizes` maps frame index -> actual encoded PNG bytes; when a
+    size is known the byte budget uses it — the raw frame buffer size
+    only stands in for members whose encoded size was never measured.
     Refuses — never silently truncates — when even one frame cannot fit
     (PACKET_LIMIT), and refuses an unknown limit set entirely
     (CAPACITY_UNKNOWN): an unverified limit is never shown as fitting.
@@ -315,10 +324,8 @@ def split_ranges(output_range, contract, caps, input_bytes=0,
     frame_bytes = contract_buffer_bytes(contract)
     # Each packet dir carries packet.json, the worker script, the staged
     # inputs and the produced output members.
-    per_packet = [caps["max_frames_per_packet"],
-                  caps["max_output_bytes"] // frame_bytes,
-                  caps["max_file_count"] - 2 - input_count]
-    limit = min(per_packet)
+    limit = min(caps["max_frames_per_packet"],
+                caps["max_file_count"] - 2 - input_count)
     if limit < 1:
         raise FilmError("PACKET_LIMIT: a single frame does not fit the "
                         "service's declared file limits; the range "
@@ -326,11 +333,24 @@ def split_ranges(output_range, contract, caps, input_bytes=0,
     if input_bytes > caps["max_input_bytes"]:
         raise FilmError("PACKET_LIMIT: declared inputs alone exceed "
                         "max_input_bytes; refusing")
+    budget = caps["max_output_bytes"]
     chunks = []
     start, end = output_range
     cursor = start
     while cursor < end:
-        stop = min(cursor + limit, end)
+        stop = cursor
+        used = 0
+        while stop < end and stop - cursor < limit:
+            size = frame_sizes.get(stop, frame_bytes) \
+                if frame_sizes else frame_bytes
+            if used + size > budget:
+                break
+            used += size
+            stop += 1
+        if stop == cursor:
+            raise FilmError("PACKET_LIMIT: a single frame does not fit "
+                            "the service's declared file limits; the "
+                            "range cannot be split further — refusing")
         chunks.append([cursor, stop])
         cursor = stop
     return chunks
@@ -343,7 +363,7 @@ def _packet_id(job_key, frame_range):
 
 def _packet_doc(job, plan, operation, entitlement, worker, contract,
                 frame_range, packet_index, packet_count, input_entries,
-                input_bytes, caps, issued_at):
+                input_bytes, caps, issued_at, frame_sizes=None):
     start, end = frame_range
     members = [{"frame_index": index,
                 "sha256": expected_frame_digest(
@@ -355,7 +375,7 @@ def _packet_doc(job, plan, operation, entitlement, worker, contract,
         "packet_id": _packet_id(job["job_key"], frame_range),
         "service": entitlement["service"],
         "route": {"transfer_route": "MANUAL_PACKET",
-                  "route_label": route_label(entitlement),
+                  "route_label": route_label(entitlement, worker),
                   "automation": "NONE"},
         "worker": {"worker_id": worker.worker_id,
                    "script": SCRIPT_NAME,
@@ -387,8 +407,11 @@ def _packet_doc(job, plan, operation, entitlement, worker, contract,
         "expected_output": {"dir": "outputs",
                             "members": members,
                             "member_count": len(members),
-                            "bytes": (end - start)
-                            * contract_buffer_bytes(contract)},
+                            "bytes": sum(
+                                (frame_sizes or {}).get(
+                                    index,
+                                    contract_buffer_bytes(contract))
+                                for index in range(start, end))},
         "verification": {
             "independent": "the coordinator re-derives every member "
                            "digest from the pinned snapshot/recipe; a "
@@ -406,7 +429,8 @@ def _packet_doc(job, plan, operation, entitlement, worker, contract,
                     "evidence": {"class": worker.evidence_class,
                                  "qualification_state": "UNQUALIFIED",
                                  "service": entitlement["service"],
-                                 "route_label": route_label(entitlement)}},
+                                 "route_label":
+                                 route_label(entitlement, worker)}},
         "entitlement": {"digest": entitlement_sha(entitlement),
                         "account_binding": entitlement["account_binding"],
                         "credential_epoch": entitlement["credential_epoch"],
@@ -448,6 +472,11 @@ def export_manual_packets(coordinator, plan, key, entitlement_path, worker,
     entitlement_path = Path(entitlement_path)
     entitlement = validate_entitlement(read_canon(entitlement_path))
     assert_same_binding(entitlement, worker)
+    now_ms = coordinator.now_ms()
+    if entitlement_expired(entitlement, now_ms=now_ms):
+        raise FilmError("STALE: the subscription entitlement expired — "
+                        "re-register or renew before issuing packets "
+                        "against it")
     contract = contract or contract_for_plan(plan)
     caps = caps if caps is not None else dict(entitlement["service_caps"])
     if operation["runtime_contract"] not in (caps.get("runtimes") or ()):
@@ -479,8 +508,52 @@ def export_manual_packets(coordinator, plan, key, entitlement_path, worker,
         input_entries.append(entry)
         input_bytes += entry["bytes"]
         staged.append((source, name))
+    # The frame recipe is deterministic, so the encoded PNG size of
+    # every output member is already known — budget the split by those
+    # bytes, not the raw frame buffer.
+    frame_sizes = {}
+    for index in range(*job["output_range"]):
+        frame_sizes[index] = len(subscription_worker.png_bytes(
+            contract["width"], contract["height"],
+            contract["pixel_format"],
+            render_frame_bytes(index, contract, job["snapshot_digest"],
+                               operation["recipe_digest"])))
     chunks = split_ranges(job["output_range"], contract, caps,
-                          input_bytes + 4096, len(input_entries))
+                          input_bytes + 4096, len(input_entries),
+                          frame_sizes=frame_sizes)
+    # Probed evidence, when it exists, decides what a packet may ask
+    # for — declared service_caps never widen what a probe observed.
+    state_dir = getattr(coordinator, "state_dir", None) \
+        or entitlement_path.parent.parent
+    scoped = [ev for ev in list_evidence(state_dir)
+              if ev.get("scope")
+              and (ev.get("environment") or {}).get("service")
+              == entitlement["service"]
+              and ev.get("account_binding")
+              == entitlement["account_binding"]]
+    if scoped:
+        usable = [ev for ev in scoped
+                  if evidence_registry_state(ev, now_ms=now_ms)[0]
+                  != "STALE"]
+        if not usable:
+            raise FilmError("STALE: every probed evidence record for "
+                            "this service is expired — re-probe or wait "
+                            "for the user")
+        requested = {"service": entitlement["service"],
+                     "usage_path": entitlement["usage_path"],
+                     "operation": "compose_frame_range",
+                     "runtime_contract": operation["runtime_contract"],
+                     "pixel_format": contract["pixel_format"],
+                     "network": "NONE", "gpu": "NONE",
+                     "route": "MANUAL_PACKET",
+                     "frames": max(stop - start for start, stop in chunks),
+                     "max_input_bytes": input_bytes + 4096}
+        if not any(subscription_scope_covered(ev["scope"], requested)
+                   for ev in usable):
+            raise FilmError(
+                "CAPABILITY_REFUSED: no live probed scope covers this "
+                "packet — a CPU-only runtime never takes a GPU plan on "
+                "the strength of declared service_caps")
     total_frames = job["output_range"][1] - job["output_range"][0]
     cost = cost or {"subscription_units": total_frames,
                     "handoff_minutes": len(chunks)}
@@ -499,7 +572,7 @@ def export_manual_packets(coordinator, plan, key, entitlement_path, worker,
         packet = _packet_doc(job, plan, operation, entitlement, worker,
                              contract, frame_range, index, len(chunks),
                              input_entries, input_bytes, caps,
-                             issued_at or now())
+                             issued_at or now(), frame_sizes=frame_sizes)
         packet_dir = out_dir / packet["packet_id"]
         packet_dir.mkdir(parents=True, exist_ok=False)
         (packet_dir / "inputs").mkdir(exist_ok=True)
@@ -517,7 +590,7 @@ def export_manual_packets(coordinator, plan, key, entitlement_path, worker,
     coordinator._persist()
     return {"job_key": key, "attempt_id": job["attempt_id"],
             "request_id": job["request_id"], "route_label":
-            route_label(entitlement), "packets": dirs,
+            route_label(entitlement, worker), "packets": dirs,
             "packet_count": len(dirs), "charge": verdict,
             "state": job["state"]}
 
@@ -560,7 +633,10 @@ def import_result(coordinator, worker, packet_dir, result_dir, *,
             or manifest["grant_digest"] != packet["receipt"]["grant_digest"]:
         raise FilmError("FOREIGN_RESULT: manifest is not bound to this "
                         "attempt's nonce/grant digest")
-    if manifest["worker_script_sha256"] != packet["worker"]["sha256"]:
+    if packet["worker"]["sha256"] != worker_script_sha256():
+        raise FilmError("FOREIGN_RESULT: the packet pins a worker script "
+                        "that is not the app-shipped script")
+    if manifest["worker_script_sha256"] != worker_script_sha256():
         raise FilmError("FOREIGN_RESULT: a different worker script "
                         "produced this result")
     if manifest["state"] != "COMPLETE":
@@ -570,6 +646,11 @@ def import_result(coordinator, worker, packet_dir, result_dir, *,
         raise FilmError("FOREIGN_RESULT: result frame_range does not "
                         "match the packet")
     if entitlement is not None:
+        if entitlement_expired(entitlement,
+                               now_ms=coordinator.now_ms()):
+            raise FilmError("STALE: the subscription entitlement expired "
+                            "— re-register or renew; the result is not "
+                            "accepted against a voided grant window")
         if manifest["session_epoch"] != entitlement["credential_epoch"]:
             raise FilmError("SESSION_EXPIRED: the run happened under a "
                             "voided session; re-attach explicitly — the "
