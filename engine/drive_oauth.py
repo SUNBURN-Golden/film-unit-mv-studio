@@ -184,6 +184,12 @@ class _AuthorizedBackend:
     def name(self):
         return self._session.backend.name
 
+    @property
+    def range_supported(self):
+        # Capability flags pass through so the reader's cap gate can run
+        # before a whole-body response is ever requested.
+        return getattr(self._session.backend, "range_supported", True)
+
     def _allowed(self, object_id):
         self._session._check()
         if object_id is not None and not self._session._accessible(object_id):
@@ -205,11 +211,28 @@ class _AuthorizedBackend:
 
     def list_objects(self):
         self._session._check()
-        return self._session.backend.list_objects()
+        ids = self._session.backend.list_objects()
+        if self._session.granted_object_ids is None:
+            return ids
+        # drive.file scope: only the explicit grant plus objects this app
+        # created in this credential epoch are visible — listing must not
+        # widen the scope to the whole store.
+        visible = set(self._session.granted_object_ids) | self._session._owned
+        return [i for i in ids if i in visible]
 
     def put_object(self, object_id, data):
         self._session._check()
         result = self._session.backend.put_object(object_id, data)
+        if result.get("reused"):
+            # The idempotent path means the object already existed; that is
+            # only acceptable when it was already inside the grant. It is
+            # never adopted into the app-owned set.
+            if not self._session._accessible(object_id):
+                raise ArchiveRequestError(
+                    403, "permission_denied",
+                    f"Object {object_id} already exists outside this "
+                    "connection's granted set")
+            return result
         self._session._owned.add(object_id)
         return result
 
@@ -230,8 +253,19 @@ class _AuthorizedBackend:
 
     def complete_upload(self, session_id):
         self._session._check()
+        object_id = self._session._sessions.pop(session_id)
         result = self._session.backend.complete_upload(session_id)
-        self._session._owned.add(self._session._sessions.pop(session_id))
+        if result.get("reused"):
+            # Same rule as put_object: a pre-existing object outside the
+            # grant is refused, and only objects this app actually created
+            # become owned.
+            if not self._session._accessible(object_id):
+                raise ArchiveRequestError(
+                    403, "permission_denied",
+                    f"Object {object_id} already exists outside this "
+                    "connection's granted set")
+            return result
+        self._session._owned.add(object_id)
         return result
 
 

@@ -67,16 +67,19 @@ def _root_for(manifest_path, root):
 
 
 def archive_restore(manifest, dest, *, root=None, workspace=None,
-                    offline=False, whole_pack_cap=None):
+                    offline=False, whole_pack_cap=None, allowed_root=None):
     doc, path = _load_manifest(manifest)
     backend = LocalArchiveBackend(_root_for(path, root))
     cache = Workspace(workspace or Path(_root_for(path, root)) / "cache",
                       DEFAULT_CACHE_BYTES)
-    result = restore_archive(backend, doc, cache, Path(dest),
-                             allowed_root=Path(dest).resolve().parent,
-                             offline=offline,
-                             whole_pack_cap=whole_pack_cap
-                             or DEFAULT_CACHE_BYTES)
+    # The restore boundary is a fixed configured root — the process working
+    # directory unless the caller pins another one — never something
+    # derived from the destination itself.
+    result = restore_archive(
+        backend, doc, cache, Path(dest).expanduser(),
+        allowed_root=Path(allowed_root) if allowed_root else Path.cwd(),
+        offline=offline,
+        whole_pack_cap=whole_pack_cap or DEFAULT_CACHE_BYTES)
     return result
 
 

@@ -157,9 +157,12 @@ def _restore(session):
             and st.button("아카이브 복원", key="arc_restore"):
         def run():
             doc = _load_manifest(pick)
-            target = Path(dest).expanduser().resolve()
+            # Never pre-resolve the destination: the restore gate must see
+            # the path the user typed, and the allowed root is the fixed
+            # drive home — not something derived from the destination.
+            target = Path(dest).expanduser()
             return restore_archive(session.authorized, doc, workspace,
-                                   target, allowed_root=target.parent,
+                                   target, allowed_root=_home(),
                                    whole_pack_cap=int(cache_cap))
         result = _guarded(run)
         if result is not None:

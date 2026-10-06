@@ -2,12 +2,13 @@
 
 Objects live content-addressed under `root/objects/`. A local directory is
 not Drive: ranges are exact file seeks, uploads are atomic file writes, and
-`object_info` recomputes SHA-256 from the stored bytes — for a local store
-that recomputation is the same strength of evidence a provider checksum
-would be for a remote store.
+`object_info` only reports the stored length — this backend is also the
+verifier's read source, so a hash it recomputes locally is
+`LOCAL_RECOMPUTED`, never the provider-fixed SHA-256 evidence that would
+make UPLOAD_HASH_MATCHED (schema §10.3). Sealing an object on this backend
+therefore requires a bounded FULL_READBACK.
 """
 from pathlib import Path
-import hashlib
 import os
 import tempfile
 import uuid
@@ -18,7 +19,7 @@ from . import (ArchiveRequestError, RangeResult, check_object_id)
 
 class LocalArchiveBackend:
     name = "LOCAL"
-    provider_checksum = "sha256"
+    provider_checksum = "LOCAL_RECOMPUTED"
 
     def __init__(self, root):
         self.root = Path(root)
@@ -33,11 +34,15 @@ class LocalArchiveBackend:
             raise FilmError("Object id escapes the archive root")
         return path
 
-    def _body(self, object_id):
+    def _stat(self, object_id):
         path = self._path(object_id)
         if not path.is_file():
             raise ArchiveRequestError(404, "not_found",
                                       f"Archive object missing: {object_id}")
+        return path, path.stat().st_size
+
+    def _body(self, object_id):
+        path, _ = self._stat(object_id)
         return path.read_bytes()
 
     def list_objects(self):
@@ -52,13 +57,19 @@ class LocalArchiveBackend:
                 or offset < 0 or length < 1:
             raise ArchiveRequestError(416, "range_not_satisfiable",
                                       "Malformed byte range")
-        body = self._body(object_id)
-        if offset + length > len(body):
+        path, size = self._stat(object_id)
+        if offset + length > size:
             raise ArchiveRequestError(416, "range_not_satisfiable",
                                       f"Range [{offset}, {offset + length}) "
-                                      f"outside object length {len(body)}")
-        return RangeResult(206, body[offset:offset + length],
-                           range_start=offset, total_length=len(body))
+                                      f"outside object length {size}")
+        with path.open("rb") as stream:
+            stream.seek(offset)
+            body = stream.read(length)
+        if len(body) != length:
+            raise ArchiveRequestError(416, "range_not_satisfiable",
+                                      "Short read inside the stored object")
+        return RangeResult(206, body,
+                           range_start=offset, total_length=size)
 
     def put_object(self, object_id, data):
         """Content-addressed write: identical bytes are idempotent, an
@@ -80,10 +91,12 @@ class LocalArchiveBackend:
         return {"object_id": object_id, "reused": False}
 
     def object_info(self, object_id):
-        body = self._body(object_id)
-        return {"byte_length": len(body),
-                "sha256": hashlib.sha256(body).hexdigest(),
-                "provider_checksum": "sha256"}
+        # The stored length is metadata; no locally recomputed hash is
+        # reported as a provider checksum — that evidence class does not
+        # exist on a filesystem backend (schema §10.3).
+        _, size = self._stat(object_id)
+        return {"byte_length": size,
+                "provider_checksum": "LOCAL_RECOMPUTED"}
 
     # Resumable upload: an upload session confirms its received offset, which
     # is transfer progress — not an archive integrity check.

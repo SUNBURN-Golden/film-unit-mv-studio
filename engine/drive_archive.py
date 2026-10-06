@@ -17,6 +17,7 @@ verified inside the declared cap plus the space reservation to succeed —
 only then may a restore report offline capability.
 """
 from pathlib import Path
+import os
 import uuid
 
 from .animation_schema import canon_bytes
@@ -45,7 +46,7 @@ def archive_frames(backend, members, *, profile, image_contract=None,
     `backend` may be a raw backend or a DriveSession's `authorized`
     wrapper; every call still passes its grant boundary.
     """
-    transport = transport or {"retry": dict(DEFAULT_RETRY),
+    transport = transport or {"retry": DEFAULT_RETRY,
                               "upload": dict(DEFAULT_UPLOAD)}
     pack_bytes, entries = build_pack(members)
     contract = image_contract or image_contract_for(
@@ -105,6 +106,38 @@ def _cache_key(member):
     return f"mbr-{member['sha256'][:24]}"
 
 
+def _check_restore_dest(dest, allowed_root):
+    """Destination gate evaluated on the *unresolved* destination.
+
+    `..` components are refused outright; with an allowed root the
+    destination must sit inside it; and neither the destination nor any
+    existing ancestor between it and the root may be a symlink or a
+    non-directory — a resolved-path check alone would follow a planted
+    link and still look inside the root.
+    """
+    if ".." in dest.parts:
+        raise FilmError("RESTORE_PATH_REJECTED: '..' components are not "
+                        "allowed in the restore destination")
+    probe = dest if dest.is_absolute() else Path.cwd() / dest
+    probe = Path(os.path.normpath(probe))
+    if allowed_root is not None:
+        stop = Path(allowed_root).resolve()
+        if not probe.is_relative_to(stop):
+            raise FilmError("RESTORE_PATH_REJECTED: destination escapes "
+                            "the allowed root")
+    else:
+        stop = Path(probe.anchor)
+    for node in (probe, *probe.parents):
+        if node == stop:
+            break
+        if node.is_symlink():
+            raise FilmError("RESTORE_PATH_REJECTED: destination path "
+                            "crosses a symlink")
+        if node.exists() and not node.is_dir():
+            raise FilmError("RESTORE_PATH_REJECTED: destination path "
+                            "crosses a non-directory")
+
+
 def restore_archive(backend, archive_doc, workspace, dest_dir, *,
                     allowed_root=None, members=None, prefix="F",
                     offline=False, whole_pack_cap=None, sleep_fn=None):
@@ -113,19 +146,14 @@ def restore_archive(backend, archive_doc, workspace, dest_dir, *,
     Nothing reaches the destination until every selected member was
     fetched, hash-verified and technically checked. `members=None` restores
     the full index order; names are generated here — index fields never
-    become paths.
+    become paths. `allowed_root` is a fixed configured root supplied by the
+    caller — never something derived from the destination.
     """
     archive_doc = validate_archive(archive_doc)
     if archive_doc.get("pack") is None:
         raise FilmError("This archive has no pack object")
     dest = Path(dest_dir)
-    if allowed_root is not None:
-        allowed = Path(allowed_root).resolve()
-        if not dest.resolve().is_relative_to(allowed):
-            raise FilmError("RESTORE_PATH_REJECTED: destination escapes the "
-                            "allowed root")
-    if dest.is_symlink():
-        raise FilmError("RESTORE_PATH_REJECTED: destination is a symlink")
+    _check_restore_dest(dest, allowed_root)
     pack = archive_doc["pack"]
     retry = archive_doc["transport"]["retry"]
     index = fetch_index(backend, pack["index_object_id"],
@@ -200,7 +228,7 @@ def archive_status(backend, archive_doc):
         objects.append(state)
     level = archive_doc["verification"]["level"]
     return {"archive_id": archive_doc["archive_id"],
-            "profile": archive_doc["profile"],
+            "storage_profile": archive_doc["storage_profile"],
             "objects": objects,
             "verification": archive_doc["verification"],
             "sealed": LEVELS[level]

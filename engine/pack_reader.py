@@ -17,7 +17,7 @@ already-verified members in `verified` so a resume does not re-fetch them.
 """
 from .core import FilmError
 from .fav_pack import sha256_bytes, validate_index
-from .archive_manifest import bounded_read, DEFAULT_RETRY
+from .archive_manifest import bounded_read
 
 UNVERIFIED = "UNVERIFIED"
 VERIFIED_MEMBERS = "VERIFIED_MEMBERS"
@@ -33,7 +33,7 @@ class PackReader:
         self.pack_object_id = pack_object_id
         self.index = validate_index(index_document)
         self.whole_pack_cap = whole_pack_cap
-        self.retry = retry or dict(DEFAULT_RETRY)
+        self.retry = retry          # None = declared policy omitted: 0 retries
         self.sleep_fn = sleep_fn
         self.state = UNVERIFIED
         self.verified = {}        # member_id -> bytes, in index order
@@ -51,31 +51,53 @@ class PackReader:
         return bounded_read(operation, self.retry, **kwargs)
 
     def _range(self, offset, length):
+        pack_length = self.index["pack_byte_length"]
+        if getattr(self.backend, "range_supported", True) is False \
+                and (self.whole_pack_cap is None
+                     or pack_length > self.whole_pack_cap):
+            # The backend can only answer with the whole body and that body
+            # is undeclared or over the cap — refuse before it is read.
+            raise FilmError(
+                "RANGE_FALLBACK_DENIED: the backend cannot serve ranges "
+                "and the whole pack is undeclared or exceeds the declared "
+                "whole-pack cap; refusing before the body is read")
         result = self._fetch(lambda: self.backend.get_range(
             self.pack_object_id, offset, length))
-        pack_length = self.index["pack_byte_length"]
         if result.status == 206:
             if result.range_start != offset:
-                raise FilmError("Range response starts at the wrong offset")
+                raise FilmError("INPUT_MISMATCH: range response starts at "
+                                "the wrong offset")
             if len(result.body) != length:
-                raise FilmError("Range response is shorter than the index "
-                                "member length")
-            if result.total_length is not None \
-                    and result.total_length != pack_length:
-                raise FilmError("Range response total length does not match "
-                                "the pinned pack_byte_length")
+                raise FilmError("INPUT_MISMATCH: range response is shorter "
+                                "than the index member length")
+            if result.total_length is None \
+                    or result.total_length != pack_length:
+                raise FilmError("INPUT_MISMATCH: range response total "
+                                "length does not match the pinned "
+                                "pack_byte_length")
             self.fetched_bytes += len(result.body)
             return result.body
         if result.status == 200:
             # Whole body answering a range request: only a predeclared cap
-            # makes this a permitted fallback. Returns None — the caller
-            # serves the member from the verified whole body.
-            if self.whole_pack_cap is None \
-                    or len(result.body) > self.whole_pack_cap:
+            # makes this a permitted fallback. The declared/known total is
+            # checked before the body is adopted — an over-cap or
+            # wrong-total response is refused, never spooled. Returns None —
+            # the caller serves the member from the verified whole body.
+            if self.whole_pack_cap is None:
                 raise FilmError(
                     "RANGE_FALLBACK_DENIED: the backend answered a range "
-                    "request with an undeclared/over-cap whole pack; "
-                    "refusing the unbounded body")
+                    "request with an undeclared whole pack; refusing the "
+                    "unbounded body")
+            if result.total_length is not None \
+                    and result.total_length != pack_length:
+                raise FilmError(
+                    "INPUT_MISMATCH: whole-body response total length "
+                    "does not match the pinned pack_byte_length")
+            if pack_length > self.whole_pack_cap \
+                    or len(result.body) > self.whole_pack_cap:
+                raise FilmError(
+                    "CAPACITY_BLOCKED: the whole-pack body exceeds the "
+                    "declared cap; refusing it")
             self._adopt_whole(result.body)
             return None
         raise FilmError(f"Unexpected range response status {result.status}")
@@ -83,8 +105,8 @@ class PackReader:
     def _adopt_whole(self, body):
         pack_length = self.index["pack_byte_length"]
         if len(body) != pack_length:
-            raise FilmError("Whole-pack fallback length does not match "
-                            "pack_byte_length")
+            raise FilmError("INPUT_MISMATCH: whole-pack body length does "
+                            "not match pack_byte_length")
         if sha256_bytes(body) != self.index["pack_sha256"]:
             raise FilmError("Whole-pack fallback hash does not match "
                             "pack_sha256")
@@ -137,6 +159,11 @@ class PackReader:
             self.pack_object_id))
         if result.status != 200:
             raise FilmError("Whole-pack fetch requires a 200 body")
+        if result.total_length is not None \
+                and result.total_length != pack_length:
+            raise FilmError("INPUT_MISMATCH: whole-pack fetch declares a "
+                            "total length that differs from the pinned "
+                            "pack_byte_length")
         return self._adopt_whole(result.body)
 
     def slice_member(self, member_id):
@@ -157,7 +184,7 @@ def fetch_index(backend, index_object_id, index_sha256, retry=None,
     if sleep_fn is not None:
         kwargs["sleep_fn"] = sleep_fn
     result = bounded_read(lambda: backend.get_object(index_object_id),
-                          retry or dict(DEFAULT_RETRY), **kwargs)
+                          retry, **kwargs)
     if result.status != 200:
         raise FilmError("Index fetch requires a 200 body")
     return read_index(result.body, expected_sha256=index_sha256)

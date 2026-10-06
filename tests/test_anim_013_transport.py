@@ -8,19 +8,22 @@ TRANSPORT-RETRY and ARCHIVE-LEVEL fixtures.
 """
 import pytest
 
-from anim_013_kit import fake_backend
+from anim_013_kit import fake_backend, make_members
 
-from engine.archive_manifest import (DEFAULT_RETRY, bounded_read,
-                                     resumable_put, seal_archive,
-                                     seal_status, verify_object,
-                                     verify_archive, make_archive)
+from engine.archive_manifest import (bounded_read, resumable_put,
+                                     seal_archive, seal_status,
+                                     verify_object, verify_archive,
+                                     make_archive)
 from engine.core import FilmError
 from engine.fav_pack import sha256_bytes
 from engine.storage_backends import (ArchiveRequestError,
                                      ConnectionDropped)
 from engine.storage_backends.local import LocalArchiveBackend
 
-RETRY = {"max_attempts": 4, "backoff_ms": [0, 0, 0]}
+# A fully declared schema §11 policy: 3 retries + elapsed/request/byte caps.
+RETRY = {"max_retries": 3, "backoff_base_ms": 0, "max_backoff_ms": 0,
+         "max_elapsed_ms": 60000, "max_requests": 16,
+         "max_transferred_bytes": 1 << 24}
 NO_SLEEP = lambda ms: None
 
 
@@ -187,6 +190,17 @@ def test_non_resumable_put_falls_back_to_atomic_put():
     assert backend.get_object("obj-1").body == b"data"
 
 
+def test_resumable_put_never_spins_on_a_stalled_status():
+    # A server that accepts writes but never advances its confirmed offset
+    # is bounded by the declared retry allowance — the loop cannot spin.
+    backend = fake_backend()
+    backend.upload_chunk = lambda session, offset, data: {"received": 0}
+    with pytest.raises(FilmError, match="TRANSPORT_RETRY_EXHAUSTED"):
+        resumable_put(backend, "obj-up", b"x" * 1024,
+                      {"chunk_bytes": 256, "resumable": True}, RETRY,
+                      NO_SLEEP)
+
+
 # -- artifact verification levels --------------------------------------------------
 
 def test_provider_sha256_gives_upload_hash_matched():
@@ -228,12 +242,26 @@ def test_stored_bytes_tamper_fails_verification():
                       len(b"payload-bytes") - 1, sleep_fn=NO_SLEEP)
 
 
-def test_local_backend_reports_recomputed_sha256(tmp_path):
+def test_local_backend_has_no_provider_checksum_and_needs_readback(tmp_path):
+    # A hash the local backend recomputes is not provider-fixed SHA-256
+    # evidence (schema §10.3) — sealing requires the bounded readback.
     backend = LocalArchiveBackend(tmp_path / "arc")
     _obj(backend)
+    info = backend.object_info("obj-1")
+    assert info["provider_checksum"] != "sha256"
+    assert "sha256" not in info
     level = verify_object(backend, "obj-1", sha256_bytes(b"payload-bytes"),
                           len(b"payload-bytes"), sleep_fn=NO_SLEEP)
-    assert level == "UPLOAD_HASH_MATCHED"
+    assert level == "FULL_READBACK"
+
+
+def test_local_archive_seals_at_full_readback(tmp_path):
+    from engine.drive_archive import archive_frames
+    backend = LocalArchiveBackend(tmp_path / "arc")
+    result = archive_frames(backend, make_members(2, width=16, height=16),
+                            profile="LOCAL_FULL")
+    assert result["achieved_level"] == "FULL_READBACK"
+    assert result["archive"]["verification"]["level"] == "FULL_READBACK"
 
 
 # -- seal evaluation --------------------------------------------------------------
@@ -268,6 +296,33 @@ def test_verify_archive_reports_weakest_level():
                       "revision": None}])
     assert verify_archive(backend, doc, sleep_fn=NO_SLEEP) \
         == "UPLOAD_HASH_MATCHED"
+
+
+def test_omitted_retry_policy_means_zero_retries():
+    backend = fake_backend()
+    _obj(backend)
+    backend.drops["get_object"] = 1
+    with pytest.raises(ConnectionDropped):
+        bounded_read(lambda: backend.get_object("obj-1"), None, NO_SLEEP)
+    assert sum(1 for r in backend.requests if r["op"] == "get_object") == 1
+
+
+def test_retry_policy_must_be_fully_declared_and_capped():
+    objects = [{"object_id": "o", "kind": "pack", "byte_length": 1,
+                "sha256": "0" * 64, "revision": None}]
+    upload = {"chunk_bytes": 4, "resumable": True}
+    # A partial policy is rejected, never read as unbounded.
+    with pytest.raises(FilmError, match="transport.retry"):
+        make_archive("arc-t", "DRIVE_BOUNDED", objects,
+                     transport={"retry": {"max_retries": 2},
+                                "upload": upload})
+    with pytest.raises(FilmError, match="max_retries"):
+        make_archive("arc-t", "DRIVE_BOUNDED", objects,
+                     transport={"retry": dict(RETRY, max_retries=4),
+                                "upload": upload})
+    doc = make_archive("arc-t", "DRIVE_BOUNDED", objects,
+                       transport={"retry": dict(RETRY), "upload": upload})
+    assert doc["transport"]["retry"]["max_retries"] == 3
 
 
 def test_manifest_rejects_secret_metadata_fields():

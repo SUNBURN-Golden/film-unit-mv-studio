@@ -112,6 +112,56 @@ def test_granted_set_limits_reads_to_selected_objects():
     assert session.authorized.get_object("obj-new").body == b"n"
 
 
+def test_list_objects_stays_inside_the_grant():
+    backend = fake_backend()
+    backend.put_object("obj-a", b"a")
+    backend.put_object("obj-b", b"b")
+    session = connect_drive(
+        FakeOAuthFlow(granted_object_ids=["obj-a"]),
+        MemoryTokenStore(), backend)
+    # Listing must not widen drive.file scope to the whole store.
+    assert session.authorized.list_objects() == ["obj-a"]
+    session.authorized.put_object("obj-new", b"n")
+    assert session.authorized.list_objects() == ["obj-a", "obj-new"]
+
+
+def test_idempotent_put_of_ungranted_object_is_refused():
+    backend = fake_backend()
+    backend.put_object("foreign", b"seed")   # exists before the session
+    session = connect_drive(
+        FakeOAuthFlow(granted_object_ids=[]),
+        MemoryTokenStore(), backend)
+    # The reused path must not adopt an out-of-grant object into _owned.
+    with pytest.raises(ArchiveRequestError) as e:
+        session.authorized.put_object("foreign", b"seed")
+    assert e.value.status == 403
+    with pytest.raises(ArchiveRequestError) as e:
+        session.authorized.get_object("foreign")
+    assert e.value.status == 403
+    assert session.authorized.list_objects() == []
+    # The same refusal holds on the resumable-upload completion path.
+    s = session.authorized.create_upload_session("foreign", 4)
+    session.authorized.upload_chunk(s, 0, b"seed")
+    with pytest.raises(ArchiveRequestError) as e:
+        session.authorized.complete_upload(s)
+    assert e.value.status == 403
+    with pytest.raises(ArchiveRequestError):
+        session.authorized.get_object("foreign")
+
+
+def test_idempotent_put_of_a_granted_object_is_fine():
+    backend = fake_backend()
+    backend.put_object("obj-a", b"a")
+    session = connect_drive(
+        FakeOAuthFlow(granted_object_ids=["obj-a"]),
+        MemoryTokenStore(), backend)
+    # Identical bytes on an already-granted object: allowed, still not
+    # counted as app-owned beyond the explicit grant.
+    result = session.authorized.put_object("obj-a", b"a")
+    assert result["reused"] is True
+    assert session.authorized.get_object("obj-a").body == b"a"
+
+
 def test_metadata_holds_no_secrets(tmp_path):
     session = connect()
     session.save_metadata(tmp_path)

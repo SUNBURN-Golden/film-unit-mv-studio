@@ -198,6 +198,12 @@ class RestoreStage:
     def write_member(self, name, data):
         if self._closed:
             raise FilmError("Restore stage is closed")
+        # Only a plain basename may be staged: anything with a separator,
+        # anchor or traversal component could escape the stage directory.
+        if type(name) is not str or name in ("", ".", "..") \
+                or Path(name).name != name:
+            raise FilmError(f"Restore member name must be a plain "
+                            f"basename: {name!r}")
         self._charge(len(data))
         fd, temp = tempfile.mkstemp(dir=self.dir, prefix=".tmp-")
         try:
@@ -232,6 +238,11 @@ class RestoreStage:
         if self._closed:
             raise FilmError("Restore stage is closed")
         dest_dir = Path(dest_dir)
+        if dest_dir.is_symlink():
+            self.abort()
+            raise FilmError(
+                "RESTORE_PATH_REJECTED: destination is a symlink; "
+                "staged bytes are never written through one")
         staged = sorted(f for f in self.dir.iterdir() if f.is_file())
         for f in staged:
             target = dest_dir / f.name

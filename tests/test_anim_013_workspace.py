@@ -90,6 +90,29 @@ def test_staging_abort_exposes_nothing(tmp_path):
     assert ws.available_bytes == 1200
 
 
+def test_write_member_accepts_only_plain_basenames(tmp_path):
+    ws = Workspace(tmp_path / "ws", capacity_bytes=1200)
+    stage = ws.begin_restore()
+    for name in ("a/b.png", "/abs.png", "..", "../x.png", ""):
+        with pytest.raises(FilmError, match="basename"):
+            stage.write_member(name, b"x")
+    stage.write_member("F_000001.png", b"x")
+    stage.abort()
+
+
+def test_commit_refuses_a_symlinked_destination(tmp_path):
+    ws = Workspace(tmp_path / "ws", capacity_bytes=1200)
+    real = tmp_path / "real"
+    real.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(real)
+    stage = ws.begin_restore()
+    stage.write_member("F_000001.png", b"x")
+    with pytest.raises(FilmError, match="RESTORE_PATH_REJECTED"):
+        stage.commit(link)
+    assert not (real / "F_000001.png").exists()
+
+
 def test_commit_refuses_existing_destinations_and_aborts(tmp_path):
     ws = Workspace(tmp_path / "ws", capacity_bytes=1200)
     dest = tmp_path / "out"

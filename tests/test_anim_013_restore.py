@@ -13,8 +13,13 @@ from engine.drive_archive import (archive_frames, archive_status,
 from engine.fav_pack import index_bytes, make_index, sha256_bytes
 from engine.pack_reader import (VERIFIED_FULL_PACK, VERIFIED_MEMBERS,
                                 PackReader, fetch_index)
-from engine.storage_backends import ConnectionDropped
+from engine.storage_backends import (ConnectionDropped, RangeResult)
 from engine.workspace import Workspace
+
+# A fully declared schema §11 retry policy for the drop/resume fixtures.
+RETRY = {"max_retries": 3, "backoff_base_ms": 0, "max_backoff_ms": 0,
+         "max_elapsed_ms": 60000, "max_requests": 32,
+         "max_transferred_bytes": 1 << 24}
 
 
 def _reader(result, backend, cap=None):
@@ -72,6 +77,51 @@ def test_undeclared_or_over_cap_whole_pack_response_is_refused():
     reader = _reader(result, backend, cap=pack_length - 1)
     with pytest.raises(FilmError, match="RANGE_FALLBACK_DENIED"):
         reader.read_member(reader.index["members"][0]["member_id"])
+
+
+def test_whole_pack_cap_refusal_happens_before_any_body_read():
+    # The cap gate runs on the known totals — a backend that cannot serve
+    # ranges is refused before the whole body is ever requested.
+    result, backend = archived()
+    index = fetch_index(backend, result["index_object_id"],
+                        result["archive"]["pack"]["index_sha256"],
+                        sleep_fn=lambda ms: None)
+    pack_length = result["archive"]["pack"]["byte_length"]
+
+    def bomb(*_args):
+        raise AssertionError("a pack body read was attempted")
+
+    backend.range_supported = False
+    backend.get_range = bomb
+    backend.get_object = bomb
+    reader = PackReader(backend, result["pack_object_id"], index,
+                        sleep_fn=lambda ms: None)
+    with pytest.raises(FilmError, match="RANGE_FALLBACK_DENIED"):
+        reader.read_member(index["members"][0]["member_id"])
+    reader = PackReader(backend, result["pack_object_id"], index,
+                        whole_pack_cap=pack_length - 1,
+                        sleep_fn=lambda ms: None)
+    with pytest.raises(FilmError, match="RANGE_FALLBACK_DENIED"):
+        reader.read_member(index["members"][0]["member_id"])
+
+
+def test_206_without_a_declared_total_is_input_mismatch():
+    result, backend = archived()
+    index = fetch_index(backend, result["index_object_id"],
+                        result["archive"]["pack"]["index_sha256"],
+                        sleep_fn=lambda ms: None)
+    target = index["members"][0]
+
+    def no_total(object_id, offset, length):
+        body = backend._objects[object_id][offset:offset + length]
+        return RangeResult(206, body, range_start=offset,
+                           total_length=None)
+
+    backend.get_range = no_total
+    reader = PackReader(backend, result["pack_object_id"], index,
+                        sleep_fn=lambda ms: None)
+    with pytest.raises(FilmError, match="INPUT_MISMATCH"):
+        reader.read_member(target["member_id"])
 
 
 def test_short_payload_and_wrong_total_are_mismatch_failures():
@@ -148,7 +198,7 @@ def test_member_reads_resume_after_interruption_without_refetching():
                         result["archive"]["pack"]["index_sha256"],
                         sleep_fn=lambda ms: None)
     reader = PackReader(backend, result["pack_object_id"], index,
-                        sleep_fn=lambda ms: None)
+                        retry=dict(RETRY), sleep_fn=lambda ms: None)
     first = index["members"][0]["member_id"]
     reader.read_member(first)
     # Drops beyond the same-session retry cap propagate to the caller.
@@ -249,6 +299,29 @@ def test_restore_rejects_symlink_destination(tmp_path):
     link.symlink_to(real)
     with pytest.raises(FilmError, match="RESTORE_PATH_REJECTED"):
         restore_archive(backend, result["archive"], _ws(tmp_path), link)
+    assert not (real / "F_000001.png").exists()
+
+
+def test_restore_rejects_symlinked_intermediate_directory(tmp_path):
+    # The destination sits under the allowed root lexically, but an
+    # existing ancestor is a symlink — resolving first would hide it.
+    result, backend = archived()
+    real = tmp_path / "real"
+    real.mkdir()
+    linkdir = tmp_path / "linkdir"
+    linkdir.symlink_to(real)
+    with pytest.raises(FilmError, match="RESTORE_PATH_REJECTED"):
+        restore_archive(backend, result["archive"], _ws(tmp_path),
+                        linkdir / "out", allowed_root=tmp_path)
+    assert not (real / "out").exists()
+
+
+def test_restore_rejects_dotdot_destination(tmp_path):
+    result, backend = archived()
+    with pytest.raises(FilmError, match="RESTORE_PATH_REJECTED"):
+        restore_archive(backend, result["archive"], _ws(tmp_path),
+                        tmp_path / "a" / ".." / "out",
+                        allowed_root=tmp_path)
 
 
 def test_offline_restore_needs_the_full_pack_first(tmp_path):

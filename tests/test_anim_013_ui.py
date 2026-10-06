@@ -72,7 +72,8 @@ def test_connect_archive_restore_and_cache_status(screen, tmp_path):
     next(b for b in at.button if b.key == "arc_make").click().run()
     assert not at.exception
     assert any("아카이브 봉인" in s.value for s in at.success)
-    dest = tmp_path / "restored"
+    # The restore boundary is the fixed drive home under FILM_UNIT_HOME.
+    dest = home / "home" / "drive" / "restored"
     next(t for t in at.text_input if t.key == "arc_dest") \
         .set_value(str(dest))
     at.run()
@@ -84,6 +85,32 @@ def test_connect_archive_restore_and_cache_status(screen, tmp_path):
     next(b for b in at.button if b.key == "arc_status").click().run()
     assert not at.exception
     assert (dest / "F_000001.png").read_bytes() == make_png(0, 16, 16)
+
+
+def test_restore_refuses_a_symlinked_destination(screen, tmp_path):
+    at, home = screen
+    next(b for b in at.button if b.key == "arc_connect").click().run()
+    source = tmp_path / "frames"
+    source.mkdir()
+    (source / "f0.png").write_bytes(make_png(0, 16, 16))
+    next(t for t in at.text_input if t.key == "arc_source") \
+        .set_value(str(source))
+    at.run()
+    next(b for b in at.button if b.key == "arc_make").click().run()
+    assert not at.exception
+    # A symlink inside the allowed root pointing outside it is refused —
+    # the panel must not resolve it away before the restore gate runs.
+    real = tmp_path / "outside"
+    real.mkdir()
+    link = home / "home" / "drive" / "link"
+    link.symlink_to(real)
+    next(t for t in at.text_input if t.key == "arc_dest") \
+        .set_value(str(link))
+    at.run()
+    next(b for b in at.button if b.key == "arc_restore").click().run()
+    assert not at.exception
+    assert any("RESTORE_PATH_REJECTED" in e.value for e in at.error)
+    assert list(real.iterdir()) == []
 
 
 def test_logout_disconnects_the_session(screen):

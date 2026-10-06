@@ -30,6 +30,7 @@ duplicate bytes were actually counted.
 """
 from pathlib import Path
 import hashlib
+import os
 import uuid
 
 from ..core import FilmError
@@ -65,9 +66,18 @@ class FakeDriveBackend:
 
     # -- plumbing ----------------------------------------------------------
     def _store(self, object_id, data):
-        self._objects[object_id] = data
         if self._root is not None:
-            (self._root / "objects" / object_id).write_bytes(data)
+            path = self._root / "objects" / object_id
+            flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+            flags |= getattr(os, "O_NOFOLLOW", 0)
+            try:
+                fd = os.open(path, flags, 0o600)
+            except OSError as e:
+                raise FilmError(f"Refusing to write archive object "
+                                f"{object_id} through a symlink") from e
+            with os.fdopen(fd, "wb") as stream:
+                stream.write(data)
+        self._objects[object_id] = data
 
     def _log(self, op, object_id, **fields):
         self.requests.append({"op": op, "object_id": object_id, **fields})
