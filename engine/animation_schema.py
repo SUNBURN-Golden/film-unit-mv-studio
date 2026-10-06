@@ -32,6 +32,7 @@ DOCUMENT_SCHEMAS = {
     "capability_evidence": 1,
     "animation_work_packet": 1,
     "animation_draft_frames": 1,
+    "job_journal": 1,
     "execution_plan": 1,
 }
 

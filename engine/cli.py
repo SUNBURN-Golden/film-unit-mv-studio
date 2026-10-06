@@ -113,6 +113,56 @@ def main(argv=None):
     draft_commit.add_argument("shot")
     draft_commit.add_argument("--asset-id", help="Existing A0001-style asset id to revise")
     draft_commit.add_argument("--note", default="")
+    seg_quote = sub.add_parser("segment-quote", help="ANIM-010 B path: capability preflight + quote for one plan segment through the declared adapter (fake_segment only is wired; FAKE/UNQUALIFIED)")
+    seg_quote.add_argument("project")
+    seg_quote.add_argument("shot")
+    seg_quote.add_argument("--start", type=int, required=True, help="Segment start frame (cut-local)")
+    seg_quote.add_argument("--end", type=int, required=True, help="Segment end frame, exclusive")
+    seg_quote.add_argument("--adapter", default="fake_segment")
+    seg_submit = sub.add_parser("segment-submit", help="ANIM-010 B path: approve the exact quote, reserve the ledger amount and submit one job; same-input resume reuses the job identity")
+    seg_submit.add_argument("project")
+    seg_submit.add_argument("shot")
+    seg_submit.add_argument("--start", type=int, required=True)
+    seg_submit.add_argument("--end", type=int, required=True)
+    seg_submit.add_argument("--adapter", default="fake_segment")
+    seg_submit.add_argument("--approver", required=True, help="Human approving this exact quote")
+    seg_submit.add_argument("--quote-id", required=True, help="The quote id being approved; a changed quote must be re-approved")
+    seg_submit.add_argument("--cap", type=float, required=True, help="Approved spending ceiling for the quote's unit")
+    seg_submit.add_argument("--max-retries", type=int, default=0, help="Cost-cap bound on attempts; not proof a paid call is safe to resubmit")
+    seg_reconcile = sub.add_parser("segment-reconcile", help="ANIM-010 B path: explicit status query on a job's existing identity; the only way to resolve UNKNOWN")
+    seg_reconcile.add_argument("project")
+    seg_reconcile.add_argument("job")
+    seg_reconcile.add_argument("--adapter", default="fake_segment")
+    seg_import = sub.add_parser("segment-import", help="ANIM-010 B path: verify a returned clip (endpoint rule, length, hashes) and stage cut-local members; a longer clip needs --source-start/--source-count")
+    seg_import.add_argument("project")
+    seg_import.add_argument("job")
+    seg_import.add_argument("--adapter", default="fake_segment")
+    seg_import.add_argument("--source-start", type=int, default=0, help="First usable source frame of the returned clip")
+    seg_import.add_argument("--source-count", type=int, help="Explicit used range length when the clip is longer than needed")
+    seg_commit = sub.add_parser("segment-commit", help="ANIM-010 B path: assemble the shot's verified segment imports into a DRAFT FRAME_SEQUENCE")
+    seg_commit.add_argument("project")
+    seg_commit.add_argument("shot")
+    seg_commit.add_argument("--asset-id", help="Existing A0001-style asset id to revise")
+    seg_commit.add_argument("--note", default="")
+    seg_jobs = sub.add_parser("segment-jobs", help="ANIM-010 B path: list segment job records (FAKE provider only)")
+    seg_jobs.add_argument("project")
+    seg_jobs.add_argument("--shot")
+    seg_ctrl = sub.add_parser("segment-control", help="ANIM-010 B path: import one conditioning control image (keypose/breakdown/pose) for a B segment; records DRAFT, fills no member")
+    seg_ctrl.add_argument("project")
+    seg_ctrl.add_argument("shot")
+    seg_ctrl.add_argument("--file", required=True, help="Conditioning PNG image")
+    seg_ctrl.add_argument("--role", required=True,
+                          choices=["keypose", "breakdown", "pose", "layout"])
+    seg_ctrl.add_argument("--frame", required=True, type=int,
+                          help="Cut-local frame the control conditions; == length only for a forced end anchor")
+    seg_ctrl.add_argument("--references", default="",
+                          help="Comma-separated pins asset_id:revision:sha256")
+    seg_ctrl.add_argument("--asset-id", help="Existing A0001-style asset id to revise")
+    seg_ctrl.add_argument("--note", default="")
+    seg_fake = sub.add_parser("segment-fake", help="ANIM-010 B path: show or configure the FAKE provider (local test double; behaviours like lost_ack are simulation switches, never a real provider)")
+    seg_fake.add_argument("project")
+    seg_fake.add_argument("--set", dest="fake_set",
+                          help="JSON object merged into the fake provider's settings/behaviors")
     arch = sub.add_parser("archive-create", help="ANIM-013: pack a folder of PNGs into a sealed FAV1 archive on a local backend")
     arch.add_argument("source", help="Folder of PNG members")
     arch.add_argument("--root", required=True, help="Archive backend root (objects/ + manifests/)")
@@ -351,6 +401,56 @@ def main(argv=None):
             from .animation_assets import commit_draft_frames
             result = commit_draft_frames(a.project, a.shot,
                                          asset_id=a.asset_id, note=a.note)
+        elif a.command == "segment-quote":
+            from .segment_gen import segment_quote
+            result = segment_quote(a.project, a.shot, a.start, a.end,
+                                   adapter_id=a.adapter)
+        elif a.command == "segment-submit":
+            from .segment_gen import segment_submit
+            result = segment_submit(a.project, a.shot, a.start, a.end,
+                                    adapter_id=a.adapter,
+                                    approver=a.approver,
+                                    quote_id=a.quote_id, cap=a.cap,
+                                    max_retries=a.max_retries)
+        elif a.command == "segment-reconcile":
+            from .segment_gen import segment_reconcile
+            result = segment_reconcile(a.project, a.job, adapter_id=a.adapter)
+        elif a.command == "segment-import":
+            from .segment_gen import segment_import
+            result = segment_import(a.project, a.job, adapter_id=a.adapter,
+                                    source_start=a.source_start,
+                                    source_count=a.source_count)
+        elif a.command == "segment-commit":
+            from .segment_gen import commit_segment_sequence
+            result = commit_segment_sequence(a.project, a.shot,
+                                             asset_id=a.asset_id,
+                                             note=a.note)
+        elif a.command == "segment-jobs":
+            from .segment_gen import segment_jobs
+            result = segment_jobs(a.project, a.shot)
+        elif a.command == "segment-control":
+            from .segment_gen import import_segment_control
+
+            def _ctrl_pin(value):
+                parts = value.strip().split(":")
+                if len(parts) != 3:
+                    raise FilmError("--references entries must be "
+                                    "asset_id:revision:sha256")
+                return {"asset_id": parts[0], "revision": int(parts[1]),
+                        "content_sha256": parts[2]}
+            result = import_segment_control(
+                a.project, a.shot, a.file, role=a.role, frame=a.frame,
+                references=[_ctrl_pin(v) for v in a.references.split(",")
+                            if v.strip()],
+                asset_id=a.asset_id, note=a.note)
+        elif a.command == "segment-fake":
+            from .segment_fake import configure_fake, fake_state
+            if a.fake_set:
+                result = configure_fake(
+                    a.project,
+                    **json.loads(a.fake_set))
+            else:
+                result = fake_state(a.project)
         elif a.command == "archive-create":
             from .archive_cli import archive_create
             result = archive_create(a.source, a.root, profile=a.profile,

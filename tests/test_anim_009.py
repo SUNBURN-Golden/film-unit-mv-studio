@@ -207,15 +207,23 @@ def test_control_image_rejects_bad_role_frame_and_canvas(tmp_path):
 
 # --- path A / B motion plan boundaries --------------------------------------
 
-def test_path_a_accepted_path_b_still_unimplemented(tmp_path):
+def test_path_a_accepted_path_b_wired_by_segment_adapter(tmp_path):
+    """B is implemented (ANIM-010) through engine/segment_gen.py jobs; the
+    plan contract accepts B segments but keeps its own capability scope."""
     p, pins, _ = a_scene(tmp_path, with_packet=False)
     plan = a_plan(pins)
     assert validate_shot_plan(copy.deepcopy(plan), length=FRAMES)
-    assert "A" not in UNIMPLEMENTED_PATHS and "B" in UNIMPLEMENTED_PATHS
-    bad = copy.deepcopy(plan)
-    bad["segments"][0]["path"] = "B"
-    with pytest.raises(FilmError, match="Path B"):
-        validate_shot_plan(bad, length=FRAMES)
+    assert "A" not in UNIMPLEMENTED_PATHS and "B" not in UNIMPLEMENTED_PATHS
+    # A pure-B segment validates as a plan shape; its conditioning inputs
+    # are checked later by the segment adapter's capability preflight.
+    b = copy.deepcopy(plan)
+    b["segments"][0]["path"] = "B"
+    b["segments"][0]["capabilities"] = ["REFERENCE_IMAGES"]
+    assert validate_shot_plan(b, length=FRAMES)
+    # A-only chaining is not part of the B contract.
+    b["segments"][0]["capabilities"] = ["PREVIOUS_FRAME_AUX"]
+    with pytest.raises(FilmError, match="Unknown path-B"):
+        validate_shot_plan(b, length=FRAMES)
 
 
 def test_path_a_plan_contract_gates(tmp_path):

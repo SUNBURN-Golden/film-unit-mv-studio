@@ -6,8 +6,10 @@ document (CANON_JSON_V1). It declares the shot's contiguous path segments
 and the assets each path consumes: path `"C"` needs the RIG_SPEC pin and
 layer tracks the compositor binds, while path `"A"` (image-based frame
 production, ANIM-009) consumes master/layout/control/mask/replacement pins
-through the work packet and its imported draft sequence. `"B"` stays
-declared but unimplemented.
+through the work packet and its imported draft sequence. Path `"B"`
+(conditional segment generation, ANIM-010) consumes the same conditioning
+inputs through `engine/segment_gen.py`'s adapter jobs; its output is staged
+and assembled into an ordinary draft FRAME_SEQUENCE there.
 
 Tracks follow the ExposureSchedule contract from `engine/exposure.py`: a
 layer's `exposure` tiles `[0, cut_length)` and each slot's `drawing` indexes
@@ -48,7 +50,9 @@ ASSET_ROLES = {"layer", "mask", "replacement", "master", "layout",
                "control"}
 # Plan-asset roles that only make sense with a segment of the given path.
 ROLES_NEEDING_C = {"layer"}
-ROLES_NEEDING_A = {"master", "layout", "control"}
+# Conditioning-input roles: consumed by path-A packets or path-B segment
+# jobs; meaningless on a purely local C segment.
+ROLES_NEEDING_A_OR_B = {"master", "layout", "control"}
 EVENT_TYPES = {"CONTACT", "DIRECTION_CHANGE", "OCCLUSION", "REAPPEARANCE",
                "NOTE"}
 MOTION_INTENTS = {"STATIC", "ANIMATED"}
@@ -67,11 +71,19 @@ NATIVE_C_CAPABILITIES = {"RGBA_LAYER", "PARENT_TRANSFORM", "PIVOT",
 A_PATH_CAPABILITIES = {"REFERENCE_IMAGES", "LAYOUT_GUIDE", "POSE_GUIDE",
                        "MASK_REGION", "START_END_IMAGES", "ALPHA_OUTPUT",
                        "PREVIOUS_FRAME_AUX"}
+# B-path scope (design 8.3, ANIM-010): the conditioning needs a segment
+# generation adapter can be asked to honour. Declaring one gates the
+# adapter's capability preflight in engine/segment_gen.py; PREVIOUS_FRAME_AUX
+# is A-only (the B contract does not chain provider frames).
+B_PATH_CAPABILITIES = {"REFERENCE_IMAGES", "LAYOUT_GUIDE", "POSE_GUIDE",
+                       "MASK_REGION", "START_END_IMAGES", "ALPHA_OUTPUT"}
 # Named in the design as explicitly out of v1 scope; a plan declaring one is
 # refused with the unsupported name surfaced, not silently dropped.
 UNSUPPORTED_V1_CAPABILITIES = {"MESH_DEFORMATION", "INVERSE_KINEMATICS",
                                "3D_TRANSFORM", "AUTO_LIP_SYNC"}
-UNIMPLEMENTED_PATHS = {"B"}
+# Paths the contract names that this build cannot execute; B is wired through
+# the segment adapter (engine/segment_gen.py, fake provider only).
+UNIMPLEMENTED_PATHS = set()
 
 
 def _int(value, what, minimum=0):
@@ -190,9 +202,10 @@ def _check_assets(assets, paths):
         if item["role"] in ROLES_NEEDING_C and "C" not in paths:
             raise FilmError(f"{what} role {item['role']} needs a path-C "
                             "segment")
-        if item["role"] in ROLES_NEEDING_A and "A" not in paths:
-            raise FilmError(f"{what} role {item['role']} needs a path-A "
-                            "segment")
+        if item["role"] in ROLES_NEEDING_A_OR_B \
+                and not paths & {"A", "B"}:
+            raise FilmError(f"{what} role {item['role']} needs a path-A or "
+                            "path-B segment")
         if item["layout"] is not None:
             _point(item["layout"], f"{what} layout")
 
@@ -246,9 +259,9 @@ def _check_segments(segments, length):
         if path in UNIMPLEMENTED_PATHS:
             raise FilmError(f"Path {path} is declared in the contract but "
                             "not implemented in v1")
-        if path not in {"A", "C"}:
+        if path not in {"A", "B", "C"}:
             raise FilmError(f"Unknown production path {path}; v1 implements "
-                            "A and C")
+                            "A, B and C")
         paths.append(path)
         capabilities = segment["capabilities"]
         if type(capabilities) is not list \
@@ -261,6 +274,7 @@ def _check_segments(segments, length):
             raise FilmError("Capabilities declared unsupported in v1: "
                             + ", ".join(sorted(unsupported)))
         allowed = A_PATH_CAPABILITIES if path == "A" \
+            else B_PATH_CAPABILITIES if path == "B" \
             else NATIVE_C_CAPABILITIES
         unknown = [c for c in capabilities if c not in allowed]
         if unknown:
