@@ -32,8 +32,10 @@ from .animation_assets import resolve_shot_sequence
 from .animation_schema import (canon_bytes, check_document,
                                load_animation_timeline,
                                require_animation_profile)
+from .builds import verify_build
 from .core import FilmError, atomic_text, digest, now, read, safe_path
 from .exposure import schedule_digest
+from .frame_clock import frame_filename
 from .transitions import audit_timeline
 
 REVIEW_TYPE = "animation_review"
@@ -73,8 +75,24 @@ BINDING_FIELDS = {
 }
 
 SHA_RE = re.compile(r"^[0-9a-f]{64}$")
+BUILD_ID_RE = re.compile(r"B[0-9]{4,}")
 KEY_FIELDS = {"CUT": "instance_id", "TRANSITION": "transition_id",
               "FINAL_FILM": "build_id"}
+
+
+def _build_folder(p, build_id):
+    """A build id is the sealed `B<digits>` directory name — never a path."""
+    if type(build_id) is not str or not BUILD_ID_RE.fullmatch(build_id):
+        raise FilmError(f"Invalid build id: {build_id}")
+    return safe_path(p / "builds", build_id)
+
+
+def _deliverable_path(folder, deliverable):
+    """A reviewable deliverable is a plain file name inside the build."""
+    if type(deliverable) is not str or deliverable in {"", ".."} \
+            or Path(deliverable).name != deliverable:
+        raise FilmError(f"Invalid deliverable name: {deliverable}")
+    return safe_path(folder, deliverable)
 
 
 def _sha_or_none(value, field, allow_none=False):
@@ -417,13 +435,16 @@ def review_status(project, exposure=None, strict=True):
             bound = hashlib.sha256(canon_bytes(fields)).hexdigest()
             matching = [r for r in candidates
                         if r["binding_sha256"] == bound]
-            current = [r for r in matching if _approves(r)]
+            # The latest record bound to the current digests decides: a
+            # later FIX_REQUIRED supersedes an earlier APPROVED.
+            latest = matching[-1] if matching else None
+            approved = latest is not None and _approves(latest)
             status[target] = {
                 "scope": key, "binding_sha256": bound,
-                "state": ("CURRENT" if current
+                "state": ("CURRENT" if approved
                           else "CHANGES_REQUIRED" if matching
                           else "STALE" if candidates else "UNREVIEWED"),
-                "review_id": current[-1]["review_id"] if current else None,
+                "review_id": latest["review_id"] if approved else None,
                 "records": len(candidates)}
     return {"targets": status, "edit_digest": targets["edit_digest"],
             "records": len(records)}
@@ -508,7 +529,7 @@ def record_film_review(project, build_id, *, reviewer, methods,
     """
     p = Path(project)
     require_animation_profile(p)
-    folder = p / "builds" / build_id
+    folder = _build_folder(p, build_id)
     record_path = folder / "build.json"
     if not record_path.is_file():
         raise FilmError(f"No build {build_id}")
@@ -517,7 +538,9 @@ def record_film_review(project, build_id, *, reviewer, methods,
             or build.get("schema_version") != 2 \
             or build.get("status") != "COMPLETE":
         raise FilmError("FINAL_FILM review binds a COMPLETE Build 2 record")
-    target = folder / deliverable
+    if not verify_build(folder)["valid"]:
+        raise FilmError(f"Build {build_id} failed its inventory check")
+    target = _deliverable_path(folder, deliverable)
     if not target.is_file():
         raise FilmError(f"Build {build_id} has no deliverable {deliverable}")
     fields = {
@@ -538,26 +561,80 @@ def record_film_review(project, build_id, *, reviewer, methods,
     return append_review(p, record)
 
 
+def _film_binding_current(folder, record):
+    """Every FINAL_FILM bound input still verifies against the sealed build.
+
+    Beyond the manifest and deliverable digests, the sealed inventory must
+    still pass `verify_build`, the stored delivery frames must re-hash to
+    the bound frame-sequence root, and the archived audio, lyric-review
+    and font inputs must re-hash to the bound digests — a replaced file
+    makes the record stale even when the manifest itself was untouched.
+    """
+    # Deferred: animation_compiler imports this module.
+    from .animation_compiler import frame_pixel_sha256, sequence_root
+    try:
+        fields = {k: record[k] for k in BINDING_FIELDS["FINAL_FILM"]}
+        if hashlib.sha256(canon_bytes(fields)).hexdigest() \
+                != record["binding_sha256"]:
+            return False
+        deliverable = _deliverable_path(folder, record["deliverable"])
+        if not deliverable.is_file() \
+                or digest(deliverable) != record["deliverable_sha256"]:
+            return False
+        if not verify_build(folder)["valid"]:
+            return False
+        build = read(folder / "build.json")
+        frames = safe_path(folder, build["sequences"]["delivery_dir"])
+        names = [frame_filename(i)
+                 for i in range(build["sequences"]["frame_count"])]
+        if {f.name for f in frames.glob("*.png")} != set(names):
+            return False
+        root = sequence_root("subbed", [frame_pixel_sha256(frames / name)
+                                        for name in names])
+        if root != record["frame_sequence_root"]:
+            return False
+        master = safe_path(folder, build["audio"]["path"])
+        if not master.is_file() or digest(master) != record["audio_sha256"]:
+            return False
+        timed = read(safe_path(folder, "lyrics_timed.json"), {})
+        if (timed.get("review") or {}).get("lyrics_review_sha256") \
+                != record["lyrics_review_sha256"]:
+            return False
+        if record["font_sha256"] is not None:
+            exported = Path(
+                build["subtitles"]["font"].get("exported_path", "")).name
+            font = safe_path(folder / "subtitle_fonts", exported)
+            if not font.is_file() or digest(font) != record["font_sha256"]:
+                return False
+        return True
+    except (AttributeError, FilmError, OSError, KeyError, TypeError,
+            ValueError):
+        return False
+
+
 def film_review_status(project, build_id):
-    """The current FINAL_FILM approval for a build, if one exists."""
-    records = [r for r in load_reviews(project)
+    """The current FINAL_FILM approval for a build, if one exists.
+
+    A record authorizes only while every bound digest still verifies on
+    disk; among the records that still bind, the latest decision wins — a
+    later FIX_REQUIRED on the same digests supersedes an earlier APPROVED.
+    """
+    p = Path(project)
+    folder = _build_folder(p, build_id)
+    records = [r for r in load_reviews(p)
                if r["scope"] == "FINAL_FILM" and r["build_id"] == build_id]
     if not records:
         return {"state": "UNREVIEWED", "review_id": None}
-    folder = Path(project) / "builds" / build_id
     manifest = folder / "build.json"
-    current = []
+    bound = []
     if manifest.is_file():
         manifest_sha = digest(manifest)
-        for r in records:
-            if r["build_manifest_sha256"] == manifest_sha and _approves(r):
-                fields = {k: r[k] for k in BINDING_FIELDS["FINAL_FILM"]}
-                deliverable = folder / r["deliverable"]
-                if deliverable.is_file() \
-                        and digest(deliverable) == r["deliverable_sha256"] \
-                        and hashlib.sha256(canon_bytes(fields)).hexdigest() \
-                        == r["binding_sha256"]:
-                    current.append(r)
-    return {"state": "CURRENT" if current else "STALE",
-            "review_id": current[-1]["review_id"] if current else None,
+        bound = [r for r in records
+                 if r["build_manifest_sha256"] == manifest_sha
+                 and _film_binding_current(folder, r)]
+    latest = bound[-1] if bound else None
+    approved = latest is not None and _approves(latest)
+    return {"state": ("CURRENT" if approved
+                      else "CHANGES_REQUIRED" if bound else "STALE"),
+            "review_id": latest["review_id"] if approved else None,
             "records": len(records)}
