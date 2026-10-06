@@ -396,3 +396,20 @@ def test_pyinstaller_spec_only_names_files_that_exist():
         if not relative.startswith("vendor/"):              # fetched at build time by prepare_desktop_assets.py
             assert (root / relative).exists(), relative
     assert 'sys.platform == "darwin"' in spec and "BUNDLE(" in spec
+
+
+def test_animation_ui_and_segment_engine_ship_in_the_bundle():
+    """ANIM-012: the desktop bundle must carry the new animation modules and the
+    frozen smoke must actually import the path-A/B/C panel module."""
+    root = Path(__file__).resolve().parents[1]
+    spec = (root / "desktop/film_unit.spec").read_text(encoding="utf-8")
+    # app/*.py ships as data, engine submodules as hidden imports — so
+    # animation_ui.py, segment_gen.py and segment_fake.py ride along without
+    # being named individually.
+    assert '(root / "app").glob("*.py")' in spec
+    assert 'collect_submodules("engine")' in spec
+    assert (root / "app/animation_ui.py").is_file()
+    assert (root / "engine/segment_gen.py").is_file()
+    assert (root / "engine/segment_fake.py").is_file()
+    smoke = (root / "desktop/smoke.py").read_text(encoding="utf-8")
+    assert '"app.animation_ui"' in smoke   # frozen smoke imports every panel

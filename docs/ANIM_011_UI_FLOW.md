@@ -1,5 +1,9 @@
 # ANIM-011 — 사용자 흐름 UI 연결: 실행 결과 기록
 
+> ANIM-012에서 경로 B 비활성 버튼을 `fake_segment`(개발·시험용, UNQUALIFIED)의
+> 실제 흐름으로 교체했다. 현재 상태는 [사용 안내](FRAME_ANIMATION_V1_USER_GUIDE_KO.md)와
+> `tests/test_anim_012_ui.py`가 정본이다. 아래 경로 B 관련 기술은 ANIM-011 시점의 기록이다.
+
 `app/control_panel.py`의 `08 · ANIMATION` 탭(모듈 `app/animation_ui.py`)은
 `production_profile == "FRAME_ANIMATION_V1"` 프로젝트에서만 나타난다.
 LEGACY_MV 프로젝트에는 탭도 위젯도 렌더링되지 않고 아무것도 변환하지 않는다.

@@ -7,8 +7,13 @@ calls the ANIM-003..010 engine functions directly; the panel re-implements
 no validation. Imported art stays DRAFT and every lock/review/decision is a
 protocol record bound to exact digests — qualification UNQUALIFIED,
 acceptance PENDING, release NOT_AUTHORIZED; the panel never implies
-production release. The path-B (ANIM-010) connection point exists but stays
-disabled until ANIM-012 wires it to the adapter.
+production release. The path-B (ANIM-010) section at the bottom is wired to
+the explicit dev/test adapter `fake_segment` (UNQUALIFIED) only: control
+inputs → capability preflight → quote/reservation → a separate cost
+approval → submit → same-identity status/reconcile → result verification →
+draft import → commit. Real providers stay declaration-only and refuse
+submission; UNKNOWN and cancel-race outcomes are fenced (no polling, no
+automatic retry, no substitute submission).
 """
 from pathlib import Path
 import json
@@ -38,6 +43,12 @@ from engine.core import FilmError, project_mutex, safe_path
 from engine.frame_sequence import animation_validate
 from engine.motion_plan import load_shot_plan, plan_path, save_shot_plan
 from engine.packets import export_work_packets
+from engine.segment_fake import make_adapter
+from engine.segment_gen import (commit_segment_sequence,
+                                import_segment_control, load_job_journal,
+                                segment_cancel, segment_import, segment_jobs,
+                                segment_quote, segment_reconcile,
+                                segment_submit)
 
 CONTROL_ROLES = ["layout", "keypose", "breakdown", "pose", "first_frame",
                  "inbetween"]
@@ -574,14 +585,183 @@ def _output(p, entries, locks, route, reviews):
             f"{pick['build_id']} 수정 필요를 기록했습니다")
 
 
-def _path_b():
+def _b_flash(action, result):
+    """Flash a path-B job result; ambiguous/in-flight outcomes are warnings."""
+    status = result.get("status") or result.get("state")
+    detail = result.get("detail") or ""
+    if status in {"UNKNOWN", "CANCEL_REQUESTED"}:
+        st.session_state["an_warn"] = (
+            f"{action}: {result['job_id']}은(는) {status} — 같은 작업의 "
+            "'상태 확인'만 허용됩니다. 새 제출·대체 제출·자동 재시도는 "
+            "차단됩니다. " + detail)
+    elif status == "FAILED_CONFIRMED":
+        st.session_state["an_warn"] = (
+            f"{action}: {result['job_id']} 실패가 확인됐습니다 — "
+            f"{(result.get('failure') or {}).get('reason', '')} " + detail)
+    else:
+        st.session_state["an_flash"] = f"{action}: {status} " + detail
+    st.session_state["an_detail"] = result
+    st.rerun()
+
+
+def _b_do(action, fn):
+    result = _guarded(fn)
+    if result is not None:
+        _b_flash(action, result)
+    return result
+
+
+def _path_b(p, shot_id):
+    """Path-B segment generation against the dev/test fake adapter only.
+
+    fake_segment is a local deterministic double (FAKE/UNQUALIFIED); real
+    providers stay declaration-only and refuse submission. The UI drives
+    control inputs → capability preflight → quote → separate cost approval
+    → reservation+submit → explicit same-identity reconcile → returned-clip
+    verification → draft import → DRAFT commit, and surfaces UNKNOWN/cancel
+    fencing instead of retrying or polling.
+    """
     st.divider()
-    st.markdown("**경로 B · 구간 생성**")
-    st.button("경로 B 연결 대기 (ANIM-010/012)", disabled=True,
-              key="an_path_b")
-    st.caption("B 경로의 견적·예약·제출·가져오기는 ANIM-012가 segment "
-               "adapter를 이 화면에 연결할 때까지 비활성입니다. 여기서 "
-               "대신 실행하거나 흉내내지 않습니다.")
+    st.markdown("**07 · 경로 B — 구간 생성 adapter**")
+    st.caption("개발·시험용 fake adapter (UNQUALIFIED) `fake_segment`만 "
+               "연결합니다. 실제 provider 호출·유료 생성·credential은 "
+               "없습니다 (선언만 된 adapter는 제출이 거부됩니다).")
+    if not safe_path(p, plan_path(shot_id)).is_file():
+        st.caption("01 · 준비에서 이 컷의 샷 계획을 먼저 저장하세요.")
+        return
+    plan = _guarded(lambda: load_shot_plan(p, shot_id))
+    if plan is None:
+        return
+    segments = [s for s in plan["segments"] if s["path"] == "B"]
+    if not segments:
+        st.caption("이 컷의 계획에는 경로 B 구간이 없습니다.")
+        return
+
+    st.markdown("**① 제어 입력 — 이 컷의 B 구간만 쓰는 조건 이미지**")
+    ctrl = st.file_uploader("조건 이미지 (PNG)", type=["png"],
+                            key="an_b_ctrl_file")
+    c1, c2 = st.columns(2)
+    ctrl_role = c1.selectbox("역할", ["keypose", "breakdown", "pose", "layout"],
+                             key="an_b_ctrl_role")
+    ctrl_frame = c2.number_input("컷 기준 프레임", min_value=0, value=0,
+                                 key="an_b_ctrl_frame")
+    if st.button("제어 입력 기록", key="an_b_ctrl_import",
+                 disabled=not ctrl):
+        def run_ctrl():
+            with tempfile.TemporaryDirectory() as tmp:
+                source = Path(tmp) / _upload_name(ctrl)
+                source.write_bytes(ctrl.getvalue())
+                return import_segment_control(p, shot_id, source,
+                                              role=ctrl_role,
+                                              frame=int(ctrl_frame))
+        _do(run_ctrl, f"{shot_id} 프레임 {int(ctrl_frame)} · {ctrl_role} "
+                      "제어 입력을 DRAFT로 기록했습니다")
+
+    st.markdown("**② 구간 · capability 검사 · 견적**")
+    options = {f"[{s['start']}, {s['end']}) · {', '.join(s['capabilities'])}":
+               s for s in segments}
+    pick = st.selectbox("B 구간", list(options), key="an_b_segment")
+    seg = options[pick]
+    caps = _guarded(lambda: make_adapter(p, "fake_segment").capabilities())
+    if caps:
+        st.caption(f"adapter {caps['adapter_id']} · {caps['provider_class']} · "
+                   f"{caps['qualification_state']} · native "
+                   f"{caps['native_width']}x{caps['native_height']}@"
+                   f"{caps['native_fps']}fps")
+    if st.button("capability 검사 + 견적", key="an_b_quote"):
+        result = _guarded(lambda: segment_quote(p, shot_id, seg["start"],
+                                                seg["end"]))
+        if result is not None:
+            st.session_state["an_b_quote_state"] = {
+                "shot_id": shot_id,
+                "segment": [seg["start"], seg["end"]], "result": result}
+            st.session_state["an_flash"] = (
+                f"견적 {result['amount']} {result['unit']} — 이 견적과 "
+                "별도의 비용 승인이 필요합니다")
+            st.session_state["an_detail"] = result
+            st.rerun()
+    qstate = st.session_state.get("an_b_quote_state")
+    live_quote = qstate if qstate and qstate["shot_id"] == shot_id else None
+    if live_quote:
+        quote = live_quote["result"]
+        if live_quote["segment"] != [seg["start"], seg["end"]]:
+            st.warning("선택한 구간과 묶인 견적이 다릅니다 — 이 구간으로 "
+                       "다시 견적을 받으세요.")
+        cols = st.columns(3)
+        cols[0].metric("견적", f"{quote['amount']} {quote['unit']}")
+        cols[1].metric("job", quote["job_id"])
+        cols[2].metric("quote", quote["quote_id"][:12] + "…")
+
+    st.markdown("**③ 비용 승인 → 예약 → 제출** — 견적과 별도의 사람 승인")
+    c1, c2 = st.columns(2)
+    approver = c1.text_input("견적 승인자", key="an_b_approver")
+    cap = c2.number_input("승인 상한 (크레딧)", min_value=0, value=0,
+                          key="an_b_cap")
+    consent = st.checkbox("위 견적의 fake 크레딧 비용을 승인합니다",
+                          key="an_b_approve")
+    can_submit = bool(live_quote and consent and approver.strip())
+    if st.button("승인한 견적으로 예약·제출", key="an_b_submit",
+                 disabled=not can_submit):
+        _b_do("제출", lambda: segment_submit(
+            p, shot_id, seg["start"], seg["end"], approver=approver.strip(),
+            quote_id=live_quote["result"]["quote_id"], cap=int(cap)))
+
+    jobs = (_guarded(lambda: segment_jobs(p, shot_id)) or {}).get("jobs", [])
+    if not jobs:
+        st.caption("이 컷의 B 작업 기록이 아직 없습니다.")
+        return
+    st.markdown("**④ 작업 상태** — 같은 identity의 명시적 확인만 (자동 "
+                "polling 없음)")
+    st.dataframe([{"job": j["job_id"],
+                   "구간": f"[{j['segment']['start']}, {j['segment']['end']})",
+                   "상태": j["status"], "attempt": j["attempt"],
+                   "과금": j["charge_state"], "adapter": j["adapter"]}
+                  for j in jobs], hide_index=True)
+    job_pick = st.selectbox("작업", [j["job_id"] for j in jobs],
+                            key="an_b_job")
+    c1, c2 = st.columns(2)
+    if c1.button("상태 확인 (reconcile)", key="an_b_reconcile"):
+        _b_do("상태 확인", lambda: segment_reconcile(p, job_pick))
+    if c2.button("취소 요청", key="an_b_cancel"):
+        _b_do("취소", lambda: segment_cancel(p, job_pick))
+
+    st.markdown("**⑤ 결과 검증 → draft 가져오기 → 컷 commit**")
+    c1, c2 = st.columns(2)
+    src_start = c1.number_input("사용 시작 소스 프레임", min_value=0, value=0,
+                                key="an_b_src_start")
+    src_count = c2.number_input("사용 프레임 수 (0 = 자동)", min_value=0,
+                                value=0, key="an_b_src_count")
+    c1, c2 = st.columns(2)
+    if c1.button("반환 클립 검증 + draft 가져오기", key="an_b_import"):
+        _b_do("가져오기", lambda: segment_import(
+            p, job_pick, source_start=int(src_start),
+            source_count=int(src_count) or None))
+    if c2.button("검증된 B 구간으로 컷 commit", key="an_b_commit"):
+        _b_do("commit", lambda: commit_segment_sequence(p, shot_id))
+
+    job_record = next((j for j in jobs if j["job_id"] == job_pick), None)
+    if job_record:
+        with st.expander("job journal — 입력 digest · adapter 버전 · "
+                         "동작/관측 기록", expanded=False):
+            st.caption(
+                f"adapter {job_record['adapter']} "
+                f"({caps['adapter_id'] if caps else 'fake_segment_v1'}) · "
+                f"request {job_record['request_id']} · operation "
+                f"{job_record['operation_id']} · "
+                f"{job_record['provider_class']}/"
+                f"{job_record['qualification_state']}")
+            records = _guarded(lambda: load_job_journal(p, shot_id,
+                                                        job_pick)) or []
+            if records:
+                st.dataframe(
+                    [{"at": r["at"], "event": r["event"],
+                      "attempt": r["attempt_id"], "request": r["request_id"]}
+                     for r in records], hide_index=True)
+                st.caption("레코드 상세 (source/input digest·toolchain·견적·"
+                           "관측 결과·실행 동작)")
+                st.json(_jsonable(records))
+            else:
+                st.caption("journal 기록이 아직 없습니다.")
 
 
 # ---------------------------------------------------------------------------
@@ -599,6 +779,9 @@ def render_animation(p):
     flash = st.session_state.pop("an_flash", None)
     if flash:
         st.success(flash)
+    warn = st.session_state.pop("an_warn", None)
+    if warn:
+        st.warning(warn)
     detail = st.session_state.pop("an_detail", None)
     if detail is not None:
         with st.expander("기록 상세 (해시 포함)", expanded=False):
@@ -654,4 +837,4 @@ def render_animation(p):
     with st.expander("06 · 출력·승인 — LOCK·경로 결정·최종 승인",
                      expanded=True):
         _output(p, entries, locks, route, reviews)
-    _path_b()
+    _path_b(p, shot_id)

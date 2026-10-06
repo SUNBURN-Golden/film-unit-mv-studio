@@ -133,6 +133,10 @@ def main(argv=None):
     seg_reconcile.add_argument("project")
     seg_reconcile.add_argument("job")
     seg_reconcile.add_argument("--adapter", default="fake_segment")
+    seg_cancel = sub.add_parser("segment-cancel", help="ANIM-012 B path: request cancellation of a job — a request until the provider confirms termination; a completion confirmed first is kept for verification")
+    seg_cancel.add_argument("project")
+    seg_cancel.add_argument("job")
+    seg_cancel.add_argument("--adapter", default="fake_segment")
     seg_import = sub.add_parser("segment-import", help="ANIM-010 B path: verify a returned clip (endpoint rule, length, hashes) and stage cut-local members; a longer clip needs --source-start/--source-count")
     seg_import.add_argument("project")
     seg_import.add_argument("job")
@@ -473,6 +477,9 @@ def main(argv=None):
         elif a.command == "segment-reconcile":
             from .segment_gen import segment_reconcile
             result = segment_reconcile(a.project, a.job, adapter_id=a.adapter)
+        elif a.command == "segment-cancel":
+            from .segment_gen import segment_cancel
+            result = segment_cancel(a.project, a.job, adapter_id=a.adapter)
         elif a.command == "segment-import":
             from .segment_gen import segment_import
             result = segment_import(a.project, a.job, adapter_id=a.adapter,

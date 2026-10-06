@@ -26,6 +26,13 @@ and masks. This module owns the engine side of that contract:
   identity may resolve it. Failed or pending reservations stay reserved; they
   are never treated as refunded without provider confirmation.
 
+- cancel race (schema 13): `segment_cancel` moves an in-flight job to
+  CANCEL_REQUESTED and asks the provider once — a request, not a confirmed
+  termination. A completion confirmed before the cancel lands keeps the job
+  in OUTPUT_PENDING_VERIFY and its result is verified, never dropped. A lost
+  cancel answer leaves the job UNKNOWN: reservation held, substitute
+  submissions fenced, and only the same-identity reconcile may resolve it.
+
 - returned-clip verification and normalization: the declared endpoint rule is
   honoured (a returned duplicate end anchor is explicitly dropped and
   recorded), a clip shorter than the owned range is rejected (never
@@ -66,7 +73,8 @@ JOURNAL_FIELDS = {"document_type", "schema_version", "job_id", "attempt_id",
                   "request_id", "event", "at", "data"}
 JOURNAL_EVENTS = {"SUBMIT_INTENT", "SUBMIT_ACCEPTED", "SUBMIT_LOST",
                   "SUBMIT_REJECTED", "STATUS_QUERY", "STATUS_OBSERVED",
-                  "IMPORT_INTENT", "IMPORT_OBSERVED", "RETRY_INTENT"}
+                  "IMPORT_INTENT", "IMPORT_OBSERVED", "RETRY_INTENT",
+                  "CANCEL_INTENT", "CANCEL_OBSERVED"}
 
 # WorkerProtocol 1 states and allowed edges (schema 13). A definitive
 # refusal observed while SUBMITTING has no direct edge in the table, so it
@@ -96,9 +104,10 @@ TRANSITIONS = {
     # needs this edge; segment_retry journals RETRY_INTENT before taking it.
     "FAILED_CONFIRMED": {"RESERVED"},
 }
-# States in which a submission identity is in flight or ambiguous: no new
-# attempt and no resubmission; reconcile is the only way forward.
-FENCED_STATES = {"SUBMITTING", "UNKNOWN"}
+# States in which a submission identity is in flight or ambiguous — including
+# an unconfirmed cancel: no new attempt and no resubmission; reconcile is the
+# only way forward.
+FENCED_STATES = {"SUBMITTING", "UNKNOWN", "CANCEL_REQUESTED"}
 ACTIVE_STATES = {"SUBMITTING", "UNKNOWN", "RUNNING"}
 
 ANCHOR_ROLES = {"KEYPOSE", "BREAKDOWN", "POSE"}
@@ -662,11 +671,15 @@ def segment_submit(project, shot_id, start, end, *, adapter_id="fake_segment",
                     "request_id": job["request_id"],
                     "operation_id": job["operation_id"],
                     "qualification_state": "UNQUALIFIED"}
-        if job["status"] in {"FAILED_CONFIRMED", "CANCEL_CONFIRMED",
-                             "WAITING_USER"}:
+        if job["status"] in {"FAILED_CONFIRMED", "WAITING_USER"}:
             raise FilmError(
                 f"JOB_NEEDS_DECISION: {job['job_id']} is {job['status']}; "
                 "continue with an explicit segment-retry or leave it")
+        if job["status"] == "CANCEL_CONFIRMED":
+            raise FilmError(
+                f"JOB_TERMINATED: {job['job_id']} is CANCEL_CONFIRMED; this "
+                "input identity is finished — the segment needs changed "
+                "inputs for a new job")
         fresh = adapter.quote(spec)
         current = _quote_id(job_key, fresh)
         job["quote"] = {"quote_id": current, "unit": fresh["unit"],
@@ -721,16 +734,18 @@ def segment_submit(project, shot_id, start, end, *, adapter_id="fake_segment",
 
 def segment_reconcile(project, job_id, *, adapter_id="fake_segment"):
     """Explicit status query on a job's existing identity — the only way to
-    resolve a fenced or in-flight job. Never creates a new id."""
+    resolve a fenced or in-flight job, including an unconfirmed cancel.
+    Never creates a new id."""
     p = Path(project)
     with project_mutex(p):
         from .segment_fake import make_adapter
         adapter = make_adapter(p, adapter_id)
         job = _find_job(p, job_id)
-        if job["status"] not in ACTIVE_STATES:
+        if job["status"] not in ACTIVE_STATES | {"CANCEL_REQUESTED"}:
             raise FilmError(f"NOTHING_TO_RECONCILE: {job_id} is "
                             f"{job['status']}; reconcile applies to "
-                            "SUBMITTING/UNKNOWN/RUNNING jobs")
+                            "SUBMITTING/UNKNOWN/RUNNING/CANCEL_REQUESTED "
+                            "jobs")
         _journal(p, job, "STATUS_QUERY",
                  {"request_id": job["request_id"],
                   "operation_id": job["operation_id"]})
@@ -744,6 +759,7 @@ def segment_reconcile(project, job_id, *, adapter_id="fake_segment"):
             job["charge_state"] = ("CONFIRMED_BILLED" if observed["billed"]
                                    else "CONFIRMED_UNCHARGED")
         state = observed["state"]
+        cancel_pending = job["status"] == "CANCEL_REQUESTED"
         if job["status"] == "SUBMITTING":
             # A crash between SUBMIT_INTENT and the provider reply left the
             # submission's acceptance unresolved; the schema-13 table gives
@@ -753,12 +769,24 @@ def segment_reconcile(project, job_id, *, adapter_id="fake_segment"):
                         "submission outcome unknown after restart")
             _save_job(p, job)
         if state == "NOT_FOUND":
-            _advance(p, job, "FAILED_CONFIRMED",
-                     "provider confirmed the request was never received")
-            job["failure"] = {"reason": "NEVER_RECEIVED", "at": now()}
-            job["charge_state"] = "CONFIRMED_UNCHARGED"
+            if cancel_pending:
+                # 종료 또는 미접수 확인: the provider never held the
+                # request, so the requested cancel is confirmed too.
+                _advance(p, job, "CANCEL_CONFIRMED",
+                         "provider confirmed the request was never "
+                         "received; termination confirmed")
+            else:
+                _advance(p, job, "FAILED_CONFIRMED",
+                         "provider confirmed the request was never received")
+                job["failure"] = {"reason": "NEVER_RECEIVED", "at": now()}
+                job["charge_state"] = "CONFIRMED_UNCHARGED"
         elif state == "RUNNING":
-            _advance(p, job, "RUNNING", "reconciled: still running")
+            if cancel_pending:
+                # The cancel has not landed yet: the job stays
+                # CANCEL_REQUESTED — only a confirmed outcome moves it.
+                _save_job(p, job)
+            else:
+                _advance(p, job, "RUNNING", "reconciled: still running")
         elif state == "DONE":
             job["result"] = observed["result"]
             _advance(p, job, "OUTPUT_PENDING_VERIFY",
@@ -768,6 +796,9 @@ def segment_reconcile(project, job_id, *, adapter_id="fake_segment"):
                      "provider confirmed failure")
             job["failure"] = {"reason": "PROVIDER_FAILED",
                               "detail": observed.get("detail"), "at": now()}
+        elif state == "CANCELLED":
+            _advance(p, job, "CANCEL_CONFIRMED",
+                     "provider confirmed termination")
         else:
             _save_job(p, job)
             raise FilmError(f"Unknown provider state: {state}")
@@ -776,6 +807,116 @@ def segment_reconcile(project, job_id, *, adapter_id="fake_segment"):
                 "operation_id": job["operation_id"],
                 "charge_state": job["charge_state"],
                 "qualification_state": "UNQUALIFIED"}
+
+
+def segment_cancel(project, job_id, *, adapter_id="fake_segment"):
+    """Request cancellation of a job — a request, not a confirmation
+    (schema 13: `취소는 확인 전까지 요청이다`).
+
+    PLANNED jobs hold nothing to cancel. RESERVED/WAITING_USER jobs cancel
+    before any provider call. SUBMITTING/RUNNING/OUTPUT_PENDING_VERIFY jobs
+    move to CANCEL_REQUESTED and the provider is asked once — no polling,
+    no retry. A completion confirmed before the cancel lands moves the job
+    to OUTPUT_PENDING_VERIFY and its result is verified, never dropped. A
+    lost cancel answer leaves the job UNKNOWN — reservation held, no
+    substitute submission — until `segment_reconcile` on the same identity.
+    A cancel is never recorded as a refund.
+    """
+    p = Path(project)
+    with project_mutex(p):
+        from .segment_fake import SegmentLostAck, make_adapter
+        adapter = make_adapter(p, adapter_id)
+        job = _find_job(p, job_id)
+        status = job["status"]
+        if status == "PLANNED":
+            raise FilmError(f"NOTHING_TO_CANCEL: {job_id} is PLANNED; no "
+                            "reservation or submission exists to cancel")
+        if status in {"VERIFIED", "ARCHIVED", "CANCEL_CONFIRMED",
+                      "FAILED_CONFIRMED"}:
+            raise FilmError(f"TERMINAL_JOB: {job_id} is {status}; terminal "
+                            "records are not cancelled")
+        if status == "CANCEL_REQUESTED":
+            raise FilmError(f"CANCEL_IN_FLIGHT: {job_id} already has a "
+                            "cancel request out; reconcile the same "
+                            "identity to confirm its outcome")
+        if status == "UNKNOWN":
+            raise FilmError(f"JOB_FENCED: {job_id} is UNKNOWN; reconcile "
+                            "the same job/request identity first — a "
+                            "cancel cannot decide an ambiguous acceptance")
+
+        def done(detail):
+            return {"job_id": job["job_id"], "status": job["status"],
+                    "operation_id": job["operation_id"],
+                    "charge_state": job["charge_state"],
+                    "detail": detail,
+                    "qualification_state": "UNQUALIFIED"}
+
+        _journal(p, job, "CANCEL_INTENT",
+                 {"request_id": job["request_id"],
+                  "operation_id": job["operation_id"],
+                  "from_status": status,
+                  "toolchain": job["spec"]["adapter"],
+                  "command": f"segment-cancel {job['job_id']} "
+                             f"(adapter {adapter.id})"})
+        if status in {"RESERVED", "WAITING_USER"}:
+            _transition(p, job, "CANCEL_CONFIRMED",
+                        "cancelled before any provider submission")
+            _journal(p, job, "CANCEL_OBSERVED",
+                     {"outcome": "CANCELLED_BEFORE_SUBMIT",
+                      "command": f"segment-cancel {job['job_id']}"})
+            _save_job(p, job)
+            return done("cancelled before submit; the provider was never "
+                        "called")
+        _transition(p, job, "CANCEL_REQUESTED",
+                    "user requested cancellation")
+        _save_job(p, job)
+        try:
+            outcome = adapter.cancel(job["request_id"])
+        except SegmentLostAck as exc:
+            _journal(p, job, "CANCEL_OBSERVED",
+                     {"outcome": "LOST", "detail": str(exc)})
+            _transition(p, job, "UNKNOWN",
+                        "cancel acknowledgement lost; termination unknown "
+                        "until reconcile")
+            _save_job(p, job)
+            return done("cancel acknowledgement lost; the job is UNKNOWN "
+                        "— reconcile the same identity")
+        _journal(p, job, "CANCEL_OBSERVED",
+                 {**{k: v for k, v in outcome.items() if k != "result"},
+                  "command": f"segment-cancel {job['job_id']}"})
+        answered = outcome["outcome"]
+        if answered == "COMPLETED_FIRST":
+            # 완료가 먼저 확정: the output is kept and verified, never
+            # dropped because a cancel was requested.
+            job["result"] = outcome["result"]
+            _transition(p, job, "OUTPUT_PENDING_VERIFY",
+                        "provider confirmed completion before the cancel "
+                        "landed")
+            if outcome.get("billed") is not None:
+                job["charge_state"] = ("CONFIRMED_BILLED"
+                                       if outcome["billed"]
+                                       else "CONFIRMED_UNCHARGED")
+        elif answered == "CANCELLED":
+            _transition(p, job, "CANCEL_CONFIRMED",
+                        "provider confirmed termination")
+            if outcome.get("billed") is not None:
+                job["charge_state"] = ("CONFIRMED_BILLED"
+                                       if outcome["billed"]
+                                       else "CONFIRMED_UNCHARGED")
+        elif answered == "NOT_FOUND":
+            _transition(p, job, "CANCEL_CONFIRMED",
+                        "provider confirmed it never received the request")
+            job["charge_state"] = "CONFIRMED_UNCHARGED"
+        # ACCEPTED: the request was delivered but termination is unconfirmed
+        # — the job stays CANCEL_REQUESTED until an explicit reconcile.
+        _save_job(p, job)
+        return done({"COMPLETED_FIRST": "the provider completed first; "
+                                        "verify the returned clip",
+                     "CANCELLED": "provider confirmed termination",
+                     "NOT_FOUND": "provider never received the request",
+                     "ACCEPTED": "cancel delivered; termination is "
+                                 "unconfirmed — reconcile to confirm"}
+                    .get(answered, "cancel requested"))
 
 
 def segment_retry(project, job_id, *, adapter_id="fake_segment", approver=None,

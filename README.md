@@ -223,7 +223,7 @@ python -m engine.cli packets projects/project_001 --shots S001,S002
 
 ## 프레임 애니메이션 개발 설계
 
-`FRAME_ANIMATION_V1` 확장은 [채택 결정](docs/decisions/FRAME_ANIMATION_V1_ADOPTION_20260930.md), [개발 시작 안내](docs/FRAME_ANIMATION_V1_DEVELOPMENT_KO.md), [상세 설계](docs/FRAME_ANIMATION_V1_DESIGN_KO.md), [Drive 저장·원격 실행·복수 인코더 성능 설계](docs/FRAME_ANIMATION_V1_EXECUTION_STORAGE_KO.md)를 개발 기준으로 진행합니다. 정수 프레임·시퀀스·노출·전환·W00 검수와 함께 브라우저 Google 로그인, Drive에서 읽는 컴파일, AI 구독 실행 환경, FFmpeg 외 native 인코더, 성능 우선 scheduler를 다룹니다. ANIM-001~018의 순서·수용 조건을 제공합니다. 새 모드 예외는 ARCHITECTURE.md·PROJECT_SPEC.md에 연결되어 있으며 구현·실서비스 qualification은 후속 작업입니다. 현재 v0.3 기능은 기존 안내를 따릅니다.
+`FRAME_ANIMATION_V1` 확장은 [채택 결정](docs/decisions/FRAME_ANIMATION_V1_ADOPTION_20260930.md), [개발 시작 안내](docs/FRAME_ANIMATION_V1_DEVELOPMENT_KO.md), [상세 설계](docs/FRAME_ANIMATION_V1_DESIGN_KO.md), [Drive 저장·원격 실행·복수 인코더 성능 설계](docs/FRAME_ANIMATION_V1_EXECUTION_STORAGE_KO.md)를 개발 기준으로 진행합니다. 구현된 개발판 흐름·경로 A/B/C·fake/UNQUALIFIED 경계는 [사용 안내](docs/FRAME_ANIMATION_V1_USER_GUIDE_KO.md)를 보세요. 정수 프레임·시퀀스·노출·전환·W00 검수와 함께 브라우저 Google 로그인, Drive에서 읽는 컴파일, AI 구독 실행 환경, FFmpeg 외 native 인코더, 성능 우선 scheduler를 다룹니다. ANIM-001~018의 순서·수용 조건을 제공합니다. 새 모드 예외는 ARCHITECTURE.md·PROJECT_SPEC.md에 연결되어 있으며 구현·실서비스 qualification은 후속 작업입니다. 현재 v0.3 기능은 기존 안내를 따릅니다.
 
 [전송·pack·완료 근거 고도화](docs/FRAME_ANIMATION_V1_EVOLUTION_KO.md)는 선행 #19/#20 위의 검토용 DESIGN_ONLY 후보입니다. 기본 coordinator 중개 경로의 실제 전송·자원 비용, 구간 읽기 가능한 pack의 검증·복원, 개발 병합과 실제 qualification/수용/release의 구분을 구체화합니다. 채택 전 운영 정본·기능·자격·승인 상태는 바뀌지 않습니다.
 
