@@ -24,11 +24,14 @@
 - 원곡은 측정된 타임라인에 묶여 있습니다. `analysis/audio.json`, `manifest/shots.json` 또는
   `timeline/edit.json`이 있으면 다른 곡으로 교체를 거부하고 새 프로젝트를 안내합니다.
   같은 바이트는 삭제된 원곡 복원에만 쓸 수 있습니다. 분석 전 교체는 이전 원곡을
-  `input/master-superseded-*`로 보존합니다.
+  `input/master-superseded-*`로 보존합니다(확장자가 달라도 이전 파일을 보존합니다).
+  합성 테스트 음원을 같은 바이트로 복원하면 합성 슬레이트 표시가 유지되며, 새로 올린
+  파일만 실제 음원으로 기록됩니다.
 - 가사 원문·brief를 바꾸면 화면의 **변경 영향**이 `production_fingerprint`,
-  `visual_context_fingerprint`, 리뷰 binding을 다시 계산해 전체 LOCK·샷별 영상 검수·가사 검수 중
-  재검수가 필요한 항목을 보여줍니다. 기존 LOCK·검수 기록·교체된 타이밍(`lyrics/history/`)은
-  그대로 보존되며 새 문서에 승계하지 않습니다.
+  `visual_context_fingerprint`, 리뷰 binding을 다시 계산해 전체 LOCK·FRAME_ANIMATION_V1의
+  PLAN/WAVE/FINAL LOCK·샷별 영상 검수·가사 검수 중 재검수가 필요한 항목을 보여줍니다.
+  보고는 읽기 전용이라 탭을 여는 것만으로 프로젝트가 바뀌지 않습니다. 기존 LOCK·검수
+  기록·교체된 타이밍(`lyrics/history/`)은 그대로 보존되며 새 문서에 승계하지 않습니다.
 - 가사 글자 수나 곡 길이로 보컬 타이밍을 추정하지 않습니다. 새 원문은 cue 없이
   미해결 행으로만 들어갑니다.
 
@@ -48,6 +51,10 @@
 | 중복 import (같은 digest) | `test_duplicate_stage_is_refused`, `test_staging_the_adopted_master_bytes_is_a_duplicate`, `test_stage_duplicate_import_shows_a_message`, `test_adopt_audio_twice_is_a_duplicate`, `test_adopt_same_text_is_a_duplicate`, `test_adopting_identical_text_shows_duplicate` |
 | 잘못된 음원 (형식·손상·무음원·길이) | `test_validate_audio_rejects_*`, `test_unsupported_and_corrupt_audio_adoption_is_refused` |
 | 측정 후 다른 곡 교체 거부·원곡 보존·복원 | `test_adopt_audio_refuses_a_different_song_once_measured`, `test_adopt_audio_restores_missing_master_but_refuses_another` |
+| 합성 음원 복원 시 슬레이트 유지·새 업로드는 실제 음원 | `test_readopting_identical_synthetic_bytes_keeps_the_slate`, `test_adopt_audio_marks_new_uploads_real_but_keeps_marked_synthetic` |
+| 다른 확장자 원곡 교체 시 이전 파일 보존 | `test_adopt_audio_preserves_previous_master_across_suffix_change` |
+| PLAN_LOCK 변경 영향·보고의 무결성(읽기 전용) | `test_impact_report_names_stale_plan_lock`, `test_impact_report_is_side_effect_free` |
+| 임시 슬레이트(placeholder) 샷 표시 | `test_placeholder_storyboards_are_reported_as_slates` |
 | 분석 전 원곡 교체와 이전 원곡 보존 | `test_adopt_audio_replaces_master_before_analysis_and_preserves_old` |
 | 원문 변경 영향 (LOCK·영상 검수·가사 검수 stale) | `test_change_impact_reports_stale_lock_reviews_and_cues`, `test_lyrics_adoption_never_invents_timing_and_shows_impact` |
 | 가사 길이로 타이밍을 만들지 않음 | `test_adopting_lyrics_never_derives_timing_from_length` |

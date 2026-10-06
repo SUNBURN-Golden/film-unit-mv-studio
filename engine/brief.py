@@ -24,7 +24,8 @@ import tempfile
 from .core import (FilmError, atomic_text, digest, init_project, now, probe,
                    production_fingerprint, production_profile, project_mutex,
                    read, safe_path, visual_context_fingerprint, write)
-from .lyrics import lyrics_review_fingerprint, prepare_lyrics, timing_fingerprint
+from .lyrics import (REVIEW_SCHEMA_VERSION, _check,
+                     lyrics_review_fingerprint, prepare_lyrics, timing_fingerprint)
 from .resolver import reference_hash, review_binding, shot_hash
 
 BOARD_SCHEMA = 1
@@ -105,12 +106,14 @@ def _staged(board, staged_id):
     return record
 
 
-def stage_material(p, name, data, note=""):
+def stage_material(p, name, data, note="", synthetic=False):
     """Store uploaded bytes under brief/staging/ as TEMPORARY material.
 
     Staged files are inert: they are outside every fingerprint and are never
     copied into a build. Importing identical bytes twice — or bytes identical
     to an adopted input — is a duplicate and refused with a message.
+    `synthetic` marks pipeline-fixture bytes so audio adoption keeps the
+    synthetic slate instead of presenting them as a real master.
     """
     p = Path(p)
     if isinstance(data, str):
@@ -139,6 +142,8 @@ def stage_material(p, name, data, note=""):
         record = {"id": record_id, "name": safe, "path": relative, "sha256": sha,
                   "bytes": len(data), "kind": _kind(safe), "note": str(note).strip(),
                   "state": "temporary", "staged_at": now()}
+        if synthetic:
+            record["synthetic"] = True
         board["staged"].append(record)
         _save_board(p, board)
         return record
@@ -224,20 +229,33 @@ def adopt_audio(p, staged_id):
         master = safe_path(p, current["path"]) if current.get("path") else None
         if master is not None and master.is_file() and digest(master) == new_sha:
             raise FilmError("Duplicate import: the same audio is already adopted as the master")
+        old_sha = current.get("sha256")
         dest = p / "input" / ("master" + source.suffix.lower())
         if dest.exists() and master is not None and dest.resolve() != master.resolve():
             dest = p / "input" / (f"master-{new_sha[:12]}" + source.suffix.lower())
         preserved = None
-        if dest.exists() and digest(dest) != new_sha:
-            old_sha = current.get("sha256") or digest(dest)
-            preserved = p / "input" / (f"master-superseded-{old_sha[:12]}" + dest.suffix.lower())
-            dest.rename(preserved)
+        # A different suffix leaves the old master path behind; whichever file
+        # the adoption supersedes is renamed aside, never silently dropped.
+        if master is not None and master.is_file() and master.resolve() != dest.resolve():
+            superseded = master
+        elif dest.exists() and digest(dest) != new_sha:
+            superseded = dest
+        else:
+            superseded = None
+        if superseded is not None:
+            base_sha = old_sha or digest(superseded)
+            preserved = p / "input" / (f"master-superseded-{base_sha[:12]}"
+                                       + superseded.suffix.lower())
+            superseded.rename(preserved)
         shutil.copyfile(source, dest)
         if digest(dest) != new_sha:
             raise FilmError("Copied audio does not match the staged bytes")
-        old_sha = current.get("sha256")
+        # Restoring identical bytes of a synthetic master keeps the slate; a new
+        # user upload is real audio while explicitly synthetic staging stays marked.
+        synthetic = bool(record.get("synthetic")) \
+            or (bool(current.get("synthetic_test_audio")) and new_sha == old_sha)
         config["audio"] = {**current, "path": str(dest.relative_to(p)), "sha256": new_sha,
-                           "synthetic_test_audio": False}
+                           "synthetic_test_audio": synthetic}
         write(p / "project.yaml", config)
         record["state"] = "adopted"
         record["adopted_as"] = "audio"
@@ -374,6 +392,120 @@ def create_project(root, name, audio, brief_text, lyrics="", emotion="",
     return p
 
 
+def _final_probe(p, config, timeline):
+    """The FINAL_LOCK binding computed without lyric preparation.
+
+    animation_locks._final_binding calls validate_lyrics -> prepare_lyrics,
+    which can rewrite lyrics/lyrics_timed.json, archive superseded timing in
+    lyrics/history/ and drop the stored review. A report must not mutate, so
+    this runs the same strict validation on the stored document as it stands:
+    identical bytes give the identical binding, while a changed, missing or
+    invalid document reports STALE — the same answer the mutating path gives.
+    """
+    from .animation_locks import _audio_sha, _output_binding, _sha256
+    from .animation_review import (bound_targets, require_current_reviews,
+                                   shared_intent_digest)
+    targets = bound_targets(p)
+    require_current_reviews(p)
+    analysis = read(p / "analysis/audio.json", {}) or {}
+    duration_ms = analysis.get("duration_ms")
+    if type(duration_ms) is not int:
+        raise FilmError("Audio analysis is required for FINAL_LOCK")
+    document = read(p / "lyrics/lyrics_timed.json")
+    try:
+        document, warnings = _check(document, duration_ms)
+    except (FilmError, KeyError, TypeError, ValueError) as exc:
+        raise FilmError(f"Invalid lyric timeline: {exc}") from exc
+    review = document.get("review")
+    if review is not None:
+        try:
+            valid = (review.get("schema_version") == REVIEW_SCHEMA_VERSION
+                     and review.get("lyrics_review_sha256")
+                     == lyrics_review_fingerprint(p, document))
+        except (FilmError, OSError, KeyError, TypeError, ValueError) as exc:
+            valid = False
+            warnings.append(f"Lyric subtitle review cannot be verified: {exc}")
+        if not valid:
+            warnings.append("Lyrics have not been reviewed for the current subtitle settings and font")
+    if warnings:
+        raise FilmError("Final lyrics are incomplete: " + "; ".join(warnings))
+    return {"scope": "FINAL_LOCK",
+            "audio_sha256": _audio_sha(p, config),
+            "edit_sha256": _sha256(timeline),
+            "intent_sha256": shared_intent_digest(p),
+            "reviews_sha256": _sha256({"cuts": targets["cuts"],
+                                       "transitions": targets["transitions"]}),
+            "lyrics": {"source_sha256": document["source_sha256"],
+                       "timing_sha256": timing_fingerprint(document),
+                       "lyrics_review_sha256": lyrics_review_fingerprint(p, document)},
+            "output": _output_binding(config)}
+
+
+def _lock_probe(p):
+    """animation_locks.lock_status with no lyric-preparation side effects.
+
+    Plan and wave bindings are already read-only; only the final scope goes
+    through validate_lyrics, so _final_probe substitutes the stored document
+    for it. Everything else mirrors lock_status so reported states match.
+    """
+    from .animation_locks import (_changed_fields, _plan_binding, _sha256,
+                                  _wave_binding, load_locks, load_waves)
+    from .animation_schema import (load_animation_timeline,
+                                   require_animation_profile)
+    config = require_animation_profile(p)
+    timeline = load_animation_timeline(p)
+    bindings = {("PLAN_LOCK", None): _plan_binding(p, config, timeline)}
+    waves = load_waves(p)
+    if waves is not None:
+        for wave in waves["waves"]:
+            bindings[("WAVE_LOCK", wave["wave"])] = _wave_binding(
+                p, config, timeline, waves, wave["wave"])
+    try:
+        bindings[("FINAL_LOCK", None)] = _final_probe(p, config, timeline)
+    except Exception as exc:  # an unsatisfiable final scope is stale, never current
+        bindings[("FINAL_LOCK", None)] = {"scope": "FINAL_LOCK",
+                                          "uncomputable": str(exc)}
+    records = load_locks(p)["locks"]
+
+    def report(scope, wave):
+        record = None
+        for candidate in records:
+            if candidate["scope"] == scope and candidate["wave"] == wave:
+                if record is None or candidate["revision"] > record["revision"]:
+                    record = candidate
+        state = {"state": "UNLOCKED", "lock_id": None, "revision": None,
+                 "binding_sha256": None, "changed": []}
+        if record is None:
+            return state
+        state.update(lock_id=record["lock_id"], revision=record["revision"],
+                     binding_sha256=record["binding_sha256"])
+        binding = bindings.get((scope, wave))
+        if binding is None:
+            state["state"] = "STALE"
+            state["changed"] = ["scope"]
+            return state
+        if record["binding_sha256"] == _sha256(binding):
+            state["state"] = "CURRENT"
+            return state
+        state["state"] = "STALE"
+        state["changed"] = _changed_fields(record["binding"], binding)
+        return state
+
+    waves_state = {}
+    if waves is not None:
+        for wave in waves["waves"]:
+            waves_state[wave["wave"]] = report("WAVE_LOCK", wave["wave"])
+    for record in records:
+        if record["scope"] == "WAVE_LOCK" and record["wave"] not in waves_state:
+            waves_state[record["wave"]] = {"state": "STALE",
+                                           "lock_id": record["lock_id"],
+                                           "revision": record["revision"],
+                                           "binding_sha256": record["binding_sha256"],
+                                           "changed": ["wave"]}
+    return {"plan": report("PLAN_LOCK", None), "waves": waves_state,
+            "final": report("FINAL_LOCK", None), "records": len(records)}
+
+
 def impact_report(p):
     """Current staleness of LOCK, lyric review and per-take visual reviews.
 
@@ -493,8 +625,12 @@ def impact_report(p):
     profile = production_profile(config)
     if profile != "LEGACY_MV":
         try:
-            from .animation_locks import lock_status
-            animation_locks = lock_status(p)
+            animation_locks = _lock_probe(p)
+            plan = animation_locks.get("plan") or {}
+            if plan.get("state") == "STALE":
+                needs_review.append({"target": "PLAN_LOCK", "state": "STALE",
+                                     "reason": "plan inputs (brief, lyrics, edit or shared intent) "
+                                               "changed; re-lock and re-review"})
             for name, wave in (animation_locks.get("waves") or {}).items():
                 if wave.get("state") == "STALE":
                     needs_review.append({"target": f"WAVE_LOCK {name}", "state": "STALE",

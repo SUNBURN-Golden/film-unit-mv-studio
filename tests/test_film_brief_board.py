@@ -12,9 +12,10 @@ import pytest
 from engine import brief
 from engine.audio import synth_test_audio
 from engine.compiler import compile_preview, import_asset
-from engine.core import (FilmError, digest, ffmpeg, lock_production,
-                         production_fingerprint, read,
-                         visual_context_fingerprint)
+from engine.core import (FilmError, atomic_text, digest, ffmpeg, init_project,
+                         lock_production, production_fingerprint, read,
+                         visual_context_fingerprint, write)
+from test_anim_003 import animation_project, make_sequence
 from test_compiler_v03 import fixture_project
 
 
@@ -140,6 +141,51 @@ def test_adopt_audio_restores_missing_master_but_refuses_another(tmp_path):
     with pytest.raises(FilmError, match="new project"):
         brief.adopt_audio(p, record["id"])
     assert (p / "input/master.wav").read_bytes() == data
+
+
+def test_readopting_identical_synthetic_bytes_keeps_the_slate(tmp_path):
+    p = fixture_project(tmp_path)   # synthetic master, measured timeline exists
+    data = (p / "input/master.wav").read_bytes()
+    (p / "input/master.wav").unlink()
+    record = brief.stage_material(p, "restored.wav", data)
+    brief.adopt_audio(p, record["id"])
+    config = read(p / "project.yaml")
+    assert config["audio"]["synthetic_test_audio"] is True
+    status = brief.board_status(p)
+    assert status["audio"]["synthetic"] is True
+    assert status["audio"]["matches_config"]
+
+
+def test_adopt_audio_marks_new_uploads_real_but_keeps_marked_synthetic(tmp_path):
+    source = synth_test_audio(tmp_path / "seed.wav", seconds=2)
+    p = init_project(tmp_path / "projects", "synthetic_project", source,
+                     "fixture brief", synthetic=True)
+    other = synth_test_audio(tmp_path / "other.wav", seconds=3)
+    record = brief.stage_material(p, "other.wav", other.read_bytes())
+    brief.adopt_audio(p, record["id"])
+    assert read(p / "project.yaml")["audio"]["synthetic_test_audio"] is False
+    third = synth_test_audio(tmp_path / "third.wav", seconds=4)
+    record = brief.stage_material(p, "third.wav", third.read_bytes(), synthetic=True)
+    assert record["synthetic"] is True
+    brief.adopt_audio(p, record["id"])
+    assert read(p / "project.yaml")["audio"]["synthetic_test_audio"] is True
+
+
+def test_adopt_audio_preserves_previous_master_across_suffix_change(tmp_path):
+    p = new_project(tmp_path)   # master.wav adopted, not yet analyzed
+    mp3 = tmp_path / "song.mp3"
+    ffmpeg(["-f", "lavfi", "-i", "sine=frequency=330:sample_rate=44100:duration=3", mp3])
+    old_sha = read(p / "project.yaml")["audio"]["sha256"]
+    record = brief.stage_material(p, "song.mp3", mp3.read_bytes())
+    brief.adopt_audio(p, record["id"])
+    config = read(p / "project.yaml")
+    assert config["audio"]["path"] == "input/master.mp3"
+    assert digest(p / "input/master.mp3") == config["audio"]["sha256"]
+    preserved = p / "input" / f"master-superseded-{old_sha[:12]}.wav"
+    assert preserved.is_file() and digest(preserved) == old_sha
+    assert not (p / "input/master.wav").exists()
+    board = brief.load_board(p)
+    assert board["adoptions"][-1]["preserved_previous"] == str(preserved.relative_to(p))
 
 
 def test_adopt_lyrics_archives_timing_and_clears_review(tmp_path):
@@ -292,3 +338,49 @@ def test_missing_master_is_reported_not_hidden(tmp_path):
     impact = brief.impact_report(p)
     assert impact["audio"]["present"] is False
     assert any(item["target"] == "master audio" for item in impact["needs_review"])
+
+
+def test_impact_report_names_stale_plan_lock(tmp_path):
+    from engine.animation_locks import record_plan_lock
+    p = animation_project(tmp_path, shot_count=1, seconds=2)
+    record_plan_lock(p, "Synthetic fixture scope approver")
+    impact = brief.impact_report(p)
+    assert impact["animation_locks"]["plan"]["state"] == "CURRENT"
+    assert not any("PLAN_LOCK" in item["target"] for item in impact["needs_review"])
+    brief.adopt_text(p, "brief", "A different brief changes the shared intent")
+    impact = brief.impact_report(p)
+    assert impact["animation_locks"]["plan"]["state"] == "STALE"
+    stale = {item["target"] for item in impact["needs_review"] if item["state"] == "STALE"}
+    assert "PLAN_LOCK" in stale
+
+
+def test_impact_report_is_side_effect_free(tmp_path):
+    from engine.animation_assets import import_frame_sequence
+    from engine.animation_review import record_cut_review
+    p = animation_project(tmp_path, shot_count=1, seconds=2)
+    make_sequence(tmp_path / "seq", count=48)
+    import_frame_sequence(p, "S001", folder=tmp_path / "seq")
+    record_cut_review(p, "I001", reviewer="Synthetic fixture reviewer",
+                      methods=["CUT_FULL_SPEED_PLAYBACK"])
+    # A lyric edit the timed document has not been prepared for: under
+    # lock_status -> validate_lyrics -> prepare_lyrics this would archive the
+    # stored cues and clear the review. The report must change no bytes.
+    atomic_text(p / "input/lyrics.txt", "edited first line\nedited second line\n")
+    snapshot = {str(f.relative_to(p)): f.read_bytes()
+                for f in p.rglob("*") if f.is_file() and f.name != ".compile.lock"}
+    impact = brief.impact_report(p)
+    after = {str(f.relative_to(p)): f.read_bytes()
+             for f in p.rglob("*") if f.is_file() and f.name != ".compile.lock"}
+    assert after == snapshot
+    assert impact["lyrics"]["source_changed"] is True
+    assert any(item["target"] == "lyric timing" for item in impact["needs_review"])
+
+
+def test_placeholder_storyboards_are_reported_as_slates(tmp_path):
+    p = fixture_project(tmp_path, shot_count=2)
+    shots = read(p / "manifest/shots.json")
+    shots[0]["storyboard_kind"] = "placeholder"
+    write(p / "manifest/shots.json", shots)
+    status = brief.board_status(p)
+    assert status["placeholders"] == ["S001"]
+    assert any("temporary slates" in item for item in status["pending"])
