@@ -435,10 +435,11 @@ def test_plan_rejects_unsupported_paths_curves_and_gaps(tmp_path):
                       subject=_track(translate=("LINEAR",
                                                 [(0, [10, 16]),
                                                  (23, [40, 16])])))
-    # Path A is implemented (ANIM-009); B stays declared but unimplemented.
+    # Paths A and B are implemented (ANIM-009/ANIM-010); unknown path ids
+    # are still refused.
     bad = copy.deepcopy(plan)
-    bad["segments"][0]["path"] = "B"
-    with pytest.raises(FilmError, match="Path B"):
+    bad["segments"][0]["path"] = "D"
+    with pytest.raises(FilmError, match="Unknown production path"):
         validate_shot_plan(bad, length=FRAMES)
     # An A segment takes no rig or C layers.
     bad = copy.deepcopy(plan)
