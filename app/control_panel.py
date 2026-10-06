@@ -6,7 +6,7 @@ import tempfile
 import yaml
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import streamlit as st
-from engine.core import FilmError, atomic_text, init_project, lock_production, production_fingerprint, project_mutex, read, write
+from engine.core import FilmError, atomic_text, init_project, lock_production, production_fingerprint, production_profile, project_mutex, read, write
 from engine.audio import analyze
 from engine.production import generate_storyboard, import_frame, make_package
 from engine.pipeline import compile_project, prepare
@@ -71,7 +71,10 @@ audio_path = p / config["audio"]["path"]
 if config["audio"].get("synthetic_test_audio"):
     st.info("파이프라인 검증용 합성 음원입니다. 콘티 그림은 배치 확인용 도식입니다.")
 st.sidebar.audio(str(audio_path))
-models_tab, web_tab, *tabs = st.tabs(["00 · AI 모델", "00 · 웹사이트 연결", "01 · PROJECT", "02 · DIRECTOR", "03 · STORYBOARD", "04 · LYRICS", "05 · TIMELINE", "06 · COMPILE / BUILDS", "07 · RENDER · 고급"])
+tab_names = ["00 · AI 모델", "00 · 웹사이트 연결", "01 · PROJECT", "02 · DIRECTOR", "03 · STORYBOARD", "04 · LYRICS", "05 · TIMELINE", "06 · COMPILE / BUILDS", "07 · RENDER · 고급"]
+if production_profile(config) == "FRAME_ANIMATION_V1":
+    tab_names.append("08 · ANIMATION")
+models_tab, web_tab, *tabs = st.tabs(tab_names)
 
 with models_tab:
     from app.models_ui import render_picker
@@ -460,3 +463,8 @@ with tabs[5]:
             legacy = st.selectbox("이전 출력", legacy_outputs, format_func=lambda f: f.name)
             st.video(str(legacy))
             st.download_button("이전 MP4 내보내기", legacy.read_bytes(), legacy.name, "video/mp4")
+
+if len(tabs) > 7:
+    with tabs[7]:
+        from app.animation_ui import render_animation
+        render_animation(p)
