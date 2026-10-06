@@ -3,7 +3,8 @@ from pathlib import Path
 import shutil
 
 from .core import (FilmError, digest, object_hash, production_fingerprint, read,
-                   safe_path, visual_context_fingerprint, write)
+                   require_legacy_profile, safe_path, visual_context_fingerprint,
+                   write)
 
 
 def shot_hash(shot):
@@ -39,6 +40,7 @@ def register_asset(project, shot, source, kind, *, reviewer="", evidence="",
     authorize visual review. Legacy global-only reviews need explicit re-review.
     """
     p, source = Path(project), Path(source)
+    require_legacy_profile(p)
     if kind not in {"final", "draft"}:
         raise FilmError("Asset kind must be final or draft")
     if type(source_in_ms) is not int or source_in_ms < 0:

@@ -9,7 +9,7 @@ import sys
 import tempfile
 import textwrap
 from PIL import Image, ImageDraw, ImageFont
-from .core import FilmError, atomic_text, project_mutex, read, write, safe_path, timecode, validate_manifest
+from .core import FilmError, atomic_text, project_mutex, read, require_legacy_profile, write, safe_path, timecode, validate_manifest
 from .schema import SHOT_SCHEMA
 
 
@@ -42,6 +42,7 @@ def load_preset(name=None):
 
 def make_package(project, target_shot_ms=5000, preset=None):
     p = Path(project)
+    require_legacy_profile(p)
     if (p / "manifest/shots.json").exists():
         raise FilmError("Production package already exists; edit it instead of overwriting")
     if type(target_shot_ms) is not int or target_shot_ms <= 0:
@@ -131,6 +132,7 @@ def placeholder(shot, path):
 
 def generate_storyboard(p, regenerate_id=None):
     p = Path(p)
+    require_legacy_profile(p)
     shots = read(p / "manifest/shots.json")
     for s in shots:
         path = safe_path(p, s["references"][0])
@@ -158,6 +160,7 @@ def generate_storyboard(p, regenerate_id=None):
 def import_frame(project, shot_id, source):
     p = Path(project).resolve()
     with project_mutex(p):
+        require_legacy_profile(p)
         shots = read(p / "manifest/shots.json")
         s = next((s for s in shots if s["id"] == shot_id), None)
         if s is None or not re.fullmatch(r"S[0-9]{3,5}", shot_id):

@@ -7,12 +7,13 @@ from pathlib import Path
 import copy
 import math
 import re
-from .core import FilmError, object_hash, read, safe_path, write
+from .core import FilmError, object_hash, read, require_legacy_profile, safe_path, write
 from .renderers import VideoRenderer, get_renderer
 
 
 def initialize(project):
     p = Path(project)
+    require_legacy_profile(p)
     path = p / "render/economy.json"
     if path.exists():
         raise FilmError("Economy policy exists; edit its profiles instead of overwriting it")

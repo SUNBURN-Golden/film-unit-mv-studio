@@ -4,7 +4,7 @@ from fractions import Fraction
 import math
 import numpy as np
 from PIL import Image
-from .core import FilmError, digest, ffmpeg, frame_at, probe, read, visual_context_fingerprint, write
+from .core import FilmError, digest, ffmpeg, frame_at, probe, read, require_legacy_profile, visual_context_fingerprint, write
 from .resolver import clip_review_fingerprint
 
 SEMANTIC_ITEMS = ["character_identity", "style", "composition", "palette", "camera", "background", "props", "unwanted_text", "anatomy", "motion"]
@@ -82,6 +82,7 @@ def inspect_clip(clip, shot, project, fmt, generated, production_id, source_in_m
 
 
 def save_review(project, record, scores, reviewer, notes):
+    require_legacy_profile(project)
     if not reviewer.strip() or not notes.strip():
         raise FilmError("Record reviewer and evidence notes")
     write(Path(project) / "qc/reviews" / f"{record['shot_id']}_{record['clip_sha256'][:12]}.json", {

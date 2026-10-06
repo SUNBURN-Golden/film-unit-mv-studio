@@ -5,11 +5,13 @@ from copy import deepcopy
 from pathlib import Path
 import shutil
 
-from .core import FilmError, now, project_mutex, read, safe_path, validate_manifest, write
+from .core import (FilmError, now, project_mutex, read, require_legacy_profile,
+                   safe_path, validate_manifest, write)
 
 
 def _load(project):
     p = Path(project)
+    require_legacy_profile(p)
     shots = read(p / "manifest/shots.json")
     audio = read(p / "analysis/audio.json")
     fps = read(p / "project.yaml")["format"]["fps"]

@@ -1,6 +1,6 @@
 from pathlib import Path
 import math
-from .core import FilmError, now, object_hash, read, require_lock, write
+from .core import FilmError, now, object_hash, read, require_lock, require_legacy_profile, write
 
 
 def make_estimate(p, shots, renderer, quality, fingerprint):
@@ -41,6 +41,7 @@ def make_estimate(p, shots, renderer, quality, fingerprint):
 
 
 def approve(p, estimate):
+    require_legacy_profile(p)
     require_lock(p, estimate["renderer"])
     write(Path(p) / "render/approval.json", {"estimate_id": estimate["estimate_id"], "approved_at": now()})
 

@@ -4,11 +4,12 @@ import numpy as np
 from scipy.signal import find_peaks
 import librosa
 import soundfile as sf
-from .core import FilmError, digest, ffmpeg, read, write
+from .core import FilmError, digest, ffmpeg, read, require_legacy_profile, write
 
 
 def analyze(project):
     p = Path(project)
+    require_legacy_profile(p)
     config = read(p / "project.yaml")
     master = p / config["audio"]["path"]
     if digest(master) != config["audio"]["sha256"]:
