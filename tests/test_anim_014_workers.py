@@ -5,8 +5,10 @@ auth boundary (schema §13, exec/storage §5.3-5.4, evolution §2.1.1).
 All remote execution is the explicit fake — no network, no credentials.
 Fake receipts are labelled FAKE_REMOTE and the route stays UNQUALIFIED.
 """
+import copy
 import hashlib
 import itertools
+import random
 import threading
 
 import pytest
@@ -17,7 +19,7 @@ from anim_014_kit import (CONTRACT, FRAMES, INPUT_MEMBERS, OBJECT, RECIPE,
                           receipt_for, remote_plan)
 
 from engine.core import FilmError
-from engine.execution_workers import (Coordinator, TRANSITIONS,
+from engine.execution_workers import (Coordinator, JOB_STATES, TRANSITIONS,
                                       check_grant, check_packet,
                                       expected_frame_digest, issue_grant,
                                       make_receipt)
@@ -378,8 +380,8 @@ class ScriptedWorker(FakeRemoteWorker):
     after the worker lost the job.
     """
 
-    def __init__(self, **kwargs):
-        super().__init__(auto_complete=True, **kwargs)
+    def __init__(self, auto_complete=True, **kwargs):
+        super().__init__(auto_complete=auto_complete, **kwargs)
         self.answer = None
         self._packets = {}
         self._completes = {}
@@ -419,6 +421,13 @@ class ScriptedWorker(FakeRemoteWorker):
         state, receipts = self._scripted(request_id)
         outcome = "COMPLETED_FIRST" if state == "COMPLETE" else state
         return {"outcome": outcome, "receipts": receipts}
+
+    def collect_receipts(self, request_id):
+        if self.answer is None:
+            return super().collect_receipts(request_id)
+        if self.answer == "DROP":
+            return []
+        return self._scripted(request_id)[1]
 
 
 def confirmed(tmp_path):
@@ -604,6 +613,271 @@ def test_no_worker_answer_ends_confirmed_completion(tmp_path, sequence,
     c2 = Coordinator(tmp_path / "state")
     assert_completion_kept(c2.jobs[key], covered, members)
     seal_verified(c2, key)
+
+
+# -- late receipts after a closed attempt: observations only -------------------
+
+CLOSED = {"FAILED_CONFIRMED", "CANCEL_CONFIRMED", "VERIFIED", "ARCHIVED"}
+
+
+def partial(tmp_path, held=(0, 2)):
+    """A RUNNING remote job holding COMPLETE coverage for `held` (or none)
+    of [0, 4); the worker's scripted COMPLETE answer delivers the
+    in-attempt receipt that fills the rest of the range."""
+    c = coordinator(tmp_path)
+    worker = ScriptedWorker(auto_complete=False)
+    plan = remote_plan()
+    key = c.plan_jobs(plan)[0]
+    c.reserve(key)
+    assert c.submit(worker, key, frame_contract=dict(CONTRACT)) == "RUNNING"
+    job = c.jobs[key]
+    start, end = job["output_range"]
+    rest = [start, end]
+    if held:
+        c.receive_receipt(receipt_for(job, "COMPLETE", held,
+                                      members=members_for(c, job, held)),
+                          worker)
+        rest = [held[1], end]
+    worker._completes[job["request_id"]] = [receipt_for(
+        job, "COMPLETE", rest, members=members_for(c, job, rest))]
+    assert job["state"] == "RUNNING" and not c.coverage(key)["complete"]
+    return c, worker, plan, key, job
+
+
+def resume_to_archived(c, worker, plan, key):
+    """FAILED_CONFIRMED -> explicit resume -> a fresh attempt that
+    completes, verifies and seals; late observations are kept."""
+    job = c.jobs[key]
+    late = list(job.get("late_receipts", []))
+    attempt, used = job["attempt_id"], job["attempts_used"]
+    worker.answer = None
+    assert c.resume_failed(worker, key, user_continued=True,
+                           plan=plan) == "RUNNING"
+    assert job["attempt_id"] == attempt + 1
+    assert job["attempts_used"] == used + 1
+    assert job["covered"] == [] and job["members"] == {}
+    worker.complete(job["request_id"])
+    assert c.collect(worker, key) == "OUTPUT_PENDING_VERIFY"
+    seal_verified(c, key)
+    assert job.get("late_receipts", []) == late
+
+
+@pytest.mark.parametrize("failure", ["receipt", "status_failed",
+                                     "status_not_found"])
+def test_late_complete_after_failed_confirmed_stays_failed_and_resumes(
+        tmp_path, failure):
+    """Partial coverage -> failure confirmed -> a late in-attempt COMPLETE
+    that fills the range: the job stays FAILED_CONFIRMED, the receipt is
+    a recorded late observation, and the explicit resume still works."""
+    c, worker, plan, key, job = partial(tmp_path)
+    if failure == "receipt":
+        c.receive_receipt(receipt_for(job, "FAILED_CONFIRMED",
+                                      job["output_range"]), worker)
+    else:
+        worker.answer = "FAILED" if failure == "status_failed" \
+            else "NOT_FOUND"
+        c.reconcile(worker, key)
+    assert job["state"] == "FAILED_CONFIRMED"
+    receipts, members = list(job["receipts"]), dict(job["members"])
+    filler = worker._completes[job["request_id"]][0]
+    late = c.receive_receipt(dict(filler), worker)
+    assert job["state"] == "FAILED_CONFIRMED"
+    assert job["covered"] == [[0, 2]] and not c.coverage(key)["complete"]
+    assert job["receipts"] == receipts and job["members"] == members
+    assert job["late_receipts"] == [late]
+    assert late["receipt_id"] == filler["receipt_id"]
+    assert late["kind"] == "COMPLETE" and late["state"] == "FAILED_CONFIRMED"
+    assert late["attempt_id"] == job["attempt_id"]
+    assert "members" not in late and "nonce" not in late
+    # at-least-once redelivery of the late receipt is deduped
+    worker.answer = "COMPLETE"
+    assert c.collect(worker, key) == "FAILED_CONFIRMED"
+    assert len(job["late_receipts"]) == 1
+    # persisted, and the reloaded job resumes within the allowance
+    c2 = Coordinator(tmp_path / "state")
+    assert c2.jobs[key]["state"] == "FAILED_CONFIRMED"
+    assert c2.jobs[key]["late_receipts"] == job["late_receipts"]
+    resume_to_archived(c2, worker, plan, key)
+
+
+@pytest.mark.parametrize("answer", ["CANCELLED", "NOT_FOUND"])
+def test_late_complete_after_cancel_confirmed_is_recorded_only(tmp_path,
+                                                               answer):
+    c, worker, plan, key, job = partial(tmp_path)
+    worker.answer = answer
+    assert c.request_cancel(worker, key) == "CANCEL_CONFIRMED"
+    worker.answer = "COMPLETE"
+    assert c.collect(worker, key) == "CANCEL_CONFIRMED"
+    assert job["covered"] == [[0, 2]] and set(job["members"]) == {"0", "1"}
+    assert [r["kind"] for r in job["late_receipts"]] == ["COMPLETE"]
+    assert job["late_receipts"][0]["state"] == "CANCEL_CONFIRMED"
+    # no transition out of CANCEL_CONFIRMED: nothing reopens it
+    with pytest.raises(FilmError, match="OUTPUT_PENDING_VERIFY"):
+        c.verify_outputs(key)
+    assert c.reconcile(worker, key) == "CANCEL_CONFIRMED"
+    with pytest.raises(FilmError, match="Cannot cancel"):
+        c.request_cancel(worker, key)
+    with pytest.raises(FilmError, match="FAILED_CONFIRMED"):
+        c.resume_failed(worker, key, user_continued=True, plan=plan)
+    c.release_reservation(key)
+    c2 = Coordinator(tmp_path / "state")
+    assert c2.jobs[key]["state"] == "CANCEL_CONFIRMED"
+    assert c2.jobs[key]["late_receipts"] == job["late_receipts"]
+    assert c2.jobs[key]["reservation_released"] is True
+
+
+def test_late_duplicate_receipt_after_verified_changes_nothing(tmp_path):
+    c, worker, plan, keys = remote(tmp_path)
+    worker.auto_complete = True
+    key = keys[0]
+    job = drive(c, worker, key, plan)
+    assert job["state"] == "VERIFIED"
+    complete = next(r for r in job["receipts"] if r["kind"] == "COMPLETE")
+    before = copy.deepcopy({k: job[k] for k in (
+        "state", "covered", "members", "receipts", "attempt_id")})
+    # transport replay of the same receipt: deduped, not even recorded
+    worker._jobs[job["request_id"]]["receipts"].append(dict(complete))
+    assert c.collect(worker, key) == "VERIFIED"
+    assert "late_receipts" not in job
+    with pytest.raises(FilmError, match="duplicate"):
+        c.receive_receipt(dict(complete), worker)
+    # a re-issued COMPLETE for the same range: a late observation only
+    again = receipt_for(job, "COMPLETE", job["output_range"],
+                        members=complete["members"])
+    late = c.receive_receipt(again, worker)
+    assert late["state"] == "VERIFIED" and job["late_receipts"] == [late]
+    assert {k: job[k] for k in before} == before
+    seal = dict(c.seal(key))
+    c.receive_receipt(receipt_for(job, "FAILED_CONFIRMED",
+                                  job["output_range"]), worker)
+    assert job["state"] == "ARCHIVED" and c.seals[key] == seal
+    assert job["covered"] == before["covered"]
+    assert [r["state"] for r in job["late_receipts"]] == ["VERIFIED",
+                                                         "ARCHIVED"]
+
+
+@pytest.mark.parametrize("fault", ["auth", "scratch"])
+def test_preflight_refusal_leaves_no_submitting_and_keeps_attempt(tmp_path,
+                                                                  fault):
+    """A preflight FilmError before the worker accepted anything leaves
+    the job RESERVED (in memory and on disk), consumes no attempt, voids
+    the minted grant and never resubmits by itself."""
+    c, worker, plan, keys = remote(tmp_path)
+    key = keys[0]
+    job = c.jobs[key]
+    c.reserve(key)
+    if fault == "auth":
+        worker.trusted_issuers = {"someone-else"}
+        match = "RELAY_AUTH_DENIED"
+    else:
+        worker.scratch_limit_bytes = 1
+        match = "WORKER_SCRATCH_EXCEEDED"
+    submitted = []
+    real_submit = worker.submit
+    worker.submit = lambda packet, now_ms=0: (
+        submitted.append(packet), real_submit(packet, now_ms=now_ms))[1]
+    with pytest.raises(FilmError, match=match):
+        c.submit(worker, key, frame_contract=dict(CONTRACT))
+    assert submitted == [] and worker._jobs == {}
+    assert job["state"] == "RESERVED"
+    assert (job["attempt_id"], job["attempts_used"], job["request_id"],
+            job["nonce"], job["grant_digest"]) == (0, 0, None, None, None)
+    assert key not in c._nonces and len(c.revoked_grants) == 1
+    assert Coordinator(tmp_path / "state").jobs[key]["state"] == "RESERVED"
+    # the user's explicit submit runs attempt 1
+    worker.trusted_issuers = {"coordinator"}
+    worker.scratch_limit_bytes = None
+    assert c.submit(worker, key, frame_contract=dict(CONTRACT)) == "RUNNING"
+    assert job["attempt_id"] == 1 and job["attempts_used"] == 1
+    assert len(submitted) == 1
+
+
+def test_resume_preflight_refusal_keeps_allowance(tmp_path):
+    """A refused resume preflight keeps the allowance; a late receipt of
+    the closed attempt arriving while RESERVED never seeds the next
+    attempt's coverage."""
+    c, worker, plan, keys = remote(tmp_path)
+    key = keys[0]
+    job = c.jobs[key]
+    c.reserve(key)
+    c.submit(worker, key, frame_contract=dict(CONTRACT))
+    worker.fail(job["request_id"])
+    assert c.collect(worker, key) == "FAILED_CONFIRMED"
+    worker.trusted_issuers = {"someone-else"}
+    with pytest.raises(FilmError, match="RELAY_AUTH_DENIED"):
+        c.resume_failed(worker, key, user_continued=True, plan=plan)
+    assert job["state"] == "RESERVED"
+    assert job["attempt_id"] == 1 and job["attempts_used"] == 1
+    late = c.receive_receipt(receipt_for(
+        job, "COMPLETE", job["output_range"],
+        members=members_for(c, job, job["output_range"])), worker)
+    assert late["state"] == "RESERVED" and job["covered"] == []
+    worker.trusted_issuers = {"coordinator"}
+    assert c.submit(worker, key) == "RUNNING"
+    assert job["attempt_id"] == 2 and job["attempts_used"] == 2
+    assert job["covered"] == []
+    worker.complete(job["request_id"])
+    assert c.collect(worker, key) == "OUTPUT_PENDING_VERIFY"
+    seal_verified(c, key)
+
+
+PARTIAL_STEPS = list(itertools.product(["cancel", "reconcile", "collect"],
+                                       WORKER_ANSWERS))
+PARTIAL_SEQUENCES = [seq for n in (1, 2)
+                     for seq in itertools.product(PARTIAL_STEPS, repeat=n)] \
+    + random.Random(14).sample(
+        list(itertools.product(PARTIAL_STEPS, repeat=3)), 120)
+
+
+def assert_not_wedged(c, job):
+    """Every reachable state has a way out or is a legitimate end."""
+    state = job["state"]
+    assert state in JOB_STATES
+    if state in {"CANCEL_CONFIRMED", "FAILED_CONFIRMED"}:
+        # a closed cancel/failure never holds a completed range
+        assert not c.coverage(job["job_key"])["complete"]
+    if state == "FAILED_CONFIRMED":
+        assert job["attempts_used"] < job["max_attempts"]
+    if state not in {"CANCEL_CONFIRMED", "ARCHIVED"}:
+        assert TRANSITIONS[state]
+
+
+@pytest.mark.parametrize("held", [(0, 2), None], ids=["partial", "empty"])
+@pytest.mark.parametrize(
+    "sequence", PARTIAL_SEQUENCES,
+    ids=["-".join(f"{a}:{w}" for a, w in s) for s in PARTIAL_SEQUENCES])
+def test_no_state_is_wedged_from_partial_coverage(tmp_path, sequence, held):
+    """Property: from partial (or no) coverage, any sequence of cancel /
+    reconcile / collect answers never changes a closed attempt's state or
+    coverage, never leaves a completed range in CANCEL_CONFIRMED or
+    FAILED_CONFIRMED, and always ends ARCHIVED or CANCEL_CONFIRMED —
+    FAILED_CONFIRMED through the explicit resume."""
+    c, worker, plan, key, job = partial(tmp_path, held=held)
+    for action, answer in sequence:
+        closed = job["state"] in CLOSED and copy.deepcopy(
+            (job["state"], job["covered"], job["members"]))
+        worker.answer = answer
+        if action == "cancel" and job["state"] in {"RUNNING",
+                                                   "OUTPUT_PENDING_VERIFY"}:
+            c.request_cancel(worker, key)
+        elif action == "collect":
+            c.collect(worker, key)
+        else:
+            c.reconcile(worker, key)
+        if closed:
+            assert (job["state"], job["covered"], job["members"]) == closed
+        assert_not_wedged(c, job)
+    c2 = Coordinator(tmp_path / "state")
+    job2 = c2.jobs[key]
+    assert job2.get("late_receipts") == job.get("late_receipts")
+    worker.answer = "COMPLETE"
+    if job2["state"] in {"RUNNING", "UNKNOWN", "CANCEL_REQUESTED"}:
+        assert c2.reconcile(worker, key) == "OUTPUT_PENDING_VERIFY"
+    if job2["state"] == "OUTPUT_PENDING_VERIFY":
+        seal_verified(c2, key)
+    elif job2["state"] == "FAILED_CONFIRMED":
+        resume_to_archived(c2, worker, plan, key)
+    assert job2["state"] in {"ARCHIVED", "CANCEL_CONFIRMED"}
 
 
 def test_verify_failed_attempt_resume_clears_coverage(tmp_path):

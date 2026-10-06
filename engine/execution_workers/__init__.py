@@ -34,7 +34,9 @@ only the coordinator's verify_outputs ends it. A worker's
 COMPLETE statement is never promoted to VERIFIED without the
 coordinator's independent verification. A new attempt after
 FAILED_CONFIRMED starts only through an explicit user resume inside the
-bounded retry allowance.
+bounded retry allowance. Once an attempt is closed (FAILED_CONFIRMED,
+CANCEL_CONFIRMED, VERIFIED, ARCHIVED) a later receipt for it is recorded
+in `late_receipts` (digests only) and never changes coverage or state.
 
 Worker authentication is a scoped grant (evolution §2.1.1 / schema §17):
 issuer, audience, peer, credential epoch, job, attempt, snapshot,
@@ -116,6 +118,14 @@ UNKNOWN_FENCED = {"submit", "release_reservation", "substitute",
 # confirmed first they are observations only — never a state change.
 ADVERSE_ANSWERS = {"CANCELLED", "NOT_FOUND", "FAILED", "FAILED_CONFIRMED",
                    "CANCEL_CONFIRMED"}
+
+# States in which the job's current attempt is still open. In every other
+# state (terminal FAILED_CONFIRMED / CANCEL_CONFIRMED / VERIFIED /
+# ARCHIVED, or RESERVED / WAITING_USER before the next attempt is minted)
+# the attempt is closed: a later receipt bound to it is a late
+# observation only and never changes coverage or state.
+LIVE_ATTEMPT_STATES = {"SUBMITTING", "RUNNING", "UNKNOWN", "CANCEL_REQUESTED",
+                       "OUTPUT_PENDING_VERIFY"}
 
 log = logging.getLogger(__name__)
 
@@ -552,9 +562,11 @@ class Coordinator:
             self._nonces.pop(job["job_key"], None)
 
     def _completion_confirmed(self, job):
-        """A complete, valid receipt set for this attempt is held and the
-        coordinator's own verification has not rejected it."""
-        return self._complete(job) and not job.get("verify_failed")
+        """A complete, valid receipt set for this still-open attempt is
+        held and the coordinator's own verification has not rejected it.
+        A closed (terminal) attempt never counts."""
+        return job["state"] in LIVE_ATTEMPT_STATES and self._complete(job) \
+            and not job.get("verify_failed")
 
     def _hold_confirmed_completion(self, job, answer):
         """The completion-confirmed-first rule, for every worker answer.
@@ -742,10 +754,14 @@ class Coordinator:
         receive_receipt."""
         for receipt in receipts:
             job = self._job(receipt.get("job_key", ""))
-            if any(r["receipt_id"] == receipt.get("receipt_id")
-                   for r in job["receipts"]):
+            if self._seen(job, receipt.get("receipt_id")):
                 continue
             self.receive_receipt(receipt, worker)
+
+    @staticmethod
+    def _seen(job, receipt_id):
+        return any(r["receipt_id"] == receipt_id
+                   for r in job["receipts"] + job.get("late_receipts", []))
 
     def collect(self, worker, key):
         """Explicit drain of the worker's pending receipts — one call,
@@ -776,7 +792,13 @@ class Coordinator:
                     raise FilmError(
                         "UNKNOWN_FENCED: an UNKNOWN job overlaps this "
                         "range; a substitute submission is refused")
-            self._set_state(job, "SUBMITTING", "submit")
+            if "SUBMITTING" not in TRANSITIONS.get(job["state"], set()):
+                raise FilmError(f"Illegal job transition {job['state']} -> "
+                                f"SUBMITTING (submit)")
+            saved = {k: job.get(k) for k in (
+                "frame_contract", "attempt_id", "attempts_used",
+                "request_id", "nonce", "grant_digest")}
+            saved_nonce = self._nonces.get(key)
             if frame_contract is not None:
                 job["frame_contract"] = dict(frame_contract)
             if job.get("frame_contract") is None:
@@ -802,6 +824,22 @@ class Coordinator:
                       "receipt_nonce": job["nonce"],
                       "input_bytes": input_bytes}
             check_packet(packet)
+            try:
+                worker.preflight(packet, now_ms=self.now_ms())
+            except FilmError:
+                # Refused before the worker accepted anything (auth,
+                # scratch cap, unreachable): no SUBMITTING is recorded,
+                # the attempt is not consumed and the minted grant is
+                # void. Another submit is the user's explicit call.
+                self.revoked_grants.add(job["grant_digest"])
+                job.update(saved)
+                if saved_nonce is None:
+                    self._nonces.pop(key, None)
+                else:
+                    self._nonces[key] = saved_nonce
+                self._persist()
+                raise
+            self._set_state(job, "SUBMITTING", "submit")
             self._persist()
         try:
             receipt = worker.submit(packet, now_ms=self.now_ms())
@@ -840,14 +878,32 @@ class Coordinator:
                 raise FilmError("RECEIPT_REJECTED: stale plan revision")
             if receipt["snapshot_digest"] != job["snapshot_digest"]:
                 raise FilmError("RECEIPT_REJECTED: stale snapshot")
-            if any(r.get("receipt_id") == receipt["receipt_id"]
-                   for r in job["receipts"]):
+            if self._seen(job, receipt["receipt_id"]):
                 raise FilmError("RECEIPT_REJECTED: duplicate receipt")
             rng = receipt["covered_range"]
             out = job["output_range"]
             if rng[0] < out[0] or rng[1] > out[1]:
                 raise FilmError("RECEIPT_REJECTED: covered range outside "
                                 "the job's output range")
+            if job["state"] not in LIVE_ATTEMPT_STATES:
+                # The attempt is closed: the receipt is kept as a late
+                # observation (digests only) and never touches coverage,
+                # members or state — a terminal job is never reopened.
+                late = {"receipt_id": receipt["receipt_id"],
+                        "kind": receipt["kind"],
+                        "attempt_id": receipt["attempt_id"],
+                        "request_id": receipt["request_id"],
+                        "covered_range": list(rng),
+                        "state": job["state"],
+                        "receipt_sha256": hashlib.sha256(
+                            canon_bytes(receipt)).hexdigest()}
+                job.setdefault("late_receipts", []).append(late)
+                log.warning("job %s attempt %s: late %s receipt after %s "
+                            "recorded as an observation", job["job_key"],
+                            receipt["attempt_id"], receipt["kind"],
+                            job["state"])
+                self._persist()
+                return late
             # Range overlap is a coverage property: only COMPLETE receipts
             # claim frame coverage; outcome receipts describe the job.
             if receipt["kind"] == "COMPLETE" and any(
@@ -1129,14 +1185,10 @@ class Coordinator:
                 if other["state"] == "UNKNOWN":
                     raise FilmError("RESUME_REFUSED: an UNKNOWN job is "
                                     "still fenced")
-            if self._completion_confirmed(job):
-                # A confirmed completion still pending verification is
-                # never discarded — reconcile keeps it under
-                # OUTPUT_PENDING_VERIFY and a resume cannot erase it.
-                # _set_state makes this unreachable for new transitions.
-                raise FilmError("RESUME_REFUSED: the job holds a "
-                                "confirmed completion pending "
-                                "verification")
+            # The decision rests on the attempt's own FAILED_CONFIRMED
+            # state only: receipts arriving after it are late observations
+            # and never counted, and the new attempt starts with fresh
+            # coverage.
             # §5.3: the explicit resume restarts the attempt lifecycle
             # through the FAILED_CONFIRMED -> RESERVED edge only.
             self._set_state(job, "RESERVED",
