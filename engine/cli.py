@@ -255,6 +255,44 @@ def main(argv=None):
     replay = sub.add_parser("replay-build")
     replay.add_argument("build_dir")
     replay.add_argument("--output", required=True)
+    sub_reg = sub.add_parser("subscription-register", help="ANIM-016: store a secret-free subscription entitlement record (account binding is a SHA-256 digest, never an email or token)")
+    sub_reg.add_argument("--state-dir", required=True, help="Coordinator state dir holding subscriptions/")
+    sub_reg.add_argument("--service", required=True)
+    sub_reg.add_argument("--usage-path", required=True,
+        choices=["CODE_RUNTIME_FILE_PACKET", "HOSTED_NOTEBOOK_UI"])
+    sub_reg.add_argument("--account-binding", required=True,
+        help="64-hex SHA-256 digest of the account identity — the CLI never accepts a raw account name or credential")
+    sub_reg.add_argument("--allowance", default="{}",
+        help="JSON map of separate allowance units: subscription_units, compute_units, api_credits, usd, handoff_minutes; integer or UNKNOWN/UNLIMITED/NOT_APPLICABLE")
+    sub_reg.add_argument("--inclusion", choices=["CONFIRMED", "UNKNOWN", "NO"], default="UNKNOWN")
+    sub_reg.add_argument("--official-execution-api", action="store_true",
+        help="Only for a service with a real official execution API; a consumer site is MANUAL")
+    sub_reg.add_argument("--service-caps", default="{}",
+        help="JSON map of the service's declared file/runtime limits")
+    sub_reg.add_argument("--expires-ms", type=int, default=None)
+    sub_reg.add_argument("--note", default="")
+    sub_probe = sub.add_parser("subscription-probe", help="ANIM-016: probe a subscription runtime into capability evidence; --fake runs the shipped worker script on a fixture and stays FAKE/UNQUALIFIED")
+    sub_probe.add_argument("--state-dir", required=True)
+    sub_probe.add_argument("--service", required=True)
+    sub_probe.add_argument("--fake", action="store_true", help="Run the FAKE subscription runtime fixture — never real-service qualification")
+    sub_probe.add_argument("--work-dir", help="Fixture working directory for --fake")
+    sub_status = sub.add_parser("subscription-status", help="ANIM-016: entitlement and probe evidence state; real-service qualification is UNQUALIFIED")
+    sub_status.add_argument("--state-dir", required=True)
+    sub_exp = sub.add_parser("subscription-export", help="ANIM-016: export manual execution packet(s) for a plan's SUBSCRIPTION_CODE_RUNTIME operations")
+    sub_exp.add_argument("--state-dir", required=True)
+    sub_exp.add_argument("--plan", required=True, help="ExecutionPlan 1 JSON")
+    sub_exp.add_argument("--service", required=True)
+    sub_exp.add_argument("--out", required=True, help="Output dir for packet dirs")
+    sub_exp.add_argument("--job", help="One job key; default every subscription operation")
+    sub_exp.add_argument("--input", action="append", default=[],
+        help="Input file staged into every packet (repeatable)")
+    sub_exp.add_argument("--approve-charges", action="store_true",
+        help="Separate explicit approval, required when the plan also sets allow_additional_charges")
+    sub_imp = sub.add_parser("subscription-import", help="ANIM-016: import and independently verify a packet result produced by the shipped worker script")
+    sub_imp.add_argument("--state-dir", required=True)
+    sub_imp.add_argument("--service", required=True)
+    sub_imp.add_argument("--packet-dir", required=True)
+    sub_imp.add_argument("--result-dir", required=True)
     encoders = sub.add_parser("encoders", help="ANIM-015: probe encoder drivers and report capability evidence; absent hardware is UNAVAILABLE, never fabricated")
     encoders.add_argument("--driver", help="Probe one driver")
     encode_build = sub.add_parser("encode-build", help="ANIM-015: encode+verify a sealed Build 2 build's delivery frames with a chosen driver")
@@ -571,6 +609,114 @@ def main(argv=None):
         elif a.command == "replay-build":
             from .builds import replay_build
             result = replay_build(a.build_dir, a.output)
+        elif a.command == "subscription-register":
+            from .execution_workers import subscription as sub_mod
+            doc = sub_mod.make_entitlement(
+                a.service, usage_path=a.usage_path,
+                account_binding=a.account_binding.lower(),
+                official_execution_api=a.official_execution_api,
+                allowance=json.loads(a.allowance),
+                inclusion={"execution_in_subscription": a.inclusion,
+                           "note": a.note or
+                           ("inclusion declared " + a.inclusion)},
+                service_caps=json.loads(a.service_caps),
+                expires_at_ms=a.expires_ms, notes=a.note)
+            path = sub_mod.save_entitlement(a.state_dir, doc)
+            result = {"entitlement": str(path),
+                      "entitlement_id": doc["entitlement_id"],
+                      "route_label": sub_mod.route_label(doc),
+                      "qualification_state": "UNQUALIFIED"}
+        elif a.command == "subscription-probe":
+            from .animation_schema import read_canon as _read_canon
+            from .execution_workers import subscription as sub_mod
+            entitlement = sub_mod.load_entitlement(a.state_dir, a.service)
+            runtime = None
+            if a.fake:
+                runtime = sub_mod.FakeSubscriptionRuntime(entitlement)
+            evidence = sub_mod.probe_subscription(
+                a.service, entitlement=entitlement, runtime=runtime,
+                work_dir=a.work_dir)
+            path = sub_mod.save_evidence(a.state_dir, evidence)
+            result = {"evidence": str(path),
+                      "evidence_id": evidence["evidence_id"],
+                      "registry_state": evidence["registry_state"],
+                      "qualification": evidence["qualification"],
+                      "fake": bool(a.fake)}
+        elif a.command == "subscription-status":
+            from .execution_workers import subscription as sub_mod
+            folder = sub_mod.subscriptions_dir(a.state_dir)
+            entitlements = [sub_mod.validate_entitlement(
+                json.loads(p.read_text("utf-8")))
+                for p in sorted(folder.glob("*.json"))] \
+                if folder.is_dir() else []
+            result = {
+                "entitlements": [
+                    {"service": e["service"],
+                     "entitlement_id": e["entitlement_id"],
+                     "credential_epoch": e["credential_epoch"],
+                     "route_label": sub_mod.route_label(e),
+                     "allowance": e["allowance"], "used": e["used"],
+                     "inclusion": e["inclusion"]}
+                    for e in entitlements],
+                "evidence": [
+                    {"evidence_id": ev["evidence_id"],
+                     "registry_state": ev["registry_state"],
+                     "qualification": ev["qualification"],
+                     "observed_at": ev["observed_at"]}
+                    for ev in sub_mod.list_evidence(a.state_dir)],
+                "facets": sub_mod.subscription_facet_report()}
+        elif a.command == "subscription-export":
+            from .execution_packets import export_manual_packets
+            from .execution_plan import job_key, validate_execution_plan
+            from .animation_schema import read_canon as _read_canon
+            from .execution_workers import Coordinator
+            from .execution_workers import subscription as sub_mod
+            plan = validate_execution_plan(_read_canon(a.plan))
+            entitlement = sub_mod.load_entitlement(a.state_dir, a.service)
+            worker = sub_mod.SubscriptionWorker(entitlement)
+            coordinator = Coordinator(a.state_dir)
+            ops = [o for o in plan["operations"]
+                   if o["route"] == "SUBSCRIPTION_CODE_RUNTIME"]
+            if not ops:
+                raise FilmError("plan has no SUBSCRIPTION_CODE_RUNTIME "
+                                "operations")
+            keys = [job_key(plan, o) for o in ops]
+            if a.job:
+                keys = [k for k in keys if k == a.job]
+                if not keys:
+                    raise FilmError(f"job {a.job} is not a subscription "
+                                    "operation of this plan")
+            if not all(k in coordinator.jobs for k in keys):
+                coordinator.plan_jobs(plan)
+            exported = []
+            for key in keys:
+                if coordinator.jobs[key]["state"] == "PLANNED":
+                    coordinator.reserve(key)
+                exported.append(export_manual_packets(
+                    coordinator, plan, key,
+                    sub_mod.entitlement_path(a.state_dir, a.service),
+                    worker, a.out, input_files=a.input,
+                    additional_charges_approved=a.approve_charges))
+            result = {"service": a.service,
+                      "route_label": sub_mod.route_label(entitlement,
+                                                         worker),
+                      "jobs": exported,
+                      "qualification_state": "UNQUALIFIED"}
+        elif a.command == "subscription-import":
+            from .execution_packets import import_result
+            from .execution_workers import Coordinator
+            from .execution_workers import subscription as sub_mod
+            entitlement = sub_mod.load_entitlement(a.state_dir, a.service)
+            worker = sub_mod.SubscriptionWorker(entitlement)
+            coordinator = Coordinator(a.state_dir)
+            outcome = import_result(coordinator, worker, a.packet_dir,
+                                    a.result_dir, entitlement=entitlement)
+            if coordinator.jobs[outcome["job_key"]]["state"] == \
+                    "OUTPUT_PENDING_VERIFY":
+                outcome["verified"] = coordinator.verify_outputs(
+                    outcome["job_key"])
+            outcome["qualification_state"] = "UNQUALIFIED"
+            result = outcome
         elif a.command == "encoders":
             from .encoder_backends import probe_all, probe_driver
             result = probe_driver(a.driver) if a.driver else probe_all()
