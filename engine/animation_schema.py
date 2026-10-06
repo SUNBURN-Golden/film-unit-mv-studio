@@ -18,6 +18,7 @@ CANON_INT_MAX = 2**63 - 1
 DOCUMENT_SCHEMAS = {
     "animation_timeline": 1,
     "animation_timeline_derived": 1,
+    "animation_asset_registry": 1,
 }
 
 TIMELINE_FIELDS = {"document_type", "schema_version", "target_frames", "entries"}
@@ -234,6 +235,21 @@ def derive_timeline_view(document):
     return {"document_type": "animation_timeline_derived", "schema_version": 1,
             "target_frames": layout["output_frames"],
             "entries": layout["entries"], "transitions": layout["transitions"]}
+
+
+def require_animation_profile(project):
+    """Read project.yaml and require the explicit FRAME_ANIMATION_V1 profile.
+
+    Absent or LEGACY_MV projects keep the ms path and cannot create new-mode
+    documents; the profile is set only by the explicit animation-init command.
+    """
+    from .core import production_profile, read
+    from .schema import ANIMATION_PROFILE
+    p = Path(project)
+    config = read(p / "project.yaml")
+    if production_profile(config) != ANIMATION_PROFILE:
+        raise FilmError("This project is LEGACY_MV; animation assets require an explicit animation-init conversion")
+    return config
 
 
 def load_animation_timeline(project):
