@@ -316,6 +316,17 @@ def main(argv=None):
     cap_pre.add_argument("--state-dir", required=True)
     cap_pre.add_argument("--observation", help="JSON file with a fresh environment/entitlement observation")
     cap_pre.add_argument("--now-ms", type=int, default=None)
+    perf_plan = sub.add_parser("perf-plan", help="ANIM-017: dependency graph + AUTO_PERFORMANCE ExecutionPlan + capability preflight; nothing executes")
+    perf_plan.add_argument("project")
+    perf_plan.add_argument("--state-dir", help="Capability registry state dir; default <project>/render/perf/registry")
+    perf_bench = sub.add_parser("perf-benchmark", help="ANIM-017: cold/warm/one-cut/interrupt benchmark on a local working copy; secret-free report; complete bound measurements register into the perf registry")
+    perf_bench.add_argument("project")
+    perf_bench.add_argument("--work-dir", help="Working copy dir (default: system temp)")
+    perf_bench.add_argument("--runs", type=int, default=1, help="Cold+warm sample repetitions")
+    perf_bench.add_argument("--workers", type=int, default=1, help="Bounded parallel compose cap")
+    perf_bench.add_argument("--prefetch", type=int, default=0, help="Upcoming dirty frames to prefetch members for")
+    perf_bench.add_argument("--pack", action="store_true", help="Also run PACK-SPARSE phases through the fake archive backend")
+    perf_bench.add_argument("--no-register", action="store_true", help="Skip registering evidence/measurements into <project>/render/perf/registry")
     encode_build = sub.add_parser("encode-build", help="ANIM-015: encode+verify a sealed Build 2 build's delivery frames with a chosen driver")
     encode_build.add_argument("build_dir")
     encode_build.add_argument("--driver", required=True,
@@ -777,6 +788,15 @@ def main(argv=None):
             result = plan_preflight(plan, state_dir=a.state_dir,
                                     observation=observation,
                                     now_ms=a.now_ms)
+        elif a.command == "perf-plan":
+            from .perf_scheduler import perf_plan_command
+            result = perf_plan_command(a.project, state_dir=a.state_dir)
+        elif a.command == "perf-benchmark":
+            from .perf_scheduler import perf_benchmark_command
+            result = perf_benchmark_command(
+                a.project, work_root=a.work_dir, runs=a.runs,
+                workers=a.workers, prefetch=a.prefetch,
+                use_packs=a.pack, register=not a.no_register)
         elif a.command == "encode-build":
             from .animation_compiler import encode_build_delivery
             result = encode_build_delivery(a.build_dir, a.driver, a.output,
