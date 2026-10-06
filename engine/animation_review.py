@@ -324,12 +324,15 @@ def _exposure_digest(schedules):
         {"schedules": [schedule_digest(s) for s in schedules]})).hexdigest()
 
 
-def bound_targets(p, exposure=None):
+def bound_targets(p, exposure=None, strict=True):
     """The current CUT/TRANSITION bound fields for the whole edit.
 
     Every timeline entry must resolve to its pinned sequence — a review can
     only bind real content. `exposure` maps an instance_id to the drawing
     track schedules used for that cut (default: the identity ones map).
+    With strict=False an unresolvable entry yields an {"unresolved": reason}
+    placeholder instead of raising, so scope/status reporting can inspect a
+    partially produced timeline; reviews still only ever bind real content.
     """
     p = Path(p)
     require_animation_profile(p)
@@ -340,9 +343,17 @@ def bound_targets(p, exposure=None):
     cuts, sequences = {}, {}
     for row in audit["entries"]:
         entry = entries[row["instance_id"]]
-        resolved = resolve_shot_sequence(
-            p, entry["shot_id"], entry["used_source_range"],
-            entry["unused_handles"], entry["sequence_revision"])
+        try:
+            resolved = resolve_shot_sequence(
+                p, entry["shot_id"], entry["used_source_range"],
+                entry["unused_handles"], entry["sequence_revision"])
+        except FilmError as exc:
+            if strict:
+                raise
+            cuts[row["instance_id"]] = {
+                "instance_id": row["instance_id"], "shot_id": entry["shot_id"],
+                "unresolved": str(exc)}
+            continue
         record = resolved["record"]
         seq = {"digest": sequence_content_digest(record),
                "revision": resolved["revision"]}
@@ -363,6 +374,14 @@ def bound_targets(p, exposure=None):
     transitions = {}
     for transition in audit["transitions"]:
         declared = doc_entries[transition["id"]]
+        if transition["from_instance"] not in sequences \
+                or transition["to_instance"] not in sequences:
+            transitions[transition["id"]] = {
+                "transition_id": transition["id"],
+                "from_instance": transition["from_instance"],
+                "to_instance": transition["to_instance"],
+                "unresolved": "an endpoint cut is unresolved"}
+            continue
         outgoing = sequences[transition["from_instance"]]
         incoming = sequences[transition["to_instance"]]
         transitions[transition["id"]] = {
@@ -388,17 +407,18 @@ def _approves(record):
             and not record["unresolved_major_issues"])
 
 
-def review_status(project, exposure=None):
+def review_status(project, exposure=None, strict=True):
     """Per-target state: CURRENT, CHANGES_REQUIRED, STALE or UNREVIEWED.
 
     A target is STALE when records exist for it but none binds the current
     digests — a stale record is evidence of an old review, never an
     approval. UNREVIEWED means no record names the target at all; a record
     that binds the current digests without approving (FIX_REQUIRED or open
-    issues) reports CHANGES_REQUIRED, which blocks just as hard.
+    issues) reports CHANGES_REQUIRED, which blocks just as hard. With
+    strict=False unresolvable entries report UNRESOLVED instead of raising.
     """
     p = Path(project)
-    targets = bound_targets(p, exposure)
+    targets = bound_targets(p, exposure, strict=strict)
     records = load_reviews(p)
     status = {}
     for scope, key in (("cuts", "CUT"), ("transitions", "TRANSITION")):
@@ -406,6 +426,12 @@ def review_status(project, exposure=None):
             candidates = [r for r in records
                           if r["scope"] == key
                           and r[KEY_FIELDS[key]] == target]
+            if "unresolved" in fields:
+                status[target] = {"scope": key, "binding_sha256": None,
+                                  "state": "UNRESOLVED", "review_id": None,
+                                  "records": len(candidates),
+                                  "reason": fields["unresolved"]}
+                continue
             bound = hashlib.sha256(canon_bytes(fields)).hexdigest()
             matching = [r for r in candidates
                         if r["binding_sha256"] == bound]
@@ -453,9 +479,14 @@ def record_cut_review(project, instance_id, *, reviewer, methods,
                       accepted_limitations=None, exposure=None):
     """Append a CUT review bound to the instance's current adopted content."""
     p = Path(project)
-    cuts = bound_targets(p, exposure)["cuts"]
+    cuts = bound_targets(p, exposure, strict=False)["cuts"]
     if instance_id not in cuts:
         raise FilmError(f"No timeline entry {instance_id}")
+    if "unresolved" in cuts[instance_id]:
+        raise FilmError(f"{instance_id} has no resolvable adopted sequence: "
+                        f"{cuts[instance_id]['unresolved']}")
+    from .animation_locks import wave_scope_gate
+    wave_scope_gate(p, [cuts[instance_id]["shot_id"]])
     record = _record("CUT", cuts[instance_id], reviewer, methods, decision,
                      unresolved_major_issues, accepted_limitations,
                      _next_review_id(load_reviews(p)))
@@ -467,9 +498,17 @@ def record_transition_review(project, transition_id, *, reviewer, methods,
                              accepted_limitations=None, exposure=None):
     """Append a TRANSITION review bound to both pinned sequences + recipe."""
     p = Path(project)
-    transitions = bound_targets(p, exposure)["transitions"]
+    targets = bound_targets(p, exposure, strict=False)
+    transitions = targets["transitions"]
     if transition_id not in transitions:
         raise FilmError(f"No transition {transition_id}")
+    if "unresolved" in transitions[transition_id]:
+        raise FilmError(f"{transition_id} has no resolvable endpoint sequence: "
+                        f"{transitions[transition_id]['unresolved']}")
+    from .animation_locks import wave_scope_gate
+    endpoint = transitions[transition_id]
+    wave_scope_gate(p, [targets["cuts"][endpoint["from_instance"]]["shot_id"],
+                        targets["cuts"][endpoint["to_instance"]]["shot_id"]])
     record = _record("TRANSITION", transitions[transition_id], reviewer,
                      methods, decision, unresolved_major_issues,
                      accepted_limitations,
