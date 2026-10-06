@@ -339,6 +339,14 @@ def main(argv=None):
     perf_bench.add_argument("--prefetch", type=int, default=0, help="Upcoming dirty frames to prefetch members for")
     perf_bench.add_argument("--pack", action="store_true", help="Also run PACK-SPARSE phases through the fake archive backend")
     perf_bench.add_argument("--no-register", action="store_true", help="Skip registering evidence/measurements into <project>/render/perf/registry")
+    prov = sub.add_parser("provenance-report", help="ANIM-020: canonical render_manifest + dependency graph + stale-approval projection for the committed render state")
+    prov.add_argument("project")
+    prov.add_argument("--perf-root", help="Perf state dir holding a committed state.json (default <project>/render/perf)")
+    reb = sub.add_parser("rebuild-plan", help="ANIM-020: change-closure plan — read/member/halo scope, compose/subbed/encode ranges and the stale-approval projection for a declared change set")
+    reb.add_argument("project")
+    reb.add_argument("--changes", required=True,
+                     help="JSON file with the declared change list, e.g. "
+                          "[{\"class\": \"PICTURE\", \"instance_id\": \"I002\", \"member_index\": 7}]")
     encode_build = sub.add_parser("encode-build", help="ANIM-015: encode+verify a sealed Build 2 build's delivery frames with a chosen driver")
     encode_build.add_argument("build_dir")
     encode_build.add_argument("--driver", required=True,
@@ -821,6 +829,13 @@ def main(argv=None):
                 a.project, work_root=a.work_dir, runs=a.runs,
                 workers=a.workers, prefetch=a.prefetch,
                 use_packs=a.pack, register=not a.no_register)
+        elif a.command == "provenance-report":
+            from .render_provenance import provenance_report
+            result = provenance_report(a.project, perf_root=a.perf_root)
+        elif a.command == "rebuild-plan":
+            from .render_provenance import rebuild_plan_report
+            changes = json.loads(Path(a.changes).read_text(encoding="utf-8"))
+            result = rebuild_plan_report(a.project, changes)
         elif a.command == "encode-build":
             from .animation_compiler import encode_build_delivery
             result = encode_build_delivery(a.build_dir, a.driver, a.output,
