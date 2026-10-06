@@ -28,6 +28,8 @@ DOCUMENT_SCHEMAS = {
     "storage_archive": 1,
     "animation_shot_plan": 1,
     "composite_recipe": 1,
+    "encode_recipe": 1,
+    "capability_evidence": 1,
     "animation_work_packet": 1,
     "animation_draft_frames": 1,
     "execution_plan": 1,
@@ -247,6 +249,100 @@ def derive_timeline_view(document):
     return {"document_type": "animation_timeline_derived", "schema_version": 1,
             "target_frames": layout["output_frames"],
             "entries": layout["entries"], "transitions": layout["transitions"]}
+
+
+ENCODE_DRIVERS = {"FFMPEG", "NVIDIA_NATIVE", "VIDEOTOOLBOX_NATIVE",
+                  "GSTREAMER", "QUALIFIED_SERVICE"}
+REGISTRY_STATES = {"DOCUMENTED_ONLY", "QUALIFIED_FOR_SCOPE", "STALE",
+                   "UNAVAILABLE"}
+ENCODE_RECIPE_FIELDS = {"document_type", "schema_version", "driver",
+                        "codec_engine", "container", "pixel_format",
+                        "timebase", "rate_control", "color", "mux"}
+CAPABILITY_FIELDS = {"document_type", "schema_version", "evidence_id",
+                     "driver", "adapter_digest", "account_binding",
+                     "credential_epoch", "environment", "operation", "scope",
+                     "caps", "route", "transport", "fixture", "observed_at",
+                     "entitlement_basis", "allowance", "expiry",
+                     "registry_state", "qualification", "reason"}
+
+
+def validate_encode_recipe(document):
+    """Structural contract of `encode_recipe` 1 (schema section 14).
+
+    The fields are exactly driver, codec engine, container, pixel format,
+    timebase, rate control, color and mux — the DeliveryProfile is a shared
+    reference, never smuggled into the recipe as an extra field.
+    """
+    check_document(document, "encode_recipe")
+    if set(document.keys()) != ENCODE_RECIPE_FIELDS:
+        raise FilmError("encode_recipe must hold exactly the contracted "
+                        "fields: driver, codec engine, container, pixel "
+                        "format, timebase, rate control, color, mux")
+    if document["driver"] not in ENCODE_DRIVERS:
+        raise FilmError(f"Unknown encode driver: {document['driver']}")
+    if type(document["codec_engine"]) is not str \
+            or not document["codec_engine"]:
+        raise FilmError("codec_engine must name the engine actually used")
+    if document["container"] != "mp4":
+        raise FilmError("MV_H264_AAC_V1 delivery uses an mp4 container")
+    if type(document["pixel_format"]) is not str \
+            or not document["pixel_format"]:
+        raise FilmError("pixel_format must be a non-empty string")
+    timebase = document["timebase"]
+    if type(timebase) is not dict or set(timebase.keys()) != {"num", "den"}:
+        raise FilmError("timebase must be a {num, den} rational")
+    _int(timebase["num"], "timebase.num", minimum=1)
+    _int(timebase["den"], "timebase.den", minimum=1)
+    if type(document["rate_control"]) is not dict \
+            or not document["rate_control"].get("mode"):
+        raise FilmError("rate_control must name the driver-specific mode")
+    if type(document["color"]) is not dict or not document["color"]:
+        raise FilmError("color must record the recipe-fixed colour policy")
+    if type(document["mux"]) is not dict or not document["mux"]:
+        raise FilmError("mux must record the mux contract")
+    return document
+
+
+def validate_capability_evidence(document):
+    """Structural contract of `capability_evidence` 1 (schema section 15).
+
+    Required: evidence_id, adapter/worker digest, secret-free account
+    binding, credential_epoch, session/device/OS/driver environment,
+    operation, scope, caps, route/transport, fixture digests, observed
+    time, entitlement basis, per-currency allowance, expiry/revalidation
+    conditions — plus the registry state which may only be a documented
+    state, never an invented program enum.
+    """
+    check_document(document, "capability_evidence")
+    if set(document.keys()) != CAPABILITY_FIELDS:
+        raise FilmError("capability_evidence must hold exactly the "
+                        "contracted fields")
+    if type(document["evidence_id"]) is not str \
+            or not document["evidence_id"]:
+        raise FilmError("evidence_id must be a non-empty string")
+    if type(document["adapter_digest"]) is not str \
+            or not document["adapter_digest"]:
+        raise FilmError("adapter_digest is required")
+    if document["driver"] not in ENCODE_DRIVERS:
+        raise FilmError(f"Unknown encode driver: {document['driver']}")
+    binding = document["account_binding"]
+    if binding is not None and type(binding) is not str:
+        raise FilmError("account_binding must be secret-free (digest or "
+                        "null, never an email or token)")
+    _int(document["credential_epoch"], "credential_epoch")
+    if type(document["environment"]) is not dict:
+        raise FilmError("environment must record session/device/OS/driver")
+    if type(document["operation"]) is not str or not document["operation"]:
+        raise FilmError("operation must name what was actually probed")
+    if type(document["allowance"]) is not dict:
+        raise FilmError("allowance must keep currencies separate")
+    if document["registry_state"] not in REGISTRY_STATES:
+        raise FilmError(f"Unknown registry_state: "
+                        f"{document['registry_state']}")
+    if type(document["observed_at"]) is not str \
+            or not document["observed_at"]:
+        raise FilmError("observed_at is required")
+    return document
 
 
 def require_animation_profile(project):
