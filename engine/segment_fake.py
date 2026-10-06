@@ -18,7 +18,13 @@ its `behaviors` switches let a test drive every protocol branch:
 - `short_clip`: fewer usable frames than the target range needs;
 - `extra_frames`: extra tail frames, forcing an explicit used-range choice;
 - `reject`: a definitive refusal before any work was accepted;
-- `end_image: false` under `endpoints`: a start-only adapter declaration.
+- `end_image: false` under `endpoints`: a start-only adapter declaration;
+- `complete_before_cancel`: a cancel arrives just as the job finishes — the
+  completion was confirmed first and the cancel answer reports it;
+- `cancel_pending`: the cancel is accepted but termination is only confirmed
+  on a later status query (request vs. confirmation are distinct steps);
+- `lost_cancel_ack`: the cancel is applied server-side but the
+  acknowledgement never arrives — termination stays UNKNOWN until reconcile.
 
 Nothing in this file is a real provider qualification: outputs are FAKE and
 UNQUALIFIED regardless of how convincingly the protocol ran.
@@ -64,7 +70,10 @@ def _default_state(p):
             "endpoints": {"start_image": True, "end_image": True},
             "behaviors": {"reject": False, "lost_ack": False,
                           "lost_ack_delivered": True, "complete_after": 1,
-                          "short_clip": False, "extra_frames": 0},
+                          "short_clip": False, "extra_frames": 0,
+                          "complete_before_cancel": False,
+                          "cancel_pending": False,
+                          "lost_cancel_ack": False},
             "requests": {}}
 
 
@@ -256,10 +265,51 @@ class FakeSegmentAdapter:
                 state["behaviors"]["complete_after"]:
             record["result"] = self._render(record)
             record["state"] = "DONE"
+        if record["state"] == "CANCELLING":
+            # A pending cancel's termination is observed on the next query.
+            record["state"] = "CANCELLED"
         self._save(state)
         return {"state": record["state"],
                 "operation_id": record["operation_id"],
                 "result": record["result"], "billed": record["billed"]}
+
+    def cancel(self, request_id):
+        """One cancel request against the recorded submission identity.
+
+        The outcome distinguishes request from confirmation: `ACCEPTED` means
+        termination still has to be confirmed by a status query,
+        `COMPLETED_FIRST` means the provider's completion beat the cancel,
+        `CANCELLED`/`NOT_FOUND` confirm termination or never-accepted, and a
+        lost acknowledgement raises SegmentLostAck — the engine must fence
+        the job as UNKNOWN rather than guess.
+        """
+        state = fake_state(self.p)
+        record = state["requests"].get(request_id)
+        if record is None:
+            return {"outcome": "NOT_FOUND", "billed": None}
+        behaviors = state["behaviors"]
+        if record["state"] == "DONE":
+            return {"outcome": "COMPLETED_FIRST", "result": record["result"],
+                    "billed": record["billed"]}
+        if record["state"] == "CANCELLED":
+            return {"outcome": "CANCELLED", "billed": record["billed"]}
+        if behaviors["complete_before_cancel"]:
+            record["result"] = self._render(record)
+            record["state"] = "DONE"
+            self._save(state)
+            return {"outcome": "COMPLETED_FIRST", "result": record["result"],
+                    "billed": record["billed"]}
+        if behaviors["cancel_pending"]:
+            record["state"] = "CANCELLING"
+            self._save(state)
+            return {"outcome": "ACCEPTED", "billed": record["billed"]}
+        record["state"] = "CANCELLED"
+        self._save(state)
+        if behaviors["lost_cancel_ack"]:
+            raise SegmentLostAck(
+                "FAKE provider cancel acknowledgement was lost; "
+                "termination is unknown until reconcile")
+        return {"outcome": "CANCELLED", "billed": record["billed"]}
 
 
 class DeclaredAdapter:
@@ -290,6 +340,9 @@ class DeclaredAdapter:
         self._refuse()
 
     def status(self, request_id):
+        self._refuse()
+
+    def cancel(self, request_id):
         self._refuse()
 
 

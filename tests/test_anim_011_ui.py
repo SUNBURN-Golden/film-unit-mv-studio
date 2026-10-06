@@ -182,10 +182,12 @@ def test_one_cut_flow_to_final_approval(screen):
 
     adopted_w00(at)
 
-    # The path-B connection point exists but stays disabled until ANIM-012.
-    path_b = button(at, "an_path_b")
-    assert path_b.disabled and "경로 B 연결 대기" in path_b.label
-    assert "ANIM-010/012" in path_b.label
+    # ANIM-012 wired the path-B section to the dev/test fake adapter; the
+    # ANIM-011 placeholder is gone and the live section is labelled.
+    assert not any(b.key == "an_path_b" for b in at.button)
+    assert any("경로 B" in m.value for m in at.markdown)
+    assert any("fake adapter" in c.value and "UNQUALIFIED" in c.value
+               for c in at.caption)
 
     # 검토: whole-film draft preview plays in the app.
     button(at, "an_preview").click().run()
@@ -366,12 +368,20 @@ def test_final_approval_blocked_when_the_build_is_stale(screen):
     assert any("stale" in e or "검수" in e for e in errors(at))
 
 
-def test_path_b_button_is_present_disabled_and_calls_nothing(screen):
+def test_path_b_section_is_live_but_fake_only(screen):
+    """ANIM-012 replaced the disabled placeholder: the section renders its
+    real controls against fake_segment only, and nothing is submitted."""
     at, project = screen
-    path_b = button(at, "an_path_b")
-    assert path_b.disabled
-    assert path_b.label == "경로 B 연결 대기 (ANIM-010/012)"
-    assert not (project / "animation/segment_jobs.json").exists()
+    sel(at, "an_shot").select("I001")
+    at.run()
+    assert not at.exception
+    assert not any(b.key == "an_path_b" for b in at.button)
+    assert any("경로 B" in m.value for m in at.markdown)
+    assert any("개발·시험용 fake adapter" in c.value
+               and "UNQUALIFIED" in c.value for c in at.caption)
+    # No plan saved for S001 yet — the section asks for one, no job exists.
+    assert not any(b.key == "an_b_submit" for b in at.button)
+    assert not (project / "animation/segment_jobs").exists()
 
 
 def test_legacy_mv_project_shows_no_animation_section(box):
