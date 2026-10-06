@@ -25,7 +25,8 @@ from engine.core import FilmError, read, write
 from engine.frame_sequence import (animation_validate,
                                    normalize_shot_sequence)
 from engine.motion_plan import load_shot_plan, save_shot_plan
-from engine.segment_fake import configure_fake, fake_state, make_adapter
+from engine.segment_fake import (FakeSegmentAdapter, configure_fake,
+                                 fake_state, make_adapter)
 from engine.segment_gen import (JOURNAL_TYPE, TRANSITIONS,
                                 commit_segment_sequence,
                                 import_segment_control, load_job_journal,
@@ -341,6 +342,35 @@ def test_retry_is_a_cost_cap_not_permission(tmp_path):
                       ["quote_id"])
 
 
+def test_retry_rechecks_changed_quote_against_cap(tmp_path):
+    p, _, _, _ = b_scene(tmp_path)
+    quote = segment_quote(p, "S001", 0, FRAMES)
+    configure_fake(p, behaviors={"reject": True})
+    result = _submit(p, quote=quote, max_retries=1, cap=NEEDED * 2)
+    assert result["status"] == "FAILED_CONFIRMED"
+    configure_fake(p, behaviors={"reject": False})
+    # Over the approved cap: the changed quote cannot be re-approved here.
+    configure_fake(p, price_credits_per_frame=5)
+    changed = segment_quote(p, "S001", 0, FRAMES)
+    with pytest.raises(FilmError, match="QUOTE_CHANGED_NEEDS_APPROVAL"):
+        segment_retry(p, result["job_id"], approver="reviewer",
+                      quote_id=changed["quote_id"])
+    # Under the cap but a different price — still a changed quote.
+    configure_fake(p, price_credits_per_frame=1)
+    changed = segment_quote(p, "S001", 0, FRAMES)
+    with pytest.raises(FilmError, match="QUOTE_CHANGED_NEEDS_APPROVAL"):
+        segment_retry(p, result["job_id"], approver="reviewer",
+                      quote_id=changed["quote_id"])
+    job = _job_record(p, result["job_id"])
+    assert job["status"] == "FAILED_CONFIRMED"
+    # The unchanged quote still retries within the approved cap.
+    configure_fake(p, price_credits_per_frame=2)
+    quote = segment_quote(p, "S001", 0, FRAMES)
+    retry = segment_retry(p, result["job_id"], approver="reviewer",
+                          quote_id=quote["quote_id"])
+    assert retry["status"] == "RUNNING" and retry["attempt"] == 2
+
+
 # --- UNKNOWN fencing -----------------------------------------------------------
 
 def test_lost_ack_fences_resubmission_then_reconciles(tmp_path):
@@ -397,6 +427,82 @@ def test_late_completion_needs_explicit_queries(tmp_path):
     assert segment_reconcile(p, result["job_id"])["status"] == "RUNNING"
     assert segment_reconcile(p, result["job_id"])["status"] == \
         "OUTPUT_PENDING_VERIFY"
+    assert len(fake_state(p)["requests"]) == 1
+
+
+def test_crash_after_submit_intent_reconciles_done(tmp_path, monkeypatch):
+    p, _, _, _ = b_scene(tmp_path)
+    real_submit = FakeSegmentAdapter.submit
+
+    def crash_after_accept(self, spec, request_id, attempt_id):
+        real_submit(self, spec, request_id, attempt_id)
+        raise RuntimeError("simulated crash after the provider accepted")
+
+    # The engine dies between SUBMIT_INTENT and the provider reply: the
+    # job is durable in SUBMITTING and the provider holds the request.
+    monkeypatch.setattr(FakeSegmentAdapter, "submit", crash_after_accept)
+    with pytest.raises(RuntimeError):
+        _submit(p)
+    monkeypatch.setattr(FakeSegmentAdapter, "submit", real_submit)
+    job_id = segment_jobs(p)["jobs"][0]["job_id"]
+    job = _job_record(p, job_id)
+    assert job["status"] == "SUBMITTING"
+    assert len(fake_state(p)["requests"]) == 1
+    # Reconcile recovers the fenced job: SUBMITTING has no edge to the
+    # observed outcome, so it routes through UNKNOWN, saved per hop.
+    rec = segment_reconcile(p, job_id)
+    assert rec["status"] == "OUTPUT_PENDING_VERIFY"
+    job = _job_record(p, job_id)
+    edges = [(h["from"], h["to"]) for h in job["history"]]
+    assert ("SUBMITTING", "UNKNOWN") in edges
+    assert ("UNKNOWN", "OUTPUT_PENDING_VERIFY") in edges
+    for h in job["history"]:
+        assert h["to"] in TRANSITIONS[h["from"]]
+    result = segment_import(p, job_id)
+    assert result["status"] == "VERIFIED"
+
+
+def test_crash_after_submit_intent_not_found_then_retry(tmp_path,
+                                                      monkeypatch):
+    p, _, _, _ = b_scene(tmp_path)
+    real_submit = FakeSegmentAdapter.submit
+
+    def crash_before_accept(self, spec, request_id, attempt_id):
+        raise RuntimeError("simulated crash before the provider accepted")
+
+    monkeypatch.setattr(FakeSegmentAdapter, "submit", crash_before_accept)
+    with pytest.raises(RuntimeError):
+        _submit(p, max_retries=1)
+    monkeypatch.setattr(FakeSegmentAdapter, "submit", real_submit)
+    job_id = segment_jobs(p)["jobs"][0]["job_id"]
+    job = _job_record(p, job_id)
+    assert job["status"] == "SUBMITTING"
+    request_id = job["request_id"]
+    assert fake_state(p)["requests"] == {}
+    # The provider never saw the request: confirmed failure on the same
+    # identity — no resubmit with a new id.
+    rec = segment_reconcile(p, job_id)
+    assert rec["status"] == "FAILED_CONFIRMED"
+    assert rec["charge_state"] == "CONFIRMED_UNCHARGED"
+    job = _job_record(p, job_id)
+    edges = [(h["from"], h["to"]) for h in job["history"]]
+    assert ("SUBMITTING", "UNKNOWN") in edges
+    assert ("UNKNOWN", "FAILED_CONFIRMED") in edges
+    assert job["request_id"] == request_id
+    assert fake_state(p)["requests"] == {}
+    # The reservation stays held per the ledger rules — never refunded
+    # without provider confirmation — and a blind resubmit is refused.
+    ledger = read(p / "render/ledger.json")
+    assert job["reservation"]["ledger_key"] in ledger["jobs"]
+    with pytest.raises(FilmError, match="JOB_NEEDS_DECISION"):
+        _submit(p)
+    # An explicit reviewed retry within the approved cap is allowed and
+    # mints the new attempt/request ids.
+    quote = segment_quote(p, "S001", 0, FRAMES)
+    retry = segment_retry(p, job_id, approver="reviewer",
+                          quote_id=quote["quote_id"])
+    assert retry["status"] == "RUNNING" and retry["attempt"] == 2
+    assert retry["request_id"] != request_id
     assert len(fake_state(p)["requests"]) == 1
 
 
@@ -678,6 +784,33 @@ def test_segment_jobs_refuse_symlinked_dirs(tmp_path):
         segment_jobs(p)
 
 
+def test_segment_job_file_symlink_refused(tmp_path):
+    p, _, _, _ = b_scene(tmp_path)
+    job_id = _run_to_verified(p)
+    job_file = p / "animation/segment_jobs/S001" / f"{job_id}.json"
+    moved = tmp_path / "moved_job.json"
+    job_file.rename(moved)
+    os.symlink(moved, job_file)
+    with pytest.raises(FilmError, match="SEGMENT_JOBS_SYMLINK"):
+        segment_jobs(p)
+    with pytest.raises(FilmError, match="SEGMENT_JOBS_SYMLINK"):
+        segment_jobs(p, "S001")
+
+
+def test_returned_member_symlink_refused(tmp_path):
+    p, _, _, _ = b_scene(tmp_path)
+    job_id = _run_to_verified(p)
+    frames_dir = Path(_job_record(p, job_id)["result"]["frames_dir"])
+    # A link to a real in-project file would pass a resolved is_symlink()
+    # check — the refusal must run on the unresolved path.
+    (p / frames_dir / "f000000.png").unlink()
+    os.symlink(p / frames_dir / "f000001.png",
+               p / frames_dir / "f000000.png")
+    with pytest.raises(FilmError, match="RESULT_MEMBER_MISSING"):
+        segment_import(p, job_id)
+    assert _job_record(p, job_id)["status"] == "FAILED_CONFIRMED"
+
+
 def test_segment_control_rules_and_no_member_fill(tmp_path):
     p, masters, _, _ = b_scene(tmp_path)
     # Interior frames only, unless a B segment forces the end anchor.
@@ -760,6 +893,55 @@ def test_job_journal_schema(tmp_path):
     bad = dict(journal[0]); bad["document_type"] = "not_a_journal"
     with pytest.raises(FilmError, match="Unknown document_type"):
         validate_job_journal(bad)
+
+
+def test_submit_intent_journals_schema_13_fields(tmp_path):
+    p, _, _, _ = b_scene(tmp_path, end_anchor=True)
+    result = _submit(p)
+    intent = load_job_journal(p, "S001", result["job_id"])[0]
+    assert intent["event"] == "SUBMIT_INTENT"
+    data = intent["data"]
+    assert data["snapshot"]["spec_sha256"]
+    assert data["operation"] == "SEGMENT_GENERATE_V1"
+    assert data["range"] == [0, FRAMES]
+    # The forced end anchor at frame `end` is the only read outside the
+    # owned range.
+    assert data["halo"] == [[FRAMES, FRAMES + 1]]
+    assert data["recipe"] == {"width": W, "height": H, "fps": OUT_FPS}
+    assert data["toolchain"]["id"] == "fake_segment"
+    assert data["toolchain"]["capabilities_sha256"]
+    # The fake holds no credentials: null with a stated reason.
+    assert data["credential_epoch"] is None
+    assert data["credential_epoch_reason"]
+    assert data["quote"]["quote_id"] == result["quote_id"]
+    assert data["reservation"]["ledger_key"]
+
+
+def test_retry_intent_records_new_attempt_and_request_ids(tmp_path):
+    p, _, _, _ = b_scene(tmp_path)
+    quote = segment_quote(p, "S001", 0, FRAMES)
+    configure_fake(p, behaviors={"reject": True})
+    result = _submit(p, quote=quote, max_retries=1)
+    assert result["status"] == "FAILED_CONFIRMED"
+    configure_fake(p, behaviors={"reject": False})
+    quote = segment_quote(p, "S001", 0, FRAMES)
+    retry = segment_retry(p, result["job_id"], approver="reviewer",
+                          quote_id=quote["quote_id"])
+    intents = [r for r in load_job_journal(p, "S001", result["job_id"])
+               if r["event"] == "RETRY_INTENT"]
+    assert len(intents) == 1
+    record = intents[0]
+    job = _job_record(p, result["job_id"])
+    # The intent names the new submission identity and keeps the old one.
+    assert record["request_id"] == retry["request_id"]
+    assert record["attempt_id"] == job["attempt_id"]
+    data = record["data"]
+    assert data["attempt"] == 2
+    assert data["request_id"] == retry["request_id"]
+    assert data["attempt_id"] == job["attempt_id"]
+    assert data["previous_attempt"] == 1
+    assert data["previous_request_id"] == result["request_id"]
+    assert data["previous_request_id"] != data["request_id"]
 
 
 # --- CLI ------------------------------------------------------------------------

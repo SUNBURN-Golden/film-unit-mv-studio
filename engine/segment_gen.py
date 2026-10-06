@@ -157,6 +157,21 @@ def _save_job(p, job):
     write(path, job)
 
 
+def _has_symlink_component(p, relative):
+    """True when any component of the unresolved path inside `p` is a link.
+
+    safe_path resolves links, so a member reached through one would pass a
+    resolved `is_symlink()` check; the components must be checked before
+    resolution.
+    """
+    cursor = Path(p)
+    for part in Path(relative).parts:
+        cursor = cursor / part
+        if cursor.is_symlink():
+            return True
+    return False
+
+
 def _list_job_files(p, shot_id=None):
     # safe_path resolves the root, so a symlinked job store has to be
     # refused on the unresolved path before it.
@@ -176,7 +191,12 @@ def _list_job_files(p, shot_id=None):
                             "symlink; the job store must be a real "
                             "directory")
         if shot_dir.is_dir():
-            files.extend(sorted(shot_dir.glob("seg-*.json")))
+            for job_file in sorted(shot_dir.glob("seg-*.json")):
+                if job_file.is_symlink():
+                    raise FilmError(f"SEGMENT_JOBS_SYMLINK: {job_file.name} "
+                                    "is a symlink; job files must be real "
+                                    "files")
+                files.append(job_file)
     return files
 
 
@@ -220,6 +240,33 @@ def _transition(p, job, target, detail=""):
     job["history"].append({"from": job["status"], "to": target,
                            "at": now(), "detail": detail})
     job["status"] = target
+
+
+def _advance(p, job, target, detail):
+    """Drive the job to `target` along schema-13 allowed edges only.
+
+    An observed provider state with no direct edge routes through the
+    recovery states the table wires — UNKNOWN, then RUNNING — and the job
+    is saved after each hop rather than left unsaved mid-transition.
+    """
+    if job["status"] == target:
+        return
+    allowed = TRANSITIONS.get(job["status"], set())
+    if target in allowed:
+        _transition(p, job, target, detail)
+        _save_job(p, job)
+        return
+    for via in ("UNKNOWN", "RUNNING"):
+        if via in allowed and target in TRANSITIONS.get(via, set()):
+            _transition(p, job, via,
+                        f"no direct edge to {target}; routing via {via}")
+            _save_job(p, job)
+            _transition(p, job, target, detail)
+            _save_job(p, job)
+            return
+    _save_job(p, job)
+    raise FilmError(f"Illegal segment job transition "
+                    f"{job['status']} -> {target} (no allowed route)")
 
 
 # ---------------------------------------------------------------------------
@@ -540,8 +587,19 @@ def _submit_once(p, adapter, job, spec):
         job["request_id"] = f"req-{uuid.uuid4().hex[:16]}"
         _save_job(p, job)  # durable submission identity before any side effect
     _journal(p, job, "SUBMIT_INTENT",
-             {"spec_sha256": spec["spec_sha256"], "quote": job["quote"],
-              "reservation": job["reservation"],
+             {"snapshot": {"plan_sha256": spec["plan_sha256"],
+                           "spec_sha256": spec["spec_sha256"]},
+              "operation": spec["operation"],
+              "range": [spec["segment"]["start"], spec["segment"]["end"]],
+              # The only read outside the owned range is a forced end
+              # anchor at frame `end` (schema 13.1 halo).
+              "halo": ([[spec["segment"]["end"], spec["segment"]["end"] + 1]]
+                       if spec["inputs"]["end_image"] is not None else []),
+              "recipe": spec["output"], "toolchain": spec["adapter"],
+              "credential_epoch": None,
+              "credential_epoch_reason": "the FAKE local adapter holds no "
+                                         "credentials or account epoch",
+              "quote": job["quote"], "reservation": job["reservation"],
               "usage_right": "FAKE_LOCAL_ONLY"
               if adapter.provider_class == "FAKE" else "UNQUALIFIED"})
     _transition(p, job, "SUBMITTING")
@@ -678,31 +736,40 @@ def segment_reconcile(project, job_id, *, adapter_id="fake_segment"):
                   "operation_id": job["operation_id"]})
         observed = adapter.status(job["request_id"])
         _journal(p, job, "STATUS_OBSERVED",
-                 {k: v for k, v in observed.items() if k != "result"})
+                 {**{k: v for k, v in observed.items() if k != "result"},
+                  "reconciled_from": job["status"]})
         if observed.get("operation_id"):
             job["operation_id"] = observed["operation_id"]
         if observed.get("billed") is not None:
             job["charge_state"] = ("CONFIRMED_BILLED" if observed["billed"]
                                    else "CONFIRMED_UNCHARGED")
         state = observed["state"]
+        if job["status"] == "SUBMITTING":
+            # A crash between SUBMIT_INTENT and the provider reply left the
+            # submission's acceptance unresolved; the schema-13 table gives
+            # SUBMITTING no edge to the observed outcomes, so recovery
+            # routes through UNKNOWN first and each hop is saved.
+            _transition(p, job, "UNKNOWN",
+                        "submission outcome unknown after restart")
+            _save_job(p, job)
         if state == "NOT_FOUND":
-            _transition(p, job, "FAILED_CONFIRMED",
-                        "provider confirmed the request was never received")
+            _advance(p, job, "FAILED_CONFIRMED",
+                     "provider confirmed the request was never received")
             job["failure"] = {"reason": "NEVER_RECEIVED", "at": now()}
             job["charge_state"] = "CONFIRMED_UNCHARGED"
         elif state == "RUNNING":
-            if job["status"] != "RUNNING":
-                _transition(p, job, "RUNNING", "reconciled: still running")
+            _advance(p, job, "RUNNING", "reconciled: still running")
         elif state == "DONE":
             job["result"] = observed["result"]
-            _transition(p, job, "OUTPUT_PENDING_VERIFY",
-                        "reconciled: output returned, pending verification")
+            _advance(p, job, "OUTPUT_PENDING_VERIFY",
+                     "reconciled: output returned, pending verification")
         elif state == "FAILED":
-            _transition(p, job, "FAILED_CONFIRMED",
-                        "provider confirmed failure")
+            _advance(p, job, "FAILED_CONFIRMED",
+                     "provider confirmed failure")
             job["failure"] = {"reason": "PROVIDER_FAILED",
                               "detail": observed.get("detail"), "at": now()}
         else:
+            _save_job(p, job)
             raise FilmError(f"Unknown provider state: {state}")
         _save_job(p, job)
         return {"job_id": job["job_id"], "status": job["status"],
@@ -740,12 +807,17 @@ def segment_retry(project, job_id, *, adapter_id="fake_segment", approver=None,
                             "current quote; run segment-quote first")
         job["quote"] = {"quote_id": current, "unit": fresh["unit"],
                         "amount": fresh["amount"], "at": now()}
-        if approval["quote_id"] != current:
-            if approver is None:
-                raise FilmError("RETRY_REQUIRES_APPROVAL: the quote changed; "
-                                "an approver must approve the new quote")
-            job["approval"] = {**approval, "approver": approver,
-                               "quote_id": current, "at": now()}
+        # Schema 13 re-checks quote, permission and price on continuation:
+        # a changed quote may not be silently re-approved here — it refuses
+        # whether it merely differs or exceeds the approved cap.
+        if approval["quote_id"] != current \
+                or fresh["amount"] > approval["cap"]:
+            _save_job(p, job)
+            raise FilmError(
+                "QUOTE_CHANGED_NEEDS_APPROVAL: the live quote differs from "
+                "the approved one or is over the approved cap "
+                f"({approval['cap']}); a changed price or permission "
+                "needs a fresh approval before this job continues")
         estimate = {"estimate_id": f"segest-{current[:24]}",
                     "billing_unit": fresh["unit"],
                     "worst_case_amount": fresh["amount"]
@@ -760,19 +832,28 @@ def segment_retry(project, job_id, *, adapter_id="fake_segment", approver=None,
                               "at": now(),
                               "note": "never refunded without provider "
                                       "confirmation"}
-        _journal(p, job, "RETRY_INTENT",
-                 {"attempt": job["attempt"] + 1, "approver": approver})
+        previous = {"attempt": job["attempt"],
+                    "attempt_id": job["attempt_id"],
+                    "request_id": job["request_id"]}
         job["attempt"] += 1
         job["attempt_id"] = f"att-{uuid.uuid4().hex[:12]}"
         job["request_id"] = f"req-{uuid.uuid4().hex[:16]}"
         job["operation_id"] = None
         job["failure"] = None
+        _save_job(p, job)  # new attempt/request ids durable before intent
+        _journal(p, job, "RETRY_INTENT",
+                 {"attempt": job["attempt"], "attempt_id": job["attempt_id"],
+                  "request_id": job["request_id"],
+                  "previous_attempt": previous["attempt"],
+                  "previous_attempt_id": previous["attempt_id"],
+                  "previous_request_id": previous["request_id"],
+                  "approver": approver})
         # A fresh attempt re-enters the submission flow from its confirmed
         # terminal state only through the explicit, journaled user
         # continuation edge — never a direct assignment.
         _transition(p, job, "RESERVED",
                     "explicit user continuation after confirmed failure")
-        _save_job(p, job)  # new attempt/request ids durable before intent
+        _save_job(p, job)
         _submit_once(p, adapter, job, spec)
         return {"job_id": job["job_id"], "status": job["status"],
                 "attempt": job["attempt"], "request_id": job["request_id"],
@@ -829,8 +910,12 @@ def segment_import(project, job_id, *, adapter_id="fake_segment",
                  "declared count")
         files = []
         for index, name in enumerate(names):
-            member = safe_path(p, f"{manifest['frames_dir']}/{name}")
-            if member.is_symlink() or not member.is_file():
+            member_rel = f"{manifest['frames_dir']}/{name}"
+            # safe_path resolves links, so symlinked members or directories
+            # must be refused on the unresolved path first.
+            linked = _has_symlink_component(p, member_rel)
+            member = safe_path(p, member_rel)
+            if linked or member.is_symlink() or not member.is_file():
                 fail("RESULT_MEMBER_MISSING",
                      f"returned member {name} is missing or a symlink")
             if name != f"f{index:06d}.png":
@@ -1089,6 +1174,8 @@ def commit_segment_sequence(project, shot_id, *, asset_id=None, note=""):
         for index in needed:
             staged_index = min(max(index, used_start), used_end - 1)
             job, member = coverage[staged_index]
+            if _has_symlink_component(p, member["member"]):
+                raise FilmError(f"DRAFT_MEMBER_MISSING: {member['member']}")
             path = safe_path(p, member["member"])
             if path.is_symlink() or not path.is_file():
                 raise FilmError(f"DRAFT_MEMBER_MISSING: {member['member']}")
