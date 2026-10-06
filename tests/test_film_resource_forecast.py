@@ -97,6 +97,7 @@ def complete_measurement(evidence, plan, candidate, *, usage=None):
         manual={"minutes": 1},
         usage=usage or {"subscription_units":
                         candidate["scope"]["frames"],
+                        "compute_units": 0, "api_credits": 0, "usd": 0,
                         "handoff_minutes": 1},
         samples={"count": 1, "window_ms": 1200,
                  "min_ms": 1200, "max_ms": 1200})
@@ -329,7 +330,8 @@ def test_subscription_covered_and_allowance_exhausted(tmp_path):
         register(state_dir, ev)
         save_measurement(state_dir, complete_measurement(
             ev, plan, cand,
-            usage={"subscription_units": 2, "handoff_minutes": 1}))
+            usage={"subscription_units": 2, "compute_units": 0,
+                   "api_credits": 0, "usd": 0, "handoff_minutes": 1}))
         last = ev
     covered = forecast_plan(
         plan, state_dir=state_dir, entitlements=[entitlement()],
@@ -338,6 +340,9 @@ def test_subscription_covered_and_allowance_exhausted(tmp_path):
     assert section["inclusion"] == "CONFIRMED"
     assert section["charge"]["verdict"] == "COVERED"
     assert section["cost_estimate"]["basis"] == "MEASURED"
+    assert section["cost_estimate"]["units"] == {
+        "subscription_units": 4, "compute_units": 0, "api_credits": 0,
+        "usd": 0, "handoff_minutes": 2}
     assert section["cost_estimate"]["unmeasured_paid_units"] == []
     assert section["quote"]["status"] == "CURRENT"
 
@@ -387,10 +392,10 @@ def test_stale_paid_usage_is_usage_unknown(tmp_path):
         register(state_dir, ev)
         save_measurement(state_dir, complete_measurement(
             ev, plan, cand,
-            usage={"subscription_units": 1, "handoff_minutes": 1,
-                   "api_credits": 3}))
+            usage={"subscription_units": 1, "compute_units": 0,
+                   "api_credits": 3, "usd": 0, "handoff_minutes": 1}))
     # No current observation: the bound measurements are STALE, so the
-    # usage values are UNKNOWN — api_credits included.
+    # usage values are UNKNOWN — every paid unit included.
     forecast = forecast_plan(plan, state_dir=state_dir,
                              entitlements=[entitlement()],
                              observation=None)
@@ -400,9 +405,109 @@ def test_stale_paid_usage_is_usage_unknown(tmp_path):
     assert section["charge"]["declared_estimate_verdict"]["verdict"] \
         == "COVERED"
     assert section["cost_estimate"]["unmeasured_paid_units"] == \
-        ["api_credits"]
+        ["api_credits", "usd"]
     assert "USAGE_UNKNOWN" in {
         r["code"] for r in forecast["refusals"]}
+
+
+def register_ops(state_dir, plan, usage=None):
+    """Register evidence + a measurement for every subscription op;
+    returns the last evidence for a current observation."""
+    candidates = {c["candidate_id"]: c for c in plan_candidates(plan)}
+    ev = None
+    for op in plan["operations"]:
+        cand = candidates[op["operation_id"]]
+        ev = subscription_evidence(cand["scope"])
+        register(state_dir, ev)
+        save_measurement(state_dir, complete_measurement(
+            ev, plan, cand, usage=usage))
+    return ev
+
+
+def test_partial_usage_units_are_usage_unknown(tmp_path):
+    """A usage map that omits allowance units is an incomplete record —
+    the absent paid units are unmeasured, never an implied 0, so the
+    section can never read as COVERED."""
+    plan = subscription_plan()
+    state_dir = tmp_path / "state"
+    ev = register_ops(state_dir, plan,
+                      usage={"subscription_units": 2,
+                             "handoff_minutes": 1})
+    forecast = forecast_plan(
+        plan, state_dir=state_dir, entitlements=[entitlement()],
+        observation=ps._observation_for(ev))
+    section = forecast["subscription"][SERVICE]
+    assert section["charge"]["verdict"] == "USAGE_UNKNOWN"
+    assert section["cost_estimate"]["basis"] == "DECLARED"
+    assert section["cost_estimate"]["unmeasured_paid_units"] == \
+        ["api_credits", "usd"]
+    assert "missing" in section["charge"]["reason"]
+    assert "USAGE_UNKNOWN" in {
+        r["code"] for r in forecast["refusals"]}
+
+
+def test_measured_paid_units_refused_on_fixed_route(tmp_path):
+    """A complete map with paid units reaches charge_check, which
+    refuses them while the plan keeps allow_additional_charges=false."""
+    plan = subscription_plan()
+    assert plan["execution"]["policy"] == "FIXED_ROUTE"
+    assert plan["execution"]["allow_additional_charges"] is False
+    state_dir = tmp_path / "state"
+    ev = register_ops(state_dir, plan,
+                      usage={"subscription_units": 2, "compute_units": 0,
+                             "api_credits": 3, "usd": 0,
+                             "handoff_minutes": 1})
+    forecast = forecast_plan(
+        plan, state_dir=state_dir, entitlements=[entitlement()],
+        observation=ps._observation_for(ev))
+    section = forecast["subscription"][SERVICE]
+    assert section["cost_estimate"]["basis"] == "MEASURED"
+    assert section["cost_estimate"]["units"]["api_credits"] == 6
+    assert section["paid_units_in_cost"] == ["api_credits"]
+    assert section["charge"]["verdict"] == "ADDITIONAL_CHARGE_REFUSED"
+    assert "ADDITIONAL_CHARGE_REFUSED" in {
+        r["code"] for r in forecast["refusals"]}
+
+
+def test_totals_usage_reports_missing_unit_unknown(tmp_path):
+    """Every allowance unit appears in totals.usage; a unit missing in
+    any row is UNKNOWN — never an implied 0, never omitted."""
+    plan = subscription_plan()
+    state_dir = tmp_path / "state"
+    ev = register_ops(state_dir, plan,
+                      usage={"subscription_units": 2,
+                             "handoff_minutes": 1})
+    forecast = forecast_plan(plan, state_dir=state_dir,
+                             observation=ps._observation_for(ev))
+    usage = forecast["totals"]["usage"]
+    assert set(usage) == {"subscription_units", "compute_units",
+                          "api_credits", "usd", "handoff_minutes"}
+    credits = usage["api_credits"]
+    assert credits["value"] == "UNKNOWN"
+    assert credits["basis"] == "UNKNOWN"
+    assert {"op-a", "op-b"} <= set(credits["missing"])
+    assert credits["unmeasured_bases"] == ["missing"]
+    # The ops measured subscription_units; only the never-measured
+    # encode candidate keeps that total UNKNOWN.
+    units = usage["subscription_units"]
+    assert units["value"] == "UNKNOWN"
+    assert units["measured"] == 4
+    assert units["missing"] == ["encode:FFMPEG"]
+
+
+def test_measured_zero_peak_is_not_never_measured(tmp_path):
+    """A measured peak of 0 alongside unmeasured candidates is a partial
+    max of 0 — not "never measured for any candidate"."""
+    plan = subscription_plan()
+    state_dir = tmp_path / "state"
+    ev = register_ops(state_dir, plan)
+    forecast = forecast_plan(plan, state_dir=state_dir,
+                             observation=ps._observation_for(ev))
+    vram = forecast["totals"]["peaks"]["vram_bytes"]
+    assert vram["value"] == "UNKNOWN"
+    assert vram["measured_max"] == 0
+    assert vram["partial"] is True
+    assert vram["missing"] == ["encode:FFMPEG"]
 
 
 def test_partial_usage_map_is_usage_unknown(tmp_path):
@@ -468,8 +573,8 @@ def test_paid_fallback_never_auto_runs(tmp_path):
         register(state_dir, ev)
         save_measurement(state_dir, complete_measurement(
             ev, plan, cand,
-            usage={"subscription_units": 1, "handoff_minutes": 1,
-                   "api_credits": 3}))
+            usage={"subscription_units": 1, "compute_units": 0,
+                   "api_credits": 3, "usd": 0, "handoff_minutes": 1}))
     ent = entitlement()
     before = copy.deepcopy(ent)
     forecast = forecast_plan(
@@ -534,6 +639,18 @@ def test_load_entitlements_skips_symlinks(tmp_path):
         tmp_path / "ghost.json")
     loaded = _load_entitlements(state_dir)
     assert [e["service"] for e in loaded] == [SERVICE]
+
+
+def test_load_entitlements_skips_symlinked_dir(tmp_path):
+    """A symlinked subscriptions/ dir is never followed — its target's
+    files are not read."""
+    real = tmp_path / "elsewhere"
+    save_entitlement(real, entitlement())
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    (state_dir / "subscriptions").symlink_to(real / "subscriptions")
+    assert _load_entitlements(real) != []
+    assert _load_entitlements(state_dir) == []
 
 
 # --- AUTO / FIXED_ROUTE and the preview --------------------------------------------

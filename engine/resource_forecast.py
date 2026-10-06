@@ -254,6 +254,27 @@ def _sum_lines(rows, getter):
     return total, missing
 
 
+def _usage_by_unit(rows):
+    """Every ALLOWANCE_UNIT summed over `rows`, with the bases and
+    candidates that left it unmeasured. A unit is only known when every
+    row holds an int >= 0 for it — a unit absent from a row's usage map
+    is "missing", never an implied 0 (registry measurement_missing)."""
+    out = {}
+    for unit in ALLOWANCE_UNITS:
+        total, bases, missing = 0, set(), []
+        for row in rows:
+            line = (row.get("usage") or {}).get(unit)
+            amount = (line or {}).get("value")
+            if type(amount) is int and amount >= 0:
+                total += amount
+                continue
+            basis = (line or {}).get("basis") or "missing"
+            bases.add(UNKNOWN if basis == MEASURED else basis)
+            missing.append(row["candidate_id"])
+        out[unit] = {"total": total, "bases": bases, "missing": missing}
+    return out
+
+
 def _totals(rows, plan):
     """Plan-level totals — aggregates only over measured lines and says
     so; a partially measured plan is never rounded into a number."""
@@ -270,14 +291,14 @@ def _totals(rows, plan):
                              "over": "bound CAP-MEASURE records"})
 
     def maxed(getter, what):
-        best, missing = 0, []
+        best, seen, missing = 0, False, []
         for row in rows:
             value = getter(row)["value"]
             if type(value) is int:
-                best = max(best, value)
+                best, seen = max(best, value), True
             else:
                 missing.append(row["candidate_id"])
-        if missing and not best:
+        if missing and not seen:
             return {"value": UNKNOWN, "basis": UNKNOWN,
                     "missing": missing,
                     "reason": f"{what} never measured for any "
@@ -293,14 +314,21 @@ def _totals(rows, plan):
         return out
 
     usage = {}
-    for row in rows:
-        for unit, line in (row.get("usage") or {}).items():
-            if usage.get(unit) == UNKNOWN:
-                continue
-            if type(line["value"]) is int:
-                usage[unit] = usage.get(unit, 0) + line["value"]
-            else:
-                usage[unit] = UNKNOWN
+    for unit, state in _usage_by_unit(rows).items():
+        if state["missing"] or not rows:
+            usage[unit] = {
+                "value": UNKNOWN, "basis": UNKNOWN,
+                "measured": state["total"],
+                "missing": state["missing"],
+                "unmeasured_bases": sorted(state["bases"]),
+                "reason": f"usage.{unit} is not measured for "
+                          f"{len(state['missing'])} candidate(s); a "
+                          "missing unit is never an implied 0"}
+        else:
+            usage[unit] = _line(state["total"], MEASURED,
+                                source={"kind": "AGGREGATE",
+                                        "over": "bound CAP-MEASURE "
+                                                "records"})
     manual = [r["manual_minutes"]["value"] for r in rows]
     # The encoder's input is the same frames the compose operations
     # produce, so only operation rows are summed — counting encoder
@@ -448,20 +476,14 @@ def _subscription_section(plan, rows, entitlements, prior_quotes,
         frames = sum(r["frames"] for r in service_rows)
         entitlement = next((e for e in (entitlements or [])
                             if e.get("service") == service), None)
-        usage_units = sorted({
-            unit for r in service_rows for unit in (r.get("usage") or {})
-            if unit in ALLOWANCE_UNITS})
-        unmeasured_bases = set()
-        for r in service_rows:
-            for unit in usage_units:
-                line = (r.get("usage") or {}).get(unit) or {}
-                if type(line.get("value")) is not int:
-                    unmeasured_bases.add(line.get("basis") or "missing")
-        usage_known = bool(usage_units) and not unmeasured_bases
-        unmeasured_paid = sorted(
-            u for u in usage_units if u in PAID_UNITS and any(
-                type(((r.get("usage") or {}).get(u) or {}).get("value"))
-                is not int for r in service_rows))
+        # Usage is known only when every row measured every allowance
+        # unit — the keys a record happens to carry prove nothing.
+        usage = _usage_by_unit(service_rows)
+        unmeasured_bases = set().union(
+            *(state["bases"] for state in usage.values()))
+        usage_known = not unmeasured_bases
+        unmeasured_paid = sorted(u for u in PAID_UNITS
+                                 if usage[u]["bases"])
         section = {"service": service,
                    "operations": [r["candidate_id"]
                                   for r in service_rows],
@@ -488,8 +510,7 @@ def _subscription_section(plan, rows, entitlements, prior_quotes,
             entitlement.get("service_caps")) \
             if output_range is not None else None
         if usage_known:
-            cost = {u: sum(r["usage"][u]["value"] for r in service_rows)
-                    for u in usage_units}
+            cost = {u: usage[u]["total"] for u in ALLOWANCE_UNITS}
             cost_basis = MEASURED
         else:
             cost = {"subscription_units": frames}
@@ -755,8 +776,11 @@ def forecast_plan(plan, *, state_dir=None, evidence_list=None,
 # --- CLI ------------------------------------------------------------------
 
 def _observation_now():
-    """The current device/session observation — the only thing that may
-    make stored evidence CURRENT for this forecast."""
+    """The default observation: the device environment only. It carries
+    none of the driver / credential_epoch / allowance / caps / route /
+    transport bindings, so stored evidence that records any of them
+    stays STALE under it — a full observation file is needed to make
+    such evidence CURRENT."""
     from .perf_scheduler import _worker_environment
     return {"environment": _worker_environment()}
 
@@ -771,9 +795,12 @@ def _observed_disk(project):
 
 def _load_entitlements(state_dir):
     folder = Path(state_dir) / "subscriptions"
-    if not folder.is_dir():
+    # A symlinked subscriptions/ dir is never followed; the root is the
+    # real state_dir's own subscriptions/, so a symlink target's files
+    # never resolve inside it.
+    if folder.is_symlink() or not folder.is_dir():
         return []
-    root = folder.resolve()
+    root = Path(state_dir).resolve() / "subscriptions"
     out = []
     for path in sorted(folder.glob("*.json")):
         # Only real files inside the subscriptions dir are read — a
