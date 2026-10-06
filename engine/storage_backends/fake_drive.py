@@ -243,3 +243,20 @@ class FakeDriveBackend:
         if len(state["buffer"]) != state["expected_length"]:
             raise FilmError("Upload incomplete at session close")
         return self.put_object(state["object_id"], bytes(state["buffer"]))
+
+    def expire_session(self, session):
+        """Test hook: the provider forgot a resumable session (expiry)."""
+        return self._sessions.pop(session, None) is not None
+
+    # -- approved orphan cleanup -------------------------------------------------
+    def delete_object(self, object_id):
+        """Delete one stored object; only the committer's explicit
+        approval path calls this — nothing else is ever removed."""
+        check_object_id(object_id)
+        self._log("delete_object", object_id)
+        self._gate("delete_object", object_id)
+        self._objects.pop(object_id, None)
+        if self._root is not None:
+            (self._root / "objects" / object_id).unlink(missing_ok=True)
+        self.requests[-1]["bytes"] = 0
+        return {"object_id": object_id, "deleted": True}

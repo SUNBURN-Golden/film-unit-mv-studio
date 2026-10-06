@@ -181,6 +181,14 @@ def main(argv=None):
     ast = sub.add_parser("archive-status", help="ANIM-013: object inventory and seal state of an archive manifest")
     ast.add_argument("manifest")
     ast.add_argument("--root")
+    jstat = sub.add_parser("journal-status", help="ANIM-021: durable journal chain health and the rebuilt job picture for a coordinator state dir")
+    jstat.add_argument("state_dir")
+    jrec = sub.add_parser("journal-reconcile", help="ANIM-021: rebuild the runtime snapshot from the durable journal and list jobs still needing explicit reconcile")
+    jrec.add_argument("state_dir")
+    seal_rec = sub.add_parser("archive-seal-reconcile", help="ANIM-021: replay a commit dir's journal and resolve MANIFEST_INTENT/SEAL_UNKNOWN on a local archive root")
+    seal_rec.add_argument("commit_dir")
+    seal_rec.add_argument("--root", required=True,
+                          help="Archive backend root (objects/)")
     for name in ["review-cut", "review-transition"]:
         review = sub.add_parser(name, help="FRAME_ANIMATION_V1: record a human review bound to the current adopted digests")
         review.add_argument("project")
@@ -528,6 +536,15 @@ def main(argv=None):
         elif a.command == "archive-status":
             from .archive_cli import archive_status_cli
             result = archive_status_cli(a.manifest, root=a.root)
+        elif a.command == "journal-status":
+            from .journal_cli import journal_status
+            result = journal_status(a.state_dir)
+        elif a.command == "journal-reconcile":
+            from .journal_cli import journal_reconcile
+            result = journal_reconcile(a.state_dir)
+        elif a.command == "archive-seal-reconcile":
+            from .journal_cli import archive_seal_reconcile
+            result = archive_seal_reconcile(a.commit_dir, a.root)
         elif a.command == "review-cut":
             from .animation_review import record_cut_review
             with project_mutex(a.project):

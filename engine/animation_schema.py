@@ -33,6 +33,7 @@ DOCUMENT_SCHEMAS = {
     "animation_work_packet": 1,
     "animation_draft_frames": 1,
     "job_journal": 1,
+    "archive_seal": 1,
     "execution_plan": 1,
     "subscription_entitlement": 1,
     "subscription_packet": 1,
