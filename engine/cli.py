@@ -89,6 +89,30 @@ def main(argv=None):
     listing_anim.add_argument("project")
     check_anim = sub.add_parser("animation-validate", help="FRAME_ANIMATION_V1: check the edit timeline and per-shot sequence coverage")
     check_anim.add_argument("project")
+    work = sub.add_parser("animation-packets", help="FRAME_ANIMATION_V1: write A-path work packets for manual hand-off; no provider contact, no consumer UI automation")
+    work.add_argument("project")
+    work.add_argument("--shots", help="Comma-separated shot IDs; default all timeline shots with an A segment")
+    work.add_argument("--wave", help="Only shots of one declared production wave")
+    work.add_argument("--target", help="JSON file declaring what the target site accepts: {id, accepts, max_images}")
+    ctrl = sub.add_parser("import-control", help="FRAME_ANIMATION_V1: import one produced image explicitly assigned to cut/role/frame/asset; records DRAFT")
+    ctrl.add_argument("project")
+    ctrl.add_argument("shot")
+    ctrl.add_argument("--file", required=True, help="Produced PNG image")
+    ctrl.add_argument("--role", required=True,
+                      choices=["keypose", "breakdown", "pose", "layout",
+                               "first_frame", "inbetween"],
+                      help="Explicit assignment; nothing is inferred from the file name")
+    ctrl.add_argument("--frame", required=True, type=int,
+                      help="Cut-local frame index the image is assigned to")
+    ctrl.add_argument("--references", default="",
+                      help="Comma-separated pins asset_id:revision:sha256 the image was conditioned on")
+    ctrl.add_argument("--asset-id", help="Existing A0001-style asset id to revise")
+    ctrl.add_argument("--note", default="")
+    draft_commit = sub.add_parser("commit-draft-frames", help="FRAME_ANIMATION_V1: assemble the shot's packet-verified draft frames into a FRAME_SEQUENCE draft")
+    draft_commit.add_argument("project")
+    draft_commit.add_argument("shot")
+    draft_commit.add_argument("--asset-id", help="Existing A0001-style asset id to revise")
+    draft_commit.add_argument("--note", default="")
     for name in ["review-cut", "review-transition"]:
         review = sub.add_parser(name, help="FRAME_ANIMATION_V1: record a human review bound to the current adopted digests")
         review.add_argument("project")
@@ -277,6 +301,32 @@ def main(argv=None):
         elif a.command == "animation-validate":
             from .frame_sequence import animation_validate
             result = animation_validate(a.project)
+        elif a.command == "animation-packets":
+            from .packets import export_work_packets
+            target = json.loads(Path(a.target).read_text(encoding="utf-8")) \
+                if a.target else None
+            result = export_work_packets(
+                a.project, a.shots.split(",") if a.shots else None,
+                wave=a.wave, target=target)
+        elif a.command == "import-control":
+            from .animation_assets import import_draft_image
+
+            def _draft_pin(value):
+                parts = value.strip().split(":")
+                if len(parts) != 3:
+                    raise FilmError("--references entries must be "
+                                    "asset_id:revision:sha256")
+                return {"asset_id": parts[0], "revision": int(parts[1]),
+                        "content_sha256": parts[2]}
+            result = import_draft_image(
+                a.project, a.shot, a.file, role=a.role, frame=a.frame,
+                references=[_draft_pin(v) for v in a.references.split(",")
+                            if v.strip()],
+                asset_id=a.asset_id, note=a.note)
+        elif a.command == "commit-draft-frames":
+            from .animation_assets import commit_draft_frames
+            result = commit_draft_frames(a.project, a.shot,
+                                         asset_id=a.asset_id, note=a.note)
         elif a.command == "review-cut":
             from .animation_review import record_cut_review
             with project_mutex(a.project):

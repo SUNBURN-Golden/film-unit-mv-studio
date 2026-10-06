@@ -30,7 +30,8 @@ ASSET_ROOT = "animation/assets"
 ASSET_ID = re.compile(r"A[0-9]{4,}")
 SHA256 = re.compile(r"[0-9a-f]{64}")
 IMPLEMENTED_KINDS = {"FRAME_SEQUENCE", "COMPOSITE_SEQUENCE", "LAYER_RGBA",
-                     "MASK", "REPLACEMENT_DRAWING", "RIG_SPEC"}
+                     "MASK", "REPLACEMENT_DRAWING", "RIG_SPEC",
+                     "CONTROL_IMAGE"}
 # Kinds that can satisfy a shot's assigned sequence (contiguous frame members).
 SEQUENCE_KINDS = {"FRAME_SEQUENCE", "COMPOSITE_SEQUENCE"}
 ASSIGNABLE_KINDS = set(SEQUENCE_KINDS)
@@ -47,12 +48,15 @@ LAYER_FIELDS = {"alpha", "canvas", "crop_origin", "pivot", "z_order"}
 MASK_FIELDS = {"alpha", "canvas", "target", "region", "channel"}
 REPLACEMENT_FIELDS = {"alpha", "canvas", "replaces", "frame", "rig"}
 RIG_FIELDS = {"spec"}
+CONTROL_FIELDS = {"canvas", "control_role", "frame", "shot_id",
+                  "references"}
 KIND_EXTRA = {"FRAME_SEQUENCE": SEQUENCE_FIELDS,
               "COMPOSITE_SEQUENCE": SEQUENCE_FIELDS,
               "LAYER_RGBA": LAYER_FIELDS,
               "MASK": MASK_FIELDS,
               "REPLACEMENT_DRAWING": REPLACEMENT_FIELDS,
-              "RIG_SPEC": RIG_FIELDS}
+              "RIG_SPEC": RIG_FIELDS,
+              "CONTROL_IMAGE": CONTROL_FIELDS}
 FILE_FIELDS = {"relative_name", "sha256", "byte_length", "frame_index",
                "source_name"}
 ASSIGNMENT_FIELDS = {"asset_id", "revision", "content_sha256", "kind"}
@@ -61,6 +65,25 @@ MASK_CHANNELS = {"ALPHA", "LUMINANCE"}
 RIG_SPEC_KEYS = {"layers", "children", "reference_points",
                  "occlusion_order"}
 RIG_LAYER_KEYS = {"id", "parent", "asset", "z_order", "transforms"}
+
+# A-path image controls (schema §4: keypose/breakdown/pose/layout and their
+# target frame). KEYPOSE/BREAKDOWN/POSE drawings also fill the produced frame
+# at their declared time; LAYOUT is a conditioning input only.
+CONTROL_ROLES = {"KEYPOSE", "BREAKDOWN", "POSE", "LAYOUT"}
+# Roles an imported draft image may be assigned. Member roles fill a produced
+# output frame of the cut; LAYOUT registers a control input only.
+DRAFT_MEMBER_ROLES = {"FIRST_FRAME", "INBETWEEN", "KEYPOSE", "BREAKDOWN",
+                      "POSE"}
+DRAFT_ROLES = DRAFT_MEMBER_ROLES | {"LAYOUT"}
+
+# Per-shot draft staging: each produced frame the person brings back is
+# recorded against its explicit cut/role/frame assignment before a sequence
+# is committed. This is a draft ledger, never an approval.
+DRAFTS_TYPE = "animation_draft_frames"
+DRAFTS_FIELDS = {"document_type", "schema_version", "shot_id", "entries"}
+DRAFT_ENTRY_FIELDS = {"frame", "role", "member", "sha256", "byte_length",
+                      "source_name", "imported_at", "packet_sha256",
+                      "references", "asset_pin", "state"}
 
 
 def _empty_registry():
@@ -142,6 +165,11 @@ def _content_fields(record):
                         "frame": record["frame"], "rig": record["rig"]})
     elif record["kind"] == "RIG_SPEC":
         content["spec"] = record["spec"]
+    elif record["kind"] == "CONTROL_IMAGE":
+        content.update({"control_role": record["control_role"],
+                        "frame": record["frame"],
+                        "shot_id": record["shot_id"],
+                        "references": record["references"]})
     return content
 
 
@@ -316,6 +344,19 @@ def _validate_record(record):
                 or not SHA256.fullmatch(record["composite_recipe_ref"]):
             raise FilmError("COMPOSITE_SEQUENCE needs the composite recipe "
                             "SHA-256 in composite_recipe_ref")
+    elif kind == "CONTROL_IMAGE":
+        if record["control_role"] not in CONTROL_ROLES:
+            raise FilmError(f"CONTROL_IMAGE control_role must be one of "
+                            f"{sorted(CONTROL_ROLES)}")
+        _int(record["frame"], "CONTROL_IMAGE frame")
+        if not SHOT_ID.fullmatch(record["shot_id"]
+                                 if type(record["shot_id"]) is str else ""):
+            raise FilmError("CONTROL_IMAGE shot_id must be an S001-style "
+                            "identifier")
+        if type(record["references"]) is not list:
+            raise FilmError("CONTROL_IMAGE references must be a pin list")
+        for index, pin in enumerate(record["references"]):
+            _pin(pin, f"CONTROL_IMAGE references[{index}]")
     return record
 
 
@@ -427,6 +468,10 @@ def _check_cross_references(assets):
                     if target["z_order"] != layer["z_order"]:
                         raise FilmError(f"rig layer {layer['id']} z_order "
                                         "must match its pinned layer asset")
+            elif kind == "CONTROL_IMAGE":
+                for index, pin in enumerate(record["references"]):
+                    _doc_pin_record(assets, pin,
+                                    f"CONTROL_IMAGE references[{index}]")
 
 
 def load_registry(p):
@@ -644,44 +689,58 @@ def import_frame_sequence(project, shot_id, *, index=None, folder=None,
             raise FilmError("asset_id must be an A0001-style identifier")
         members = _index_members(index) if index is not None else _folder_members(folder)
         canvas = _sequence_canvas(members)
-        staged = [{"stored_name": f"f{position:06d}.png", **member}
-                  for position, member in enumerate(members)]
-        registry = load_registry(p)
-        if asset_id is None:
-            pin = registry["assignments"].get(shot_id)
-            asset_id = pin["asset_id"] if pin else None
-        record = {"asset_id": asset_id or "A0000", "revision": 0,
-                  "kind": "FRAME_SEQUENCE",
-                  "provenance": {"type": "EXTERNAL_IMPORT",
-                                 "via": "index" if index is not None else "folder",
-                                 "source": str(index or folder),
-                                 "imported_at": now(), "note": note.strip()},
-                  "files": [], "coordinate_space": _coordinate_space(canvas),
-                  "dependencies": [],
-                  "preparation": {"state": "IMPORTED_DRAFT",
-                                  "checks": {"member_hashes_verified": True,
-                                             "decoded_png": True,
-                                             "uniform_canvas": True},
-                                  "not_verified": ["human_review", "motion_approval"]},
-                  "acceptance": {"state": "DRAFT"}, "canvas": canvas,
-                  "exposure_recipe_ref": None, "composite_recipe_ref": None}
-        record["files"] = [{"relative_name": "", "sha256": m["sha256"],
-                            "byte_length": m["byte_length"], "frame_index": i}
-                           for i, m in enumerate(members)]
-        record["content_sha256"] = content_digest(record)
-        record, created = _commit_revision(p, registry, asset_id,
-                                           "FRAME_SEQUENCE", staged, record)
-        registry["assignments"][shot_id] = {"asset_id": record["asset_id"],
-                                            "revision": record["revision"],
-                                            "content_sha256": record["content_sha256"],
-                                            "kind": "FRAME_SEQUENCE"}
-        save_registry(p, registry)
-        # Adopting this revision for the shot pins it in the edit document.
-        _adopt_revision(p, shot_id, record["revision"])
-        return {"asset_id": record["asset_id"], "revision": record["revision"],
-                "content_sha256": record["content_sha256"],
-                "frames": len(record["files"]), "assigned_to": shot_id,
-                "state": "DRAFT", "new_revision": created}
+        provenance = {"type": "EXTERNAL_IMPORT",
+                      "via": "index" if index is not None else "folder",
+                      "source": str(index or folder),
+                      "imported_at": now(), "note": note.strip()}
+        return _register_frame_sequence(p, shot_id, members, canvas,
+                                        provenance, asset_id=asset_id)
+
+
+def _register_frame_sequence(p, shot_id, members, canvas, provenance,
+                             *, dependencies=None, asset_id=None):
+    """Register members as a FRAME_SEQUENCE draft and pin the assignment.
+
+    Runs inside the caller's project mutex. `members` are ordered
+    {source, sha256, byte_length, source_name} entries covering frame_index
+    0..N-1; the shot's assignment and adopted timeline revision follow the
+    new revision while it stays a draft.
+    """
+    staged = [{"stored_name": f"f{position:06d}.png", **member}
+              for position, member in enumerate(members)]
+    registry = load_registry(p)
+    if asset_id is None:
+        pin = registry["assignments"].get(shot_id)
+        asset_id = pin["asset_id"] if pin else None
+    record = {"asset_id": asset_id or "A0000", "revision": 0,
+              "kind": "FRAME_SEQUENCE",
+              "provenance": provenance,
+              "files": [], "coordinate_space": _coordinate_space(canvas),
+              "dependencies": list(dependencies or []),
+              "preparation": {"state": "IMPORTED_DRAFT",
+                              "checks": {"member_hashes_verified": True,
+                                         "decoded_png": True,
+                                         "uniform_canvas": True},
+                              "not_verified": ["human_review", "motion_approval"]},
+              "acceptance": {"state": "DRAFT"}, "canvas": canvas,
+              "exposure_recipe_ref": None, "composite_recipe_ref": None}
+    record["files"] = [{"relative_name": "", "sha256": m["sha256"],
+                        "byte_length": m["byte_length"], "frame_index": i}
+                       for i, m in enumerate(members)]
+    record["content_sha256"] = content_digest(record)
+    record, created = _commit_revision(p, registry, asset_id,
+                                       "FRAME_SEQUENCE", staged, record)
+    registry["assignments"][shot_id] = {"asset_id": record["asset_id"],
+                                        "revision": record["revision"],
+                                        "content_sha256": record["content_sha256"],
+                                        "kind": "FRAME_SEQUENCE"}
+    save_registry(p, registry)
+    # Adopting this revision for the shot pins it in the edit document.
+    _adopt_revision(p, shot_id, record["revision"])
+    return {"asset_id": record["asset_id"], "revision": record["revision"],
+            "content_sha256": record["content_sha256"],
+            "frames": len(record["files"]), "assigned_to": shot_id,
+            "state": "DRAFT", "new_revision": created}
 
 
 def _adopt_revision(p, shot_id, revision):
@@ -1093,3 +1152,463 @@ def asset_status(project):
                        "kind": current["kind"], "state": current["acceptance"]["state"],
                        "revisions": sorted(int(r) for r in entry["revisions"])})
     return {"assets": assets, "assignments": registry["assignments"]}
+
+
+# ---------------------------------------------------------------------------
+# A-path draft image import (ANIM-009, design 8.2/13)
+#
+# A person produces images in a subscription app against a work packet, then
+# assigns each returned image explicitly to cut / role / frame time / asset.
+# Nothing is approved by filename order: a member-filling role must match a
+# packet request, its declared references must match the packet's carried
+# inputs, and the result is recorded in the shot's draft_frames ledger as
+# DRAFT. `commit_draft_frames` assembles a covered member range into a normal
+# FRAME_SEQUENCE draft — the usual resolver, preview and review paths then
+# consume it unchanged.
+
+
+def _drafts_path(shot_id):
+    return f"animation/shots/{shot_id}/draft_frames.json"
+
+
+def _drafts_dir(shot_id):
+    return f"animation/shots/{shot_id}/drafts"
+
+
+def validate_draft_frames(document):
+    """Structural contract of `animation_draft_frames` 1 (one shot's ledger)."""
+    check_document(document, DRAFTS_TYPE)
+    if type(document) is not dict or set(document.keys()) != DRAFTS_FIELDS:
+        raise FilmError("animation_draft_frames must hold "
+                        f"{sorted(DRAFTS_FIELDS)}")
+    if not SHOT_ID.fullmatch(document["shot_id"]
+                             if type(document["shot_id"]) is str else ""):
+        raise FilmError("draft_frames shot_id must be an S001-style identifier")
+    entries = document["entries"]
+    if type(entries) is not list:
+        raise FilmError("draft_frames entries must be a list")
+    frames = set()
+    for index, entry in enumerate(entries):
+        what = f"draft_frames entries[{index}]"
+        if type(entry) is not dict or set(entry.keys()) != DRAFT_ENTRY_FIELDS:
+            raise FilmError(f"{what} must hold {sorted(DRAFT_ENTRY_FIELDS)}")
+        if type(entry["frame"]) is not int:
+            raise FilmError(f"{what}.frame must be an integer")
+        if entry["frame"] in frames:
+            raise FilmError(f"{what}.frame {entry['frame']} is duplicated")
+        frames.add(entry["frame"])
+        if entry["role"] not in DRAFT_MEMBER_ROLES:
+            raise FilmError(f"{what}.role must be one of "
+                            f"{sorted(DRAFT_MEMBER_ROLES)}")
+        if type(entry["member"]) is not str or not entry["member"]:
+            raise FilmError(f"{what}.member must be a project-relative path")
+        _sha(entry["sha256"], f"{what}.sha256")
+        _int(entry["byte_length"], f"{what}.byte_length", 1)
+        if type(entry["source_name"]) is not str or not entry["source_name"]:
+            raise FilmError(f"{what}.source_name must be a non-empty string")
+        if type(entry["imported_at"]) is not str or not entry["imported_at"]:
+            raise FilmError(f"{what}.imported_at must be a timestamp string")
+        if entry["packet_sha256"] is not None:
+            _sha(entry["packet_sha256"], f"{what}.packet_sha256")
+        if type(entry["references"]) is not list:
+            raise FilmError(f"{what}.references must be a pin list")
+        for pos, pin in enumerate(entry["references"]):
+            _pin(pin, f"{what}.references[{pos}]")
+        if entry["asset_pin"] is not None:
+            _pin(entry["asset_pin"], f"{what}.asset_pin")
+        if entry["state"] != "DRAFT":
+            raise FilmError("draft_frames entries are drafts; import writes "
+                            "no other state")
+    return document
+
+
+def load_draft_frames(p, shot_id):
+    """The shot's draft frame ledger, or an empty document."""
+    path = safe_path(p, _drafts_path(shot_id))
+    if not path.is_file():
+        return {"document_type": DRAFTS_TYPE, "schema_version": 1,
+                "shot_id": shot_id, "entries": []}
+    return validate_draft_frames(read_canon(path))
+
+
+def _save_draft_frames(p, document):
+    validate_draft_frames(document)
+    write_canon(safe_path(p, _drafts_path(document["shot_id"])), document)
+
+
+def _shot_entry(p, shot_id):
+    """The single timeline entry for a shot, or a clear error."""
+    from .animation_schema import load_animation_timeline
+    timeline = load_animation_timeline(p)
+    entries = [e for e in timeline["entries"] if e["shot_id"] == shot_id]
+    if not entries:
+        raise FilmError(f"{shot_id} has no timeline entry")
+    if len(entries) > 1:
+        raise FilmError(f"{shot_id} appears in {len(entries)} timeline "
+                        "entries; a v1 A-path import supports one entry "
+                        "per shot")
+    return entries[0]
+
+
+def _work_packet(p, shot_id):
+    """The shot's stored work packet, validated; None when none was written."""
+    from .packets import load_work_packet
+    path = safe_path(p, f"animation/packets/{shot_id}.json")
+    if not path.is_file():
+        return None
+    return load_work_packet(p, shot_id)
+
+
+def _packet_stale(p, shot_id, packet):
+    """A packet is stale when the plan it bound has changed on disk."""
+    from .motion_plan import plan_path
+    plan_file = safe_path(p, plan_path(shot_id))
+    current = digest(plan_file) if plan_file.is_file() else None
+    return current != packet["plan_sha256"]
+
+
+def _check_provided_references(registry, provided, expected, input_ids):
+    """provided pins must resolve and equal the packet-carried input pins."""
+    provided_keys = set()
+    for index, pin in enumerate(provided):
+        _pin(pin, f"references[{index}]")
+        try:
+            _resolve_pin(registry, pin["asset_id"], pin["revision"],
+                         pin["content_sha256"])
+        except FilmError:
+            raise FilmError(
+                f"REFERENCE_UNKNOWN: references[{index}] "
+                f"{pin['asset_id']} r{pin['revision']} does not resolve "
+                "against the registry")
+        provided_keys.add((pin["asset_id"], pin["revision"],
+                           pin["content_sha256"]))
+    expected_keys = {(pin["asset_id"], pin["revision"], pin["content_sha256"])
+                     for pin in expected}
+    missing = expected_keys - provided_keys
+    if missing:
+        raise FilmError(
+            "REFERENCE_MISSING: the packet expects this request to be "
+            "conditioned on "
+            + ", ".join(sorted(input_ids.get(k, k[0]) for k in missing)))
+    extra = provided_keys - expected_keys
+    if extra:
+        raise FilmError(
+            "REFERENCE_UNEXPECTED: declared references the packet did not "
+            "carry: " + ", ".join(sorted(k[0] for k in extra)))
+
+
+def import_draft_image(project, shot_id, file, *, role, frame,
+                       references=None, asset_id=None, note=""):
+    """Import one hand-produced image as a DRAFT, explicitly assigned.
+
+    `role` assigns the cut-local meaning: KEYPOSE/BREAKDOWN/POSE drawings
+    register a CONTROL_IMAGE revision and also fill the produced frame at
+    their declared time; LAYOUT registers a control input only;
+    FIRST_FRAME/INBETWEEN fill a produced frame only. Member-filling roles
+    must match a request in the shot's work packet and declare the same
+    references the packet carried — mismatches fail with reason codes
+    (PACKET_MISSING, PACKET_STALE, FRAME_OUT_OF_RANGE, ROLE_MISMATCH,
+    UNKNOWN_FRAME, REFERENCE_MISSING, REFERENCE_UNEXPECTED,
+    REFERENCE_UNKNOWN, CANVAS_MISMATCH). Nothing is inferred from the file
+    name, and no approval, review or LOCK is created.
+    """
+    p = Path(project)
+    role = role.strip().upper() if type(role) is str else ""
+    with project_mutex(p):
+        config = require_animation_profile(p)
+        if not SHOT_ID.fullmatch(shot_id if type(shot_id) is str else ""):
+            raise FilmError("shot_id must be an S001-style identifier")
+        shots = read(p / "manifest/shots.json")
+        if not any(s["id"] == shot_id for s in shots):
+            raise FilmError(f"Unknown shot: {shot_id}")
+        if role not in DRAFT_ROLES:
+            raise FilmError(f"role must be one of {sorted(DRAFT_ROLES)}")
+        if type(frame) is not int:
+            raise FilmError("frame must be an integer")
+        if asset_id is not None and not ASSET_ID.fullmatch(asset_id):
+            raise FilmError("asset_id must be an A0001-style identifier")
+        if asset_id is not None and role not in CONTROL_ROLES:
+            raise FilmError("asset_id applies to control roles only; a "
+                            "member-only role registers no control asset")
+        provided = list(references or [])
+        for index, pin in enumerate(provided):
+            _pin(pin, f"references[{index}]")
+        data = _read_source(file)
+        size, _mode = _decode_png(data, Path(file).name
+                                if not isinstance(file, (bytes, bytearray))
+                                else "<bytes>")
+        fmt = config["format"]
+        canvas = {"width": fmt["width"], "height": fmt["height"]}
+        if size != (canvas["width"], canvas["height"]):
+            raise FilmError(
+                f"CANVAS_MISMATCH: imported image is {size[0]}x{size[1]}, "
+                f"the cut canvas is {canvas['width']}x{canvas['height']}")
+        entry = _shot_entry(p, shot_id)
+        used_start, used_end = entry["used_source_range"]
+        length = used_end - used_start
+        handles = entry["unused_handles"]
+        member_index = used_start + frame
+        if role in DRAFT_MEMBER_ROLES and not (
+                0 <= member_index < used_end + handles["after"]):
+            raise FilmError(
+                f"FRAME_OUT_OF_RANGE: frame {frame} does not map to a "
+                "produced member of this cut")
+        if role not in DRAFT_MEMBER_ROLES and not (0 <= frame < length):
+            raise FilmError(
+                f"FRAME_OUT_OF_RANGE: control role frame {frame} is "
+                "outside the cut")
+        packet = _work_packet(p, shot_id)
+        registry = load_registry(p)
+        checks = []
+        packet_sha = None
+        request = None
+        if role in DRAFT_MEMBER_ROLES:
+            if packet is None:
+                raise FilmError(
+                    "PACKET_MISSING: run animation-packets for this shot "
+                    "before importing produced frames; nothing is approved "
+                    "from a file name")
+            if _packet_stale(p, shot_id, packet):
+                raise FilmError(
+                    "PACKET_STALE: the shot plan changed after this packet "
+                    "was written; regenerate animation-packets first")
+            packet_sha = digest(safe_path(
+                p, f"animation/packets/{shot_id}.json"))
+            matches = [r for r in packet["requests"]
+                       if r["produces"] is not None
+                       and r["produces"]["frame"] == frame]
+            request = next(
+                (r for r in matches
+                 if r["produces"]["role"] == role.lower()), None)
+            if request is None:
+                if matches:
+                    raise FilmError(
+                        f"ROLE_MISMATCH: frame {frame} is requested as "
+                        f"{matches[0]['produces']['role']}, not "
+                        f"{role.lower()}")
+                raise FilmError(
+                    f"UNKNOWN_FRAME: no work-packet request assigns "
+                    f"frame {frame} to this shot")
+            inputs_by_id = {i["id"]: i for i in packet["inputs"]}
+            expected, input_ids = [], {}
+            for input_id in request["carries"]:
+                pin = inputs_by_id[input_id]["pin"]
+                if pin is not None:
+                    expected.append(pin)
+                    input_ids[(pin["asset_id"], pin["revision"],
+                               pin["content_sha256"])] = input_id
+            _check_provided_references(registry, provided, expected,
+                                       input_ids)
+            checks.append({"code": "REQUEST_MATCHED",
+                           "request_id": request["request_id"]})
+            if request["blocked"]:
+                raise FilmError(
+                    "REQUEST_BLOCKED: " + "; ".join(request["blocked"]))
+        else:  # LAYOUT: a conditioning input, not a produced member
+            if packet is not None and _packet_stale(p, shot_id, packet):
+                checks.append({"code": "PACKET_STALE",
+                               "detail": "the plan changed after the "
+                                         "packet was written"})
+            for index, pin in enumerate(provided):
+                try:
+                    _resolve_pin(registry, pin["asset_id"], pin["revision"],
+                                 pin["content_sha256"])
+                except FilmError:
+                    raise FilmError(
+                        f"REFERENCE_UNKNOWN: references[{index}] "
+                        f"{pin['asset_id']} r{pin['revision']} does not "
+                        "resolve against the registry")
+        sha = hashlib.sha256(data).hexdigest()
+        ledger = None
+        if role in DRAFT_MEMBER_ROLES:
+            ledger = load_draft_frames(p, shot_id)
+            if any(e["frame"] == frame for e in ledger["entries"]):
+                raise FilmError(
+                    f"DUPLICATE_FRAME: frame {frame} already holds a "
+                    "draft assignment; remove the ledger entry before "
+                    "replacing it")
+        asset_pin = None
+        member_rel = None
+        control_result = None
+        if role in CONTROL_ROLES:
+            control_result = _commit_control_image(
+                p, registry, shot_id, file, data, role, frame, provided,
+                canvas, asset_id=asset_id, note=note)
+            save_registry(p, registry)
+            asset_pin = {"asset_id": control_result["asset_id"],
+                         "revision": control_result["revision"],
+                         "content_sha256": control_result["content_sha256"]}
+            member_rel = control_result["member"]
+        if role in DRAFT_MEMBER_ROLES:
+            if member_rel is None:
+                member_rel = (f"{_drafts_dir(shot_id)}/"
+                              f"m{member_index:06d}-{sha[:12]}.png")
+                _store_member(p, member_rel, data, sha)
+            entry_row = {"frame": frame, "role": role, "member": member_rel,
+                         "sha256": sha, "byte_length": len(data),
+                         "source_name": Path(file).name
+                         if not isinstance(file, (bytes, bytearray))
+                         else "<bytes>",
+                         "imported_at": now(), "packet_sha256": packet_sha,
+                         "references": [dict(pin) for pin in provided],
+                         "asset_pin": asset_pin, "state": "DRAFT"}
+            ledger["entries"] = [e for e in ledger["entries"]
+                                 if e["frame"] != frame]
+            ledger["entries"].append(entry_row)
+            ledger["entries"].sort(key=lambda e: e["frame"])
+            _save_draft_frames(p, ledger)
+            checks.append({"code": "LEDGER_RECORDED",
+                           "member": member_rel})
+        result = {"shot_id": shot_id, "role": role, "frame": frame,
+                  "state": "DRAFT", "checks": checks,
+                  "packet_sha256": packet_sha,
+                  "qualification_state": "UNQUALIFIED",
+                  "note": "Draft import; no artwork approval, review or "
+                          "qualification"}
+        if asset_pin is not None:
+            result["asset_pin"] = asset_pin
+        if control_result is not None:
+            result["new_revision"] = control_result["new_revision"]
+        if member_rel is not None:
+            result["member"] = member_rel
+        return result
+
+
+def _commit_control_image(p, registry, shot_id, file, data, role, frame,
+                          references, canvas, *, asset_id=None, note=""):
+    """Register one CONTROL_IMAGE revision; caller holds the mutex."""
+    sha = hashlib.sha256(data).hexdigest()
+    staged = [{"stored_name": "control.png", "source": file,
+               "sha256": sha, "byte_length": len(data),
+               "source_name": Path(file).name
+               if not isinstance(file, (bytes, bytearray)) else "<bytes>"}]
+    record = {"asset_id": asset_id or "A0000", "revision": 0,
+              "kind": "CONTROL_IMAGE",
+              "provenance": {"type": "DRAFT_IMPORT", "via": "work_packet",
+                             "source": str(file), "imported_at": now(),
+                             "note": note.strip()},
+              "files": [{"relative_name": "", "sha256": sha,
+                         "byte_length": len(data)}],
+              "coordinate_space": _coordinate_space(canvas),
+              "dependencies": [dict(pin) for pin in references],
+              "preparation": {"state": "IMPORTED_DRAFT",
+                              "checks": {"member_hashes_verified": True,
+                                         "decoded_png": True,
+                                         "references_resolved": True},
+                              "not_verified": ["human_review",
+                                               "artwork_approval"]},
+              "acceptance": {"state": "DRAFT"},
+              "canvas": canvas, "control_role": role, "frame": frame,
+              "shot_id": shot_id,
+              "references": [dict(pin) for pin in references]}
+    record["content_sha256"] = content_digest(record)
+    record, created = _commit_revision(p, registry, asset_id,
+                                       "CONTROL_IMAGE", staged, record)
+    return {"asset_id": record["asset_id"], "revision": record["revision"],
+            "content_sha256": record["content_sha256"],
+            "member": record["files"][0]["relative_name"],
+            "new_revision": created}
+
+
+def commit_draft_frames(project, shot_id, *, asset_id=None, note=""):
+    """Assemble the shot's verified draft ledger into a FRAME_SEQUENCE.
+
+    Every produced member index [0, used_end + after) must be covered by a
+    ledger entry recorded against the work packet; gaps fail with the missing
+    local frames listed. The shot's plan must be entirely path "A" — a mixed
+    cut cannot be assembled by draft frames alone. The result is the same
+    DRAFT FRAME_SEQUENCE any import produces: assigned to the shot and
+    adopted in the timeline, never an approval.
+    """
+    p = Path(project)
+    with project_mutex(p):
+        config = require_animation_profile(p)
+        if not SHOT_ID.fullmatch(shot_id if type(shot_id) is str else ""):
+            raise FilmError("shot_id must be an S001-style identifier")
+        shots = read(p / "manifest/shots.json")
+        if not any(s["id"] == shot_id for s in shots):
+            raise FilmError(f"Unknown shot: {shot_id}")
+        if asset_id is not None and not ASSET_ID.fullmatch(asset_id):
+            raise FilmError("asset_id must be an A0001-style identifier")
+        entry = _shot_entry(p, shot_id)
+        used_start, used_end = entry["used_source_range"]
+        length = used_end - used_start
+        handles = entry["unused_handles"]
+        fmt = config["format"]
+        from .motion_plan import load_shot_plan
+        plan = load_shot_plan(
+            p, shot_id, length=length,
+            canvas={"width": fmt["width"], "height": fmt["height"]})
+        if any(s["path"] != "A" for s in plan["segments"]):
+            raise FilmError(
+                "MIXED_PATH_UNSUPPORTED: draft frames assemble only "
+                "all-A segments; this plan uses another path too")
+        ledger = load_draft_frames(p, shot_id)
+        by_frame = {e["frame"]: e for e in ledger["entries"]}
+        needed = range(-used_start, length + handles["after"])
+        missing = [f for f in needed if f not in by_frame]
+        if missing:
+            raise FilmError(
+                "MISSING_FRAMES: draft ledger has no produced member for "
+                f"local frames {missing}")
+        current_packet = _work_packet(p, shot_id)
+        if current_packet is None:
+            raise FilmError(
+                "PACKET_MISSING: the shot has no work packet; draft "
+                "frames are assembled only against their packet")
+        if _packet_stale(p, shot_id, current_packet):
+            raise FilmError(
+                "PACKET_STALE: the shot plan changed after this packet "
+                "was written; regenerate animation-packets first")
+        current_sha = digest(safe_path(
+            p, f"animation/packets/{shot_id}.json"))
+        members, dependencies, stale = [], [], []
+        seen_pins = set()
+        for frame in sorted(needed):
+            row = by_frame[frame]
+            if (Path(p) / row["member"]).is_symlink():
+                raise FilmError(
+                    f"DRAFT_MEMBER_MISSING: {row['member']} is a symlink; "
+                    "stored members must be real project files")
+            member_path = safe_path(p, row["member"])
+            if not member_path.is_file():
+                raise FilmError(
+                    f"DRAFT_MEMBER_MISSING: {row['member']} is not a "
+                    "stored project file")
+            if member_path.stat().st_size != row["byte_length"] \
+                    or digest(member_path) != row["sha256"]:
+                raise FilmError(
+                    f"DRAFT_MEMBER_CHANGED: stored bytes for frame "
+                    f"{frame} no longer match the ledger")
+            members.append({"source": member_path, "sha256": row["sha256"],
+                            "byte_length": row["byte_length"],
+                            "source_name": row["source_name"]})
+            if row["packet_sha256"] is not None \
+                    and row["packet_sha256"] != current_sha:
+                stale.append(frame)
+            for pin in [row["asset_pin"], *row["references"]]:
+                if pin is None:
+                    continue
+                key = (pin["asset_id"], pin["revision"],
+                       pin["content_sha256"])
+                if key not in seen_pins:
+                    seen_pins.add(key)
+                    dependencies.append(dict(pin))
+        canvas = _sequence_canvas(members)
+        if canvas != {"width": fmt["width"], "height": fmt["height"]}:
+            raise FilmError(
+                "CANVAS_MISMATCH: produced members do not share the cut "
+                "canvas")
+        provenance = {"type": "DRAFT_ASSEMBLY",
+                      "via": "draft_frames",
+                      "ledger": _drafts_path(shot_id),
+                      "assembled_at": now(), "note": note.strip()}
+        result = _register_frame_sequence(
+            p, shot_id, members, canvas, provenance,
+            dependencies=dependencies, asset_id=asset_id)
+        result["stale_packet_entries"] = stale
+        result["dependencies"] = len(dependencies)
+        result["qualification_state"] = "UNQUALIFIED"
+        result["note"] = ("Assembled from packet-verified draft members; "
+                          "no artwork approval, review or qualification")
+        return result
