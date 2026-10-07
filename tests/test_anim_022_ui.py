@@ -91,6 +91,30 @@ def test_w00_gate_refuses_an_unauthorized_human(screen):
     assert record["reviewer_kind"] == "SYNTHETIC_FIXTURE"
 
 
+def test_pilot_issue_disposition_is_recorded_and_listed(screen):
+    at, project = screen
+    adopted_w00(at)
+    # A limitation disposition without reason/scope is refused, not saved.
+    sel(at, "an_pilot_issue").select("ACCEPTED_LIMITATION")
+    ti(at, "an_pilot_issue_note").set_value("fixture: soft edge at hold")
+    pilot_record(at, "I001")
+    assert not at.exception
+    assert any("reason" in e for e in errors(at))
+    assert load_pilots(project) == []
+    ti(at, "an_pilot_issue_reason").set_value("fixture: style choice")
+    ti(at, "an_pilot_issue_scope").set_value("hold span")
+    pilot_record(at, "I001")
+    assert not at.exception
+    issue = {"disposition": "ACCEPTED_LIMITATION",
+             "note": "fixture: soft edge at hold",
+             "reason": "fixture: style choice", "scope": "hold span"}
+    assert load_pilots(project)[0]["issues"] == [issue]
+    assert {"source": "WP0001", "target": "I001", **issue} \
+        in gate_status(project)["issues"]
+    assert any("fixture: soft edge at hold" in df.value.to_string()
+               for df in at.dataframe)
+
+
 def test_clean_and_subbed_approve_separately_in_ui(screen):
     at, project = screen
     produced_project(at)

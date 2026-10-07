@@ -621,6 +621,13 @@ def _w00_gate(p):
         st.warning("미확정(UNKNOWN 등) durable 작업이 게이트를 막습니다: "
                    + ", ".join(f"{j['job_id']}={j['status']}"
                                for j in gate["unknown"]))
+    if gate["issues"]:
+        st.dataframe([{"출처": i["source"], "대상": i["target"],
+                       "처리": i["disposition"], "내용": i["note"],
+                       "이유": i.get("reason") or "—",
+                       "범위": str(i["scope"]) if i.get("scope") is not None
+                       else "—"}
+                      for i in gate["issues"]], hide_index=True)
     if gate["quote"]["totals"]:
         st.caption("견적 합계: " + ", ".join(
             f"{v} {k}" for k, v in gate["quote"]["totals"].items()))
@@ -645,12 +652,32 @@ def _w00_gate(p):
     cap_ref = c3.text_input("capability 참조 (없으면 비움)", key="an_pilot_cap")
     job_ref = c4.text_input("durable job 결과 id (없으면 비움)",
                             key="an_pilot_job")
+    c5, c6 = st.columns(2)
+    issue_kind = c5.selectbox(
+        "발견한 문제 처리", ["없음", "FIX_REQUIRED", "INTENTIONAL",
+                       "ACCEPTED_LIMITATION"], key="an_pilot_issue",
+        help="INTENTIONAL/ACCEPTED_LIMITATION은 이유와 범위가 필요합니다")
+    issue_note = c6.text_input("문제 내용", key="an_pilot_issue_note")
+    issue_reason = c5.text_input("처리 이유", key="an_pilot_issue_reason")
+    issue_scope = c6.text_input("범위 (라벨)", key="an_pilot_issue_scope")
+
+    def pilot_issues():
+        if issue_kind == "없음":
+            return []
+        item = {"disposition": issue_kind, "note": issue_note}
+        if issue_reason.strip():
+            item["reason"] = issue_reason.strip()
+        if issue_scope.strip():
+            item["scope"] = issue_scope.strip()
+        return [item]
+
     if st.button("파일럿 기록", key="an_pilot_record"):
         _do(lambda: record_pilot(
             p, pick, decision=decision, reviewer=reviewer,
             reviewer_kind=kind, reason=reason,
             capability_ref=cap_ref.strip() or None,
-            job_result_id=job_ref.strip() or None),
+            job_result_id=job_ref.strip() or None,
+            issues=pilot_issues()),
             f"{pick}의 W00 파일럿을 기록했습니다")
 
     with st.expander("승인자 위임 · 추가 지출 승인", expanded=False):
