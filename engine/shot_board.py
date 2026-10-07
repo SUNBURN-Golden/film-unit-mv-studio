@@ -644,7 +644,11 @@ def boundary_window(project, index, margin=2):
     op owns the shared range; the outgoing tail is read as its halo), and
     the transition-record owner (the outgoing entry, which holds
     `transition_out`). Boundary frames on each side are included so the
-    display shows `F_#######` names with integer frame indices only.
+    display shows `F_#######` names with integer frame indices only. A
+    margin row can belong to a *neighboring* transition — an entry whose
+    in/out overlaps consume its whole used range owns no exclusive frames —
+    so contributors are resolved for whatever instances the frame clock
+    reports, not only this transition's endpoints.
     """
     p = Path(project)
     config = require_animation_profile(p)
@@ -656,21 +660,33 @@ def boundary_window(project, index, margin=2):
         raise FilmError(f"Unknown transition index: {index}")
     transition = transitions[index]
     entries = {e["instance_id"]: e for e in document["entries"]}
-    endpoints = {transition["from_instance"], transition["to_instance"]}
-    member_maps = {iid: member_map_for_entry(entries[iid])
-                   for iid in endpoints}
-    locators = {}
-    for iid in endpoints:
-        entry = entries[iid]
-        try:
-            found = _resolve_metadata(p, entry["shot_id"],
-                                      entry["used_source_range"],
-                                      entry["unused_handles"],
-                                      entry["sequence_revision"])
-        except FilmError:
-            continue
-        locators[iid] = {f.get("frame_index"): f["relative_name"]
-                         for f in found["record"]["files"]}
+    # Margin frames can sit inside a neighboring transition's overlap (an
+    # entry with `O_in + O_out == L` has no exclusive frames), so member
+    # maps and member locators resolve per contributor, not per endpoint.
+    member_maps, locators = {}, {}
+
+    def member_map(instance_id):
+        if instance_id not in member_maps:
+            member_maps[instance_id] = member_map_for_entry(
+                entries[instance_id])
+        return member_maps[instance_id]
+
+    def member_path(instance_id, member):
+        if instance_id not in locators:
+            entry = entries[instance_id]
+            locators[instance_id] = {}
+            try:
+                found = _resolve_metadata(p, entry["shot_id"],
+                                          entry["used_source_range"],
+                                          entry["unused_handles"],
+                                          entry["sequence_revision"])
+            except FilmError:
+                pass
+            else:
+                locators[instance_id] = {
+                    f.get("frame_index"): f["relative_name"]
+                    for f in found["record"]["files"]}
+        return locators[instance_id].get(member)
     op_owner = {}
     for op in _op_ranges(audit):
         for frame in range(*op["output_range"]):
@@ -683,19 +699,19 @@ def boundary_window(project, index, margin=2):
         pairs, tr = frame_contributors(audit, frame)
         contributors = []
         for row, weight in pairs:
+            iid = row["instance_id"]
             local = frame - row["output_range"][0]
-            member = member_maps[row["instance_id"]][local]["member"]
+            member = member_map(iid)[local]["member"]
             contributors.append({
-                "instance_id": row["instance_id"],
+                "instance_id": iid,
                 "shot_id": row["shot_id"],
                 "local_frame_index": local,
                 "member": member,
-                "member_path": locators.get(row["instance_id"], {})
-                .get(member),
+                "member_path": member_path(iid, member),
                 "weight": [weight.numerator, weight.denominator],
                 "side": ("sole" if tr is None else
                          "outgoing"
-                         if row["instance_id"] == tr["from_instance"]
+                         if iid == tr["from_instance"]
                          else "incoming")})
         frames.append({
             "frame_index": frame,
@@ -708,8 +724,10 @@ def boundary_window(project, index, margin=2):
             "op_owner": op_owner.get(frame),
             "transition": tr["id"] if tr else None,
             "contributors": contributors})
-    window = exposure_window(frames[0]["frame_index"], fps)
-    window["end"] = exposure_window(frames[-1]["frame_index"], fps)["end"]
+    window = None
+    if frames:
+        window = exposure_window(frames[0]["frame_index"], fps)
+        window["end"] = exposure_window(frames[-1]["frame_index"], fps)["end"]
     return {"kind": "shot_board_boundary",
             "transition": dict(transition),
             "record_owner": transition["from_instance"],

@@ -63,7 +63,17 @@ def _state(text):
 
 
 def _select_frame(view, value):
-    """The entry whose output range covers display frame `value`."""
+    """The instance whose compose op owns display frame `value`.
+
+    Both neighbors' display ranges cover a shared crossfade frame, but the
+    later op owns the shared range (`_op_ranges`), so the jump lands on the
+    covering transition's `to_instance` — the same owner the board reports.
+    """
+    frame = value - 1                    # display numbers are 1-based
+    for transition in view["transitions"]:
+        if (transition["output_range"][0] <= frame
+                < transition["output_range"][1]):
+            return transition["to_instance"]
     for row in view["entries"]:
         if row["display_range"][0] <= value <= row["display_range"][1]:
             return row["instance_id"]
@@ -183,28 +193,38 @@ def _boundary_fixture(p, view, row):
               + (f" ({'앞' if c['side'] == 'outgoing' else '뒤' if c['side'] == 'incoming' else '단독'})")
               for c in f["contributors"])}
          for f in window["frames"]], hide_index=True)
-    # Boundary-frame images: last outgoing-only and first incoming-only.
+    # Boundary-frame images: the frames flanking the overlap, read on the
+    # transition's own endpoints. With no exclusive frame on one side the
+    # flank sits inside a neighboring overlap, so the endpoint's contributor
+    # is picked by instance — `contributors[0]` could name the other cut.
     before, after = (window["boundary_frames"]["before"],
                      window["boundary_frames"]["after"])
+    endpoints = (window["transition"]["from_instance"],
+                 window["transition"]["to_instance"])
     cols = st.columns(2)
-    for col, frame_index, label in (
-            (cols[0], before, "앞 컷 마지막 단독 프레임"),
-            (cols[1], after, "뒤 컷 첫 단독 프레임")):
+    for col, frame_index, label, owner in (
+            (cols[0], before, "앞 컷 경계 프레임", endpoints[0]),
+            (cols[1], after, "뒷 컷 경계 프레임", endpoints[1])):
         if frame_index is None:
             continue
-        for f in window["frames"]:
-            if f["frame_index"] != frame_index:
-                continue
-            sole = f["contributors"][0]
-            member_path = sole.get("member_path")
-            if member_path and safe_path(p, member_path).is_file():
-                col.image(str(safe_path(p, member_path)),
-                          caption=f"{label}: {f['file']} · "
-                                  f"{sole['instance_id']} 멤버 "
-                                  f"{sole['member']}")
-            else:
-                col.caption(f"{label}: {f['file']} · 멤버 {sole['member']} "
-                            "(미해결 — 이미지 없음)")
+        flank = next((f for f in window["frames"]
+                      if f["frame_index"] == frame_index), None)
+        if flank is None:
+            continue
+        source = next((c for c in flank["contributors"]
+                       if c["instance_id"] == owner), None)
+        if source is None:
+            continue
+        weight = ("" if source["weight"] == [1, 1]
+                  else f" ×{source['weight'][0]}/{source['weight'][1]}")
+        member_path = source.get("member_path")
+        if member_path and safe_path(p, member_path).is_file():
+            col.image(str(safe_path(p, member_path)),
+                      caption=f"{label}: {flank['file']} · "
+                              f"{owner} 멤버 {source['member']}{weight}")
+        else:
+            col.caption(f"{label}: {flank['file']} · {owner} 멤버 "
+                        f"{source['member']}{weight} (미해결 — 이미지 없음)")
 
 
 def _diff_table(draft):
@@ -255,21 +275,26 @@ def _draft_editor(p, view, row):
         st.info("마지막 컷에는 뒤 경계·전환이 없습니다. 앞 컷을 선택하세요.")
         return
     current = row["transition_out"]
+    # Edit widgets key on the selected instance so a re-selection never
+    # carries one cut's pending numbers onto another cut's draft.
     c1, c2 = st.columns(2)
     shift = int(c1.number_input(
         f"경계 이동 (프레임 — +는 {row['instance_id']} 출력을 늘립니다)",
         min_value=-100000, max_value=100000, value=0, step=1,
-        key="sb_shift"))
+        key=f"sb_shift_{row['instance_id']}"))
     kind = c2.selectbox("전환 종류",
-                        ["유지", HARD_CUT, CROSSFADE], key="sb_ttype")
+                        ["유지", HARD_CUT, CROSSFADE],
+                        key=f"sb_ttype_{row['instance_id']}")
     transition = None
     if kind != "유지":
         c3, c4 = st.columns(2)
         overlap = int(c3.number_input(
             "겹침 프레임 (정수)", min_value=0, max_value=100000,
-            value=int(current["overlap_frames"]), step=1, key="sb_overlap"))
+            value=int(current["overlap_frames"]), step=1,
+            key=f"sb_overlap_{row['instance_id']}"))
         fund = c4.radio("겹침 프레임 출처", list(FUND_SIDES),
-                        format_func=lambda f: _FUND_KO[f], key="sb_fund")
+                        format_func=lambda f: _FUND_KO[f],
+                        key=f"sb_fund_{row['instance_id']}")
         if kind != current["type"] or overlap != current["overlap_frames"]:
             transition = {"type": kind, "overlap_frames": overlap,
                           "fund": fund}

@@ -121,6 +121,48 @@ def test_boundary_window_owns_transition_frames(tmp_path):
     assert sole["frame_index"] == 22 and sole["file"] == "F_000023.png"
 
 
+def test_boundary_window_margin_reads_neighbor_overlap(tmp_path):
+    """`O_in + O_out == L` is legal: a cut can own zero exclusive frames.
+
+    With two 12-frame crossfades around a 24-frame middle cut, T002's
+    margin reaches inside T001's overlap, so the window's contributors name
+    a third instance (I001) — the window must resolve it, not KeyError.
+    """
+    p = _project(tmp_path, spare=24)          # S001 carries 48 members
+    path = p / "timeline/edit.json"
+    document = read_canon(path)
+    document["entries"][0]["used_source_range"] = [0, 48]
+    for index in (0, 1):
+        transition = document["entries"][index]["transition_out"]
+        transition.update({"type": "CROSSFADE", "overlap_frames": 12,
+                           "curve": "LINEAR_INTERIOR_V1"})
+    # produced = 48 + 24 + 24 − 12 − 12 = 72, target_frames unchanged.
+    write_canon(path, document)
+    window = boundary_window(p, 1)
+    assert window["transition"]["id"] == "T002"
+    assert window["transition"]["output_range"] == [48, 60]
+    assert window["boundary_frames"] == {"before": 47, "after": 60}
+    by_frame = {f["frame_index"]: f for f in window["frames"]}
+    for frame_index in (46, 47):              # inside T001's overlap [36,48)
+        frame = by_frame[frame_index]
+        assert frame["transition"] == "T001"
+        contributors = {c["instance_id"]: c for c in frame["contributors"]}
+        assert set(contributors) == {"I001", "I002"}
+        # k = frame − 36 over O = 12: incoming weight (k+1)/13.
+        k = frame_index - 36
+        assert contributors["I002"]["weight"] == [k + 1, 13]
+        assert contributors["I001"]["weight"] == [12 - k, 13]
+        assert contributors["I001"]["member_path"]                      # resolved
+        assert contributors["I002"]["side"] == "incoming"
+    # I002 owns no exclusive frame — every frame it touches is overlapped —
+    # and the trailing margin lands on I003's sole frames, also resolved.
+    for frame_index in (60, 61):
+        contributors = by_frame[frame_index]["contributors"]
+        assert [c["instance_id"] for c in contributors] == ["I003"]
+        assert contributors[0]["side"] == "sole"
+        assert contributors[0]["member_path"]
+
+
 # --- draft vs adopted + stale projection ----------------------------------------
 
 def test_boundary_shift_diff_compares_adopted_and_draft(tmp_path):

@@ -129,6 +129,34 @@ def test_jump_to_display_frame_picks_the_covering_cut(tmp_path, box):
     assert sel(at, "sb_instance").value == "I002"
 
 
+def test_jump_into_overlap_picks_the_compose_owner(tmp_path, box):
+    project, at = screen(box)
+    draft = propose_edit(project, "I001", transition={
+        "type": "CROSSFADE", "overlap_frames": 4, "fund": "OUTGOING"})
+    assert draft["valid"], draft["errors"]
+    apply_edit(project, draft)
+    at.run()                                # reload the project bytes
+    # 표시 26 → frame 25 ∈ [24, 28): covered by both cuts, composed by I002.
+    number(at, "sb_jump").set_value(26)
+    button(at, "sb_jump_button").click().run()
+    assert not at.exception
+    assert sel(at, "sb_instance").value == "I002"
+
+
+def test_edit_inputs_do_not_leak_across_cut_selection(tmp_path, box):
+    project, at = screen(box)
+    number(at, "sb_shift_I001").set_value(4)
+    at.run()
+    sel(at, "sb_instance").select("I002").run()
+    assert not at.exception
+    # Edit widgets key on the instance — I001's leftover 4 cannot reach I002.
+    assert number(at, "sb_shift_I002").value == 0
+    assert not [n for n in at.number_input if n.key == "sb_shift_I001"]
+    button(at, "sb_propose").click().run()
+    assert not at.exception
+    assert any("지정하세요" in e.value for e in tab(at).error)
+
+
 def test_crossfade_boundary_fixture_shows_ownership(tmp_path, box):
     projects = box / "projects"
     projects.mkdir()
@@ -154,7 +182,7 @@ def test_crossfade_boundary_fixture_shows_ownership(tmp_path, box):
 
 def test_draft_compare_then_apply_through_the_panel(tmp_path, box):
     project, at = screen(box)
-    number(at, "sb_shift").set_value(4)
+    number(at, "sb_shift_I001").set_value(4)
     button(at, "sb_propose").click().run()
     assert not at.exception
     board = tab(at)
@@ -171,7 +199,7 @@ def test_draft_compare_then_apply_through_the_panel(tmp_path, box):
 
 def test_invalid_draft_is_an_error_not_an_apply(tmp_path, box):
     project, at = screen(box)
-    number(at, "sb_shift").set_value(24)
+    number(at, "sb_shift_I001").set_value(24)
     button(at, "sb_propose").click().run()
     assert not at.exception
     board = tab(at)
