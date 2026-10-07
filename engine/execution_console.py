@@ -209,11 +209,27 @@ class ExecutionConsole:
             # DurableJournal instance of this same file is rebound to the
             # shared one — a second instance would append with a stale
             # head/seq and corrupt the chain for every writer after it.
+            # Its in-memory intents are replaced by a replay of that shared
+            # journal too, so upload records another writer (a previous
+            # committer) appended are applied before it reports or writes
+            # — never a duplicate UPLOAD_INTENT or a stale PENDING row.
             if getattr(injected.journal, "path", None) is not None \
                     and Path(injected.journal.path).resolve() \
                     == path.resolve():
-                injected.journal = journal
-            self._trackers[key] = injected
+                if getattr(injected.journal, "fence_reason", None):
+                    journal.fence(injected.journal.fence_reason)
+                try:
+                    replayed = UploadTracker(journal).uploads
+                except FilmError as exc:
+                    self._trackers[key] = None
+                    self._replay_errors[key] = str(exc)
+                    injected = None
+                else:
+                    with injected._lock:
+                        injected.journal = journal
+                        injected.uploads = replayed
+            if injected is not None:
+                self._trackers[key] = injected
         elif "upload" in scopes or backend is not None:
             try:
                 self._trackers[key] = UploadTracker(
@@ -271,16 +287,29 @@ class ExecutionConsole:
         records = self._records(key)
         own = _produce_stage_name(job["operation"].get("kind"))
         cancel_intent = any(r["event"] == "CANCEL_INTENT" for r in records)
-        lost = [r["event"] for r in records
-                if r["event"] in ("SUBMIT_LOST", "CANCEL_LOST")]
-        if state == "UNKNOWN" and not lost:
-            # UNKNOWN always means a remote answer never landed: the
-            # reconcile-time disconnect journals only STATE -> UNKNOWN
-            # (there is no *_LOST event for a dropped status query), and
-            # a restart leaves the pending SUBMIT_INTENT as the marker.
-            lost = ["STATUS_LOST" if any(
-                r["event"] == "STATE" and r["data"].get("to") == "UNKNOWN"
-                for r in records) else "SUBMIT_LOST"]
+        # The network lamp is the *current* loss only: the one that put
+        # the job into its present UNKNOWN. A loss a later reconcile
+        # resolved (UNKNOWN -> RUNNING, ...) is history, not a lit lamp.
+        lost, recovered, cause = [], [], None
+        for r in records:
+            if r["event"] in ("SUBMIT_LOST", "CANCEL_LOST"):
+                cause = r["event"]
+            elif r["event"] == "STATE":
+                if r["data"].get("to") == "UNKNOWN":
+                    # the reconcile-time disconnect journals only
+                    # STATE -> UNKNOWN (no *_LOST event for a dropped
+                    # status query)
+                    lost = [cause or "STATUS_LOST"]
+                else:
+                    recovered += lost
+                    lost = []
+                cause = None
+        if state != "UNKNOWN":
+            recovered += lost
+            lost = []
+        elif not lost:
+            # a restart leaves the pending SUBMIT_INTENT as the marker
+            lost = [cause or "SUBMIT_LOST"]
         cov = self.coordinator.coverage(key)
         covered, missing = cov["covered"], cov["missing"]
 
@@ -361,7 +390,7 @@ class ExecutionConsole:
             "coverage": {"covered": covered, "missing": missing},
             "indicators": {
                 "network": {"state": "LOST" if lost else "NONE",
-                            "lost": lost},
+                            "lost": lost, "recovered": recovered},
                 "remote": remote,
                 "upload_verify": {"level": None,
                                   "state": "NOT_APPLICABLE"},
@@ -544,10 +573,6 @@ class ExecutionConsole:
         for dkey, tracker in self._trackers.items():
             if tracker is None:
                 continue
-            journal = self._journals[dkey]
-            lost = {r["data"]["intent_id"]
-                    for r in journal.records
-                    if r["event"] == "UPLOAD_SESSION_LOST"}
             for intent_id, row in tracker.status().items():
                 oid = row["object_id"]
                 confirmed = max((s["confirmed"] for s in row["sessions"]),
@@ -602,10 +627,13 @@ class ExecutionConsole:
                     "sessions": row["sessions"],
                     "live_session": live[-1]["ref"] if live else None,
                     "indicators": {
-                        "network": {"state": "LOST" if intent_id
-                                    in lost or row["unknown"] else "NONE",
-                                    "lost": ["session"] if intent_id
-                                    in lost else []},
+                        # `unknown` is set by UPLOAD_SESSION_LOST and
+                        # cleared by the reconcile's fence or a complete —
+                        # a resolved past loss does not light the lamp.
+                        "network": {"state": "LOST" if row["unknown"]
+                                    else "NONE",
+                                    "lost": ["session"] if row["unknown"]
+                                    else []},
                         "remote": {"last_report": None,
                                    "basis": "inapplicable",
                                    "detail": "archive offset is the truth, "
@@ -697,16 +725,15 @@ class ExecutionConsole:
             uploads = ({u["object_id"]: u
                         for u in tracker.status().values()}
                        if tracker else {})
-            lost = {r["data"]["intent_id"]
-                    for r in self._journals[dkey].records
-                    if r["event"] == "UPLOAD_SESSION_LOST"}
             for ck, commit in committer.commits.items():
                 state = commit["state"]
                 objects = []
                 done = 0
+                session_lost = False
                 for art in commit["artifacts"]:
                     for o in art["objects"]:
                         u = uploads.get(o["object_id"], {})
+                        session_lost |= bool(u.get("unknown"))
                         objects.append({
                             "object_id": o["object_id"],
                             "kind": art["kind"],
@@ -758,11 +785,10 @@ class ExecutionConsole:
                     "seal": commit.get("seal"),
                     "indicators": {
                         "network": {"state": "LOST" if state == "SEAL_UNKNOWN"
-                                    or any(l.split("up-", 1)[-1] in
-                                           {o["object_id"] for o in objects}
-                                           for l in lost) else "NONE",
-                                    "lost": ["seal"] if state
-                                    == "SEAL_UNKNOWN" else []},
+                                    or session_lost else "NONE",
+                                    "lost": (["seal"] if state
+                                             == "SEAL_UNKNOWN" else []) +
+                                    (["session"] if session_lost else [])},
                         "remote": {"last_report": None,
                                    "basis": "inapplicable",
                                    "detail": "archive journal is the truth"},
@@ -877,11 +903,16 @@ class ExecutionConsole:
                 detail=", ".join(
                     f"{r}:{e['artifact_sha256'][:12]}"
                     for r, e in sorted(have.items())))
+            missing_roles = sorted(_ENCODE_ROLE_SET - set(have))
             stages["mux"] = _stage(
-                "DONE" if _ENCODE_ROLE_SET <= set(have) else
-                "PARTIAL" if have else "PENDING",
-                detail="mux ran inside encode_delivery (stream-copy); the "
-                       "artifact is the muxed MP4" if have else None)
+                "PARTIAL" if have and missing_roles else
+                "DONE" if have else "PENDING",
+                detail=("mux ran inside encode_delivery (stream-copy); the "
+                        "artifact is the muxed MP4" if not missing_roles
+                        else f"muxed MP4 only for {', '.join(sorted(have))}"
+                             f"; no mux yet for "
+                             f"{', '.join(missing_roles)}") if have
+                else None)
             # Only a verification report that actually passed counts —
             # `verify_delivery` writes {"valid": True, ...} or raises.
             verified_roles = [r for r, e in have.items()

@@ -155,6 +155,28 @@ def test_pipeline_item_maps_committed_snapshot_to_six_stages(tmp_path):
     assert i["stages"]["seal"]["status"] == "PENDING"
 
 
+def test_pipeline_partial_encode_does_not_claim_a_muxed_mp4(tmp_path):
+    perf = tmp_path / "perf"
+    perf.mkdir()
+    enc_sha = hashlib.sha256(b"artifact").hexdigest()
+    state = {"state_version": 1,
+             "input": {"snapshot_digest": SNAP},
+             "clean": {"sequence_root": "c" * 64, "frames": [{"key": "k"}]},
+             "subbed": {"sequence_root": "s" * 64},
+             "encodes": {"clean": {"artifact_sha256": enc_sha,
+                                   "verification": {"valid": True},
+                                   "encode_digest": "e" * 64}},
+             "generated_at": "2026-01-01T00:00:00Z"}
+    (perf / "state.json").write_text(json.dumps(state), encoding="utf-8")
+    sd = tmp_path / "state"
+    sd.mkdir()
+    console = ExecutionConsole(state_dir=sd, perf_roots=[perf])
+    mux = item(console.status(), f"pipeline:{perf.name}")["stages"]["mux"]
+    assert mux["status"] == "PARTIAL"
+    assert "mux ran" not in mux["detail"]
+    assert "subbed" in mux["detail"]
+
+
 def test_pipeline_item_links_archive_commit_by_snapshot(tmp_path):
     cc, backend, ck = make_commit(tmp_path)
     assert cc.run(ck)["state"] == "SEALED"
@@ -242,6 +264,11 @@ def test_disconnect_moves_running_to_unknown(tmp_path):
     out = console.run_action(key, "status_query")
     assert out["state"] == "RUNNING"
     assert c.jobs[key]["state"] == "RUNNING"
+    # the reconciled loss is history — the network lamp is off again
+    i = item(console.status(), key)
+    assert i["indicators"]["network"]["state"] == "NONE"
+    assert i["indicators"]["network"]["lost"] == []
+    assert i["indicators"]["network"]["recovered"] == ["STATUS_LOST"]
 
 
 def test_lost_submit_ack_fences_and_reconciles_same_identity(tmp_path):
@@ -267,6 +294,16 @@ def test_lost_submit_ack_fences_and_reconciles_same_identity(tmp_path):
     assert out["result"] == "OK" and out["state"] == "RUNNING"
     assert worker.submit_calls == 1                    # no duplicate submit
     assert c.jobs[key]["request_id"] is not None
+    # reconciled: the old SUBMIT_LOST no longer lights the lamp
+    i = item(console.status(), key)
+    assert i["indicators"]["network"]["state"] == "NONE"
+    assert i["indicators"]["network"]["recovered"] == ["SUBMIT_LOST"]
+    # a later dropped status query is the *current* loss, not SUBMIT_LOST
+    worker.dead = True
+    assert console.run_action(key, "status_query")["state"] == "UNKNOWN"
+    i = item(console.status(), key)
+    assert i["indicators"]["network"]["state"] == "LOST"
+    assert i["indicators"]["network"]["lost"] == ["STATUS_LOST"]
 
 
 def test_unknown_fence_blocks_other_jobs_new_attempt(tmp_path):
@@ -442,11 +479,44 @@ def test_lost_session_create_reconciles_then_continues(tmp_path):
     out = console.run_action("up-obj-1", "reconcile_upload")
     assert out["result"] == "OK"
     assert out["answer"]["reconciled"] == "not_stored"
+    # the reconciled loss no longer lights the lamp
+    i = item(console.status(), "up-obj-1")
+    assert i["indicators"]["network"] == {"state": "NONE", "lost": []}
     out = console.run_action("up-obj-1", "resume_upload", data=data)
     assert out["result"] == "OK" and out["state"] == "COMPLETE"
     i = item(console.status(), "up-obj-1")
     assert i["stages"]["upload"]["status"] == "UPLOADED"
     assert i["stages"]["verify"]["status"] == "UPLOADED_UNVERIFIED"
+    assert i["indicators"]["network"]["state"] == "NONE"
+
+
+def test_sealed_commit_does_not_keep_a_resolved_session_loss_lit(tmp_path):
+    backend = FakeDriveBackend(provider_checksum="sha256")
+    backend.drops["create_upload_session"] = 1
+    cc, backend, ck = make_commit(tmp_path, backend=backend)
+    with pytest.raises(FilmError, match="UPLOAD_SESSION_UNKNOWN"):
+        cc.run(ck)
+    d = tmp_path / "commit"
+    sd = tmp_path / "state"
+    sd.mkdir()
+    console = ExecutionConsole(state_dir=sd, journal_dirs=[d],
+                             backends={str(d): backend},
+                             upload=dict(UPLOAD), retry=dict(RETRY))
+    commit = item(console.status(), ck)
+    assert commit["indicators"]["network"]["state"] == "LOST"
+    assert commit["indicators"]["network"]["lost"] == ["session"]
+    lost = [i for i in console.status()["items"] if i["kind"] == "upload"
+            and i["indicators"]["network"]["state"] == "LOST"]
+    assert len(lost) == 1
+    out = console.run_action(lost[0]["ref"], "reconcile_upload")
+    assert out["result"] == "OK"
+    out = console.run_action(ck, "resume_upload", data=artifacts())
+    assert out["result"] == "OK" and out["answer"]["state"] == "SEALED"
+    commit = item(console.status(), ck)
+    assert commit["state"] == "SEALED"
+    assert commit["indicators"]["network"] == {"state": "NONE", "lost": []}
+    assert item(console.status(), lost[0]["ref"])["indicators"][
+        "network"]["state"] == "NONE"
 
 
 # -- verified checkpoints only are reusable ------------------------------------------
@@ -606,6 +676,40 @@ def test_reconcile_commit_keeps_every_journal_writer_in_sync(tmp_path):
     loaded = load_journal(up_dir / "job_journal.jsonl")
     assert loaded["tail"] == TAIL_CLEAN
     assert not console.status()["fenced"]
+
+
+def test_injected_tracker_replays_uploads_another_writer_journaled(tmp_path):
+    """A caller-bound tracker opened before a committer ran on the same
+    file is replayed on rebind — it neither shows the sealed commit's
+    objects as un-uploaded nor appends a second UPLOAD_INTENT for them."""
+    backend = FakeDriveBackend(provider_checksum="sha256")
+    d = tmp_path / "commit"
+    tracker = UploadTracker(DurableJournal(d / "job_journal.jsonl"),
+                            backend, upload=UPLOAD, retry=RETRY)
+    cc, backend, ck = make_commit(tmp_path, backend=backend)
+    assert cc.run(ck)["state"] == "SEALED"
+    assert tracker.uploads == {}                     # stale before rebind
+    sd = tmp_path / "state"
+    sd.mkdir()
+    console = ExecutionConsole(state_dir=sd, journal_dirs=[d],
+                             trackers={str(d): tracker},
+                             backends={str(d): backend})
+    commit = item(console.status(), ck)
+    assert commit["state"] == "SEALED"
+    assert commit["stages"]["upload"]["status"] == "UPLOADED"
+    assert all(o["uploaded"] for o in commit["objects"])
+    preview = next(o for o in commit["objects"] if o["kind"] == "preview")
+    up = item(console.status(), f"up-{preview['object_id']}")
+    assert up["state"] == "COMPLETE"
+    assert up["stages"]["verify"]["status"] == "VERIFIED"
+    # the caller's own tracker object now writes on the shared head
+    tracker.put(preview["object_id"], make_png(9))
+    loaded = load_journal(d / "job_journal.jsonl")
+    assert loaded["tail"] == TAIL_CLEAN
+    intents = [r for r in loaded["records"]
+               if r["event"] == "UPLOAD_INTENT"
+               and r["data"]["object_id"] == preview["object_id"]]
+    assert len(intents) == 1
 
 
 # -- verify mismatch: new attempt, never relabel --------------------------------------
