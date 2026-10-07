@@ -161,10 +161,11 @@ def _candidate_row(verdict, candidate, plan, measurement_list,
     measure_map = {m["measurement_id"]: m for m in measurement_list}
     record = measure_map.get(verdict.get("measurement_id"))
     entry = entry_map.get(verdict.get("evidence_id"))
-    state = verdict.get("registry_state")
+    state = field_state = verdict.get("registry_state")
     if record is None:
         record, entry = _stale_record(
             candidate, verdict, measurement_list, entry_map)
+        field_state = STALE
     source = _measurement_source(record, entry) if record else None
     frames = _frames_of(candidate, plan)
     row = {"candidate_id": verdict["candidate_id"],
@@ -204,30 +205,30 @@ def _candidate_row(verdict, candidate, plan, measurement_list,
         row.update({
             "time_ms": {
                 "cold": _measured_field(record, "cold.end_to_end_ms",
-                                        source, state=state,
+                                        source, state=field_state,
                                         entry=entry),
                 "warm": _measured_field(record, "warm.end_to_end_ms",
-                                        source, state=state,
+                                        source, state=field_state,
                                         entry=entry)},
             "peaks": {
                 key: _measured_field(record, f"peaks.{key}", source,
-                                     state=state, entry=entry)
+                                     state=field_state, entry=entry)
                 for key in ("ram_bytes", "disk_bytes", "vram_bytes")},
             "transfer": {
                 key: _measured_field(record, f"transfer.{key}", source,
-                                     state=state, entry=entry)
+                                     state=field_state, entry=entry)
                 for key in ("read_bytes", "write_bytes", "requests")},
             "cache": {
                 key: _measured_field(record, f"cache.{key}", source,
-                                     state=state, entry=entry)
+                                     state=field_state, entry=entry)
                 for key in ("hits", "misses")},
             "usage": {unit: _measured_field(record, f"usage.{unit}",
-                                           source, state=state,
+                                           source, state=field_state,
                                            entry=entry)
                       for unit in (record.get("usage") or {})},
             "manual_minutes": _measured_field(
                 record, "manual.minutes", source,
-                state=state, entry=entry)})
+                state=field_state, entry=entry)})
     raw = frames * _raw_frame_bytes(plan)
     row["output"] = {
         "decoded_frame_bytes": _line(
@@ -410,6 +411,8 @@ def _workspace_check(plan, rows, disk):
         + caps.get("worker_scratch_limit_bytes", 0)
     peaks = [r["peaks"]["disk_bytes"]["value"] for r in rows]
     measured = [v for v in peaks if type(v) is int]
+    missing = [r["candidate_id"] for r, v in zip(rows, peaks)
+               if type(v) is not int]
     # A measured peak of 0 is a real measurement — only a missing one
     # is UNKNOWN.
     measured_peak = max(measured) if measured else None
@@ -428,7 +431,15 @@ def _workspace_check(plan, rows, disk):
                     "no measured disk peak yet"),
                 "peak_within_declared_caps":
                     (measured_peak <= cap_total)
-                    if measured_peak is not None else UNKNOWN}
+                    if measured_peak is not None and not missing
+                    else UNKNOWN}
+    capacity["measured_peak_disk_bytes"]["missing"] = missing
+    if missing and measured_peak is not None:
+        capacity["measured_peak_disk_bytes"].update(
+            partial=True,
+            reason="max over measured candidates only; disk_bytes is "
+                   f"UNKNOWN for {len(missing)} candidate(s), so the "
+                   "cap check stays UNKNOWN")
     return {"reservations": checks, "capacity": capacity,
             "shortfalls": [c for c in checks
                            if c["sufficient"] is False]}

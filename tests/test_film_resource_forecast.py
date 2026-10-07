@@ -27,7 +27,8 @@ from engine.execution_plan import validate_execution_plan
 from engine.execution_workers.subscription import (
     make_entitlement, quote_digest, save_entitlement,
     subscription_worker_id)
-from engine.resource_forecast import _load_entitlements, forecast_plan
+from engine.resource_forecast import (_load_entitlements, _workspace_check,
+                                      forecast_plan)
 from test_anim_017 import perf_project
 
 SERVICE = "chatgpt-code-runtime"
@@ -220,6 +221,74 @@ def test_stale_measurement_is_never_the_current_device(tmp_path):
                  "time_ms", "cold") == 1200
 
 
+def test_stale_sibling_measurement_never_reads_as_measured():
+    """A QUALIFIED probe with no bound measurement lifts the verdict to
+    QUALIFIED_FOR_SCOPE; a sibling evidence that is not current under
+    the observation may still supply its record as provenance, but its
+    numbers are STALE — never MEASURED, never a COVERED usage map."""
+    plan = subscription_plan()
+    candidates = {c["candidate_id"]: c for c in plan_candidates(plan)}
+    scope = candidates["op-a"]["scope"]
+    current_ev = subscription_evidence(scope)
+    old_ev = subscription_evidence(
+        scope, env_extra={"device": "old-box", "session_id": "sess-old"})
+    assert old_ev["evidence_id"] != current_ev["evidence_id"]
+    usage = {"subscription_units": 2, "compute_units": 0,
+             "api_credits": 0, "usd": 0, "handoff_minutes": 1}
+    stale_records = [complete_measurement(old_ev, plan, candidates[op],
+                                          usage=usage)
+                     for op in ("op-a", "op-b")]
+    forecast = forecast_plan(
+        plan, evidence_list=[old_ev, current_ev],
+        measurement_list=stale_records, entitlements=[entitlement()],
+        observation=ps._observation_for(current_ev))
+    for row in forecast["operations"]:
+        if row["kind"] != "operation":
+            continue
+        assert row["registry_state"] == "QUALIFIED_FOR_SCOPE"
+        assert row["evidence_id"] == current_ev["evidence_id"]
+        assert row["measurement_id"] == stale_records[0]["measurement_id"]
+        assert row["selectable"] is False
+        lines = [row["time_ms"]["cold"], row["time_ms"]["warm"],
+                 row["manual_minutes"], *row["peaks"].values(),
+                 *row["transfer"].values(), *row["cache"].values(),
+                 *row["usage"].values()]
+        assert set(row["usage"]) == set(usage)
+        for line in lines:
+            assert line["basis"] == "STALE" and line["value"] == "UNKNOWN"
+            assert line["source"]["evidence_id"] == old_ev["evidence_id"]
+            assert line["source"]["environment"]["device"] == "old-box"
+    totals = forecast["totals"]
+    assert totals["cpu_ms"]["value"] == "UNKNOWN"
+    assert totals["usage"]["subscription_units"]["value"] == "UNKNOWN"
+    section = forecast["subscription"][SERVICE]
+    assert section["charge"]["verdict"] == "USAGE_UNKNOWN"
+    assert section["cost_estimate"]["basis"] != "MEASURED"
+    assert "USAGE_UNKNOWN" in {r["code"] for r in forecast["refusals"]}
+
+    # The verdict's own QUALIFIED evidence with its complete measurement
+    # is still the MEASURED path.
+    own = [complete_measurement(current_ev, plan, candidates[op],
+                                usage=usage) for op in ("op-a", "op-b")]
+    measured = forecast_plan(
+        plan, evidence_list=[old_ev, current_ev],
+        measurement_list=stale_records + own,
+        entitlements=[entitlement()],
+        observation=ps._observation_for(current_ev))
+    for row in measured["operations"]:
+        if row["kind"] != "operation":
+            continue
+        assert row["measurement_id"] == own[0]["measurement_id"]
+        assert row["time_ms"]["cold"]["basis"] == "MEASURED"
+        assert value(row, "time_ms", "cold") == 1200
+        assert row["peaks"]["disk_bytes"]["basis"] == "MEASURED"
+        assert row["usage"]["subscription_units"]["basis"] == "MEASURED"
+        assert row["time_ms"]["cold"]["source"]["environment"][
+            "device"] == "box-forecast"
+    assert measured["subscription"][SERVICE]["charge"]["verdict"] == \
+        "COVERED"
+
+
 def test_expired_capability_is_stale(tmp_path):
     plan = subscription_plan()
     candidates = {c["candidate_id"]: c for c in plan_candidates(plan)}
@@ -297,7 +366,34 @@ def test_measured_zero_disk_peak_stays_measured(tmp_path):
     capacity = forecast["workspace"]["capacity"]
     assert capacity["measured_peak_disk_bytes"]["value"] == 0
     assert capacity["measured_peak_disk_bytes"]["basis"] == "MEASURED"
-    assert capacity["peak_within_declared_caps"] is True
+    # The encode candidate was never measured, so the cap check over a
+    # partial set of peaks stays UNKNOWN.
+    assert capacity["measured_peak_disk_bytes"]["missing"] == \
+        ["encode:FFMPEG"]
+    assert capacity["peak_within_declared_caps"] == "UNKNOWN"
+
+
+def test_peak_within_caps_needs_every_disk_peak():
+    """peak_within_declared_caps is only true/false when every candidate
+    row holds a measured disk peak — a partial set is UNKNOWN."""
+    plan = subscription_plan()
+    cap = plan["workspace"]["pc_cache_limit_bytes"] \
+        + plan["workspace"]["worker_scratch_limit_bytes"]
+
+    def rows(*peaks):
+        return [{"candidate_id": f"c{i}",
+                 "peaks": {"disk_bytes": {"value": peak}}}
+                for i, peak in enumerate(peaks)]
+
+    def flag(*peaks):
+        return _workspace_check(plan, rows(*peaks), None)[
+            "capacity"]["peak_within_declared_caps"]
+
+    assert flag(0, cap) is True
+    assert flag(0, cap + 1) is False
+    assert flag(0, "UNKNOWN") == "UNKNOWN"
+    assert flag(cap + 1, "UNKNOWN") == "UNKNOWN"
+    assert flag("UNKNOWN") == "UNKNOWN"
 
 
 def test_decoded_frame_bytes_counts_encoder_input_once():
