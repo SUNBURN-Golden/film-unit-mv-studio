@@ -36,7 +36,7 @@ import json
 import math
 import re
 
-from .core import (FilmError, digest, frame_at, object_hash, production_profile,
+from .core import (FilmError, frame_at, production_profile,
                    read, safe_path, timecode)
 from .lyrics import (_check, _effective_rows, _font, _source, prepare_lyrics,
                      lyrics_review_fingerprint, timing_fingerprint,
@@ -453,7 +453,12 @@ def evaluate_candidate(project, candidate):
     # Tolerant seam scan first so an invalid candidate still shows every
     # simultaneous/overlapping cue, then the authoritative _check verdict.
     fps = int(_config(p).get("format", {}).get("fps", 24))
-    result["seams"] = _adjacency(checked.get("cues", []), fps)
+    try:
+        result["seams"] = _adjacency(checked.get("cues", []), fps)
+    except (FilmError, KeyError, TypeError, ValueError):
+        # Cues too malformed for even the tolerant scan — _check below
+        # names the defect and returns the documented invalid report.
+        pass
     try:
         checked, warnings = _check(checked, duration)
     except (FilmError, KeyError, TypeError, ValueError) as exc:
@@ -571,7 +576,6 @@ def invalidation_report(project, change="TIMING"):
     p = Path(project)
     config = _config(p)
     profile = production_profile(config)
-    duration = _duration(p)
     report = {"kind": "lyrics_invalidation", "change": change,
               "profile": profile, "facets": dict(FACETS),
               "lyrics_review": {"after": "UNREVIEWED",
@@ -699,6 +703,10 @@ def workbench(project):
                        "missing": source_missing}
 
     document = prepare_lyrics(p)
+    # The stored approval before validate_lyrics strips one it can no longer
+    # bind — kept so the board can tell a stale approval from "never
+    # reviewed" on the analysis-present path too.
+    stored_review = document.get("review")
     warnings = []
     if duration is None:
         warnings.append("analysis/audio.json이 없어 타이밍 범위를 검사할 "
@@ -739,6 +747,12 @@ def workbench(project):
     board["coverage_gaps"] = _coverage_gaps(document)
 
     review = _review_state(document)
+    if review["state"] == "UNREVIEWED" and isinstance(stored_review, dict):
+        # validate_lyrics nulls an unbindable stored approval before this
+        # board sees the document — the honest label for it is the STALE
+        # the fingerprint check below assigns, matching the
+        # missing-analysis path, never "never reviewed".
+        review = _review_state({"review": stored_review})
     try:
         review["current_sha256"] = lyrics_review_fingerprint(p, document)
     except (FilmError, OSError, KeyError, TypeError, ValueError) as exc:

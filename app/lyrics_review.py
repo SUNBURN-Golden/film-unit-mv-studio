@@ -29,7 +29,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import streamlit as st
 
-from engine.core import FilmError, project_mutex, safe_path
+from engine.core import FilmError, project_mutex
 from engine.lyrics import save_timing
 from engine.lyrics_review import (CHANGE_KINDS, cue_at, evaluate_candidate,
                                   invalidation_report, workbench)
@@ -301,14 +301,16 @@ def _candidate_section(p):
     text = st.text_area("또는 후보 JSON 붙여넣기", height=160,
                         key="lr_candidate_text")
     if st.button("후보 검사", key="lr_eval"):
-        content = upload.getvalue().decode("utf-8") if upload else text
-
         def evaluate():
-            return evaluate_candidate(p, json.loads(content))
-        result = _guarded(evaluate)
-        if result is not None:
+            # Decode and parse inside the guard: a non-UTF-8 or non-JSON
+            # upload is an st.error, never an unhandled exception.
+            content = upload.getvalue().decode("utf-8") if upload else text
+            document = json.loads(content)
+            return evaluate_candidate(p, document), document
+        outcome = _guarded(evaluate)
+        if outcome is not None:
             st.session_state["lr_candidate"] = {
-                "report": result, "document": json.loads(content)}
+                "report": outcome[0], "document": outcome[1]}
             st.session_state.pop("lr_candidate_saved", None)
     saved = st.session_state.pop("lr_candidate_saved", None)
     if saved:

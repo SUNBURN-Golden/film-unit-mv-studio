@@ -219,6 +219,27 @@ def test_candidate_evaluate_then_human_save(tmp_path, box):
     assert stored["review"]["timing_sha256"]
 
 
+def test_non_utf8_candidate_upload_shows_error_not_exception(tmp_path, box,
+                                                             monkeypatch):
+    from types import SimpleNamespace
+    project, at = screen(box)
+    import app.lyrics_review as panel_module
+    real_uploader = panel_module.st.file_uploader
+
+    def broken_uploader(label, *args, **kwargs):
+        if kwargs.get("key") == "lr_candidate_file":
+            return SimpleNamespace(getvalue=lambda: b"\xff\xfe not utf-8")
+        return real_uploader(label, *args, **kwargs)
+
+    monkeypatch.setattr(panel_module.st, "file_uploader", broken_uploader)
+    widget(tab(at), "button", "lr_eval").click().run()
+    assert not at.exception
+    board = tab(at)
+    # The decode failure surfaces as a guarded st.error, not an unhandled
+    # Streamlit exception.
+    assert any("처리하지 못했습니다" in e.value for e in board.error)
+
+
 # --- font failure -----------------------------------------------------------------
 
 def test_korean_missing_glyphs_block_final_visibly(tmp_path, box):

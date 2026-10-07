@@ -268,6 +268,20 @@ def test_candidate_overlap_and_source_mismatch_are_named(tmp_path):
     assert not bogus["valid"] and bogus["errors"]
 
 
+def test_malformed_candidate_cues_return_error_report_not_exception(tmp_path):
+    p = fixture_project(tmp_path, seconds=2, shot_count=1, lyric_count=2)
+    # Cue shapes too malformed for even the tolerant seam scan must come
+    # back as the documented invalid report — never raise out of the
+    # engine API.
+    string_cues = evaluate_candidate(p, _candidate(p, cues="C001 C002"))
+    assert string_cues["valid"] is False and string_cues["errors"]
+    null_cues = evaluate_candidate(p, _candidate(p, cues=None))
+    assert null_cues["valid"] is False and null_cues["errors"]
+    partial = evaluate_candidate(p, _candidate(p, cues=[{"id": "A"},
+                                                        {"id": "B"}]))
+    assert partial["valid"] is False and partial["errors"]
+
+
 # --- invalidation scope -------------------------------------------------------
 
 def test_legacy_timing_edit_stales_lock_but_keeps_visual_context(tmp_path):
@@ -379,3 +393,21 @@ def test_workbench_handles_missing_analysis_and_empty_document(tmp_path):
     write(p / "lyrics/lyrics_timed.json", doc)
     board = workbench(p)
     assert board["review"]["state"] == "STALE"
+
+
+def test_stale_stored_review_labelled_stale_with_analysis(tmp_path):
+    p = fixture_project(tmp_path, seconds=2, shot_count=1, lyric_count=2)
+    _time_all(p)
+    doc = prepare_lyrics(p)
+    doc["cues"][0]["start_ms"] += 40
+    write(p / "lyrics/lyrics_timed.json", doc)
+    board = workbench(p)
+    # With analysis present validate_lyrics strips the unbindable stored
+    # approval before the board sees the document — the board still names
+    # it STALE with its reviewer, the same label the missing-analysis
+    # path reports, never "never reviewed".
+    assert board["review"]["state"] == "STALE"
+    assert board["review"]["reviewer"] == REVIEWER
+    assert board["review"]["lyrics_review_sha256"]
+    assert board["review"]["lyrics_review_sha256"] != \
+        board["review"]["current_sha256"]
