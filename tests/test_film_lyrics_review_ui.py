@@ -22,7 +22,7 @@ from engine.animation_migrate import animation_init
 from engine.core import atomic_text, read, write
 from engine.lyrics import prepare_lyrics
 from test_anim_003 import make_sequence
-from test_compiler_v03 import fixture_project
+from test_film_lyrics_review import synthetic_project  # noqa: F401 (fixture)
 
 ROOT = Path(__file__).resolve().parents[1]
 NAME = "compiler_fixture"
@@ -39,16 +39,19 @@ def box(tmp_path, monkeypatch):
 def run_panel(project):
     at = AppTest.from_file(str(ROOT / "app/control_panel.py"),
                            default_timeout=180).run()
-    at.sidebar.selectbox[0].select(NAME).run()
+    # The panel preselects the only project on disk; a second full run is
+    # needed only when it did not land on the fixture.
+    if at.sidebar.selectbox[0].value != NAME:
+        at.sidebar.selectbox[0].select(NAME).run()
+    assert at.sidebar.selectbox[0].value == NAME
     assert not at.exception
     return at
 
 
-def screen(box, *, seconds=3, lyrics=3, animate=False):
+def screen(box, synthetic_project, *, seconds=3, lyrics=3, animate=False):
     projects = box / "projects"
     projects.mkdir()
-    project = fixture_project(projects, seconds=seconds, shot_count=1,
-                              lyric_count=lyrics)
+    project = synthetic_project(projects, seconds=seconds, lyric_count=lyrics)
     if animate:
         animation_init(project)
         import_frame_sequence(
@@ -92,8 +95,8 @@ def _candidate(project):
 
 # --- normal state --------------------------------------------------------------
 
-def test_tab_lists_cues_review_and_source(tmp_path, box):
-    project, at = screen(box)
+def test_tab_lists_cues_review_and_source(tmp_path, box, synthetic_project):
+    project, at = screen(box, synthetic_project)
     board = tab(at)
     metrics = {m.label: m.value for m in board.metric}
     assert metrics["cue"] == "3"
@@ -108,8 +111,9 @@ def test_tab_lists_cues_review_and_source(tmp_path, box):
         ["C001", "C002", "C003"]
 
 
-def test_listening_position_selects_cue_and_gap(tmp_path, box):
-    project, at = screen(box)
+def test_listening_position_selects_cue_and_gap(tmp_path, box,
+                                                synthetic_project):
+    project, at = screen(box, synthetic_project)
     board = tab(at)
     widget(board, "number_input", "lr_position").set_value(1100)
     widget(board, "button", "lr_jump").click().run()
@@ -131,11 +135,11 @@ def test_listening_position_selects_cue_and_gap(tmp_path, box):
 
 # --- empty / error / incomplete states -------------------------------------------
 
-def test_empty_timing_shows_guidance_not_crash(tmp_path, box):
+def test_empty_timing_shows_guidance_not_crash(tmp_path, box,
+                                               synthetic_project):
     projects = box / "projects"
     projects.mkdir()
-    project = fixture_project(projects, seconds=2, shot_count=1,
-                              lyric_count=2)
+    project = synthetic_project(projects, seconds=2, lyric_count=2)
     (project / "lyrics/lyrics_timed.json").unlink()
     at = run_panel(project)
     board = tab(at)
@@ -146,8 +150,10 @@ def test_empty_timing_shows_guidance_not_crash(tmp_path, box):
     assert any("청취 위치를 연결할 수" in i.value for i in board.info)
 
 
-def test_broken_read_model_shows_error_not_blank(tmp_path, box, monkeypatch):
-    project, at = screen(box)
+def test_broken_read_model_shows_error_not_blank(tmp_path, box,
+                                                 synthetic_project,
+                                                 monkeypatch):
+    project, at = screen(box, synthetic_project)
     from engine.core import FilmError
     import app.lyrics_review as panel_module
     monkeypatch.setattr(panel_module, "workbench",
@@ -158,8 +164,9 @@ def test_broken_read_model_shows_error_not_blank(tmp_path, box, monkeypatch):
     assert any("synthetic broken fixture" in e.value for e in board.error)
 
 
-def test_animation_profile_shows_plan_final_invalidation(tmp_path, box):
-    project, at = screen(box, animate=True)
+def test_animation_profile_shows_plan_final_invalidation(tmp_path, box,
+                                                         synthetic_project):
+    project, at = screen(box, synthetic_project, animate=True)
     board = tab(at)
     table = tables(board)
     assert "CUT:I001" in table          # stays bound — cue/font only
@@ -168,8 +175,9 @@ def test_animation_profile_shows_plan_final_invalidation(tmp_path, box):
                for c in board.caption)
 
 
-def test_legacy_profile_shows_production_lock_scope(tmp_path, box):
-    project, at = screen(box)
+def test_legacy_profile_shows_production_lock_scope(tmp_path, box,
+                                                    synthetic_project):
+    project, at = screen(box, synthetic_project)
     board = tab(at)
     table = tables(board)
     assert "production LOCK" in table and "낡음" in table
@@ -179,8 +187,8 @@ def test_legacy_profile_shows_production_lock_scope(tmp_path, box):
 
 # --- source diff -----------------------------------------------------------------
 
-def test_source_edit_shows_pending_diff(tmp_path, box):
-    project, at = screen(box)
+def test_source_edit_shows_pending_diff(tmp_path, box, synthetic_project):
+    project, at = screen(box, synthetic_project)
     atomic_text(project / "input/lyrics.txt",
                 "Synthetic fixture line 01\nA rewritten second line\n"
                 "Synthetic fixture line 03\n")
@@ -195,8 +203,8 @@ def test_source_edit_shows_pending_diff(tmp_path, box):
 
 # --- candidate flow --------------------------------------------------------------
 
-def test_candidate_evaluate_then_human_save(tmp_path, box):
-    project, at = screen(box)
+def test_candidate_evaluate_then_human_save(tmp_path, box, synthetic_project):
+    project, at = screen(box, synthetic_project)
     candidate = _candidate(project)
     widget(tab(at), "text_area", "lr_candidate_text").set_value(
         json.dumps(candidate))
@@ -219,10 +227,10 @@ def test_candidate_evaluate_then_human_save(tmp_path, box):
     assert stored["review"]["timing_sha256"]
 
 
-def test_non_utf8_candidate_upload_shows_error_not_exception(tmp_path, box,
-                                                             monkeypatch):
+def test_non_utf8_candidate_upload_shows_error_not_exception(
+        tmp_path, box, synthetic_project, monkeypatch):
     from types import SimpleNamespace
-    project, at = screen(box)
+    project, at = screen(box, synthetic_project)
     import app.lyrics_review as panel_module
     real_uploader = panel_module.st.file_uploader
 
@@ -242,8 +250,9 @@ def test_non_utf8_candidate_upload_shows_error_not_exception(tmp_path, box,
 
 # --- font failure -----------------------------------------------------------------
 
-def test_korean_missing_glyphs_block_final_visibly(tmp_path, box):
-    project, at = screen(box)
+def test_korean_missing_glyphs_block_final_visibly(tmp_path, box,
+                                                   synthetic_project):
+    project, at = screen(box, synthetic_project)
     atomic_text(project / "input/lyrics.txt", "존재를 긍정해\n마지막 구절\n")
     doc = prepare_lyrics(project)
     rows = [r for r in doc["rows"] if r["kind"] == "lyric"]

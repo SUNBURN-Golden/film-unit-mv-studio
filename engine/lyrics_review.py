@@ -80,27 +80,39 @@ def _safe_area(config):
             "font_size": size}
 
 
-def _text_width(font_file, text, font_size):
-    """Advance-width sum in the resolved font, or None when unmeasurable.
+def _font_metrics(font_file):
+    """The resolved font's advance widths and cmap as plain dicts, read once
+    per board, or None when the file is unreadable.
 
     fontTools is already a declared dependency (the cmap check in
-    `engine.lyrics._font` uses it). Characters missing from the cmap are
-    counted at the full advance — they are reported separately as missing
-    glyphs anyway.
+    `engine.lyrics._font` uses it). Only copies leave the `with` block, so
+    the font file is closed before any cue is measured.
     """
     try:
         from fontTools.ttLib import TTFont
         with TTFont(font_file, fontNumber=0) as font:
-            units = font["head"].unitsPerEm
-            hmtx = font["hmtx"]
-            cmap = font.getBestCmap() or {}
-            width_units = 0
-            for char in text:
-                glyph = cmap.get(ord(char))
-                # A missing glyph measures at a full em — conservative for
-                # CJK text, and it is flagged separately as missing anyway.
-                width_units += hmtx[glyph][0] if glyph else units
-            return int(round(width_units * font_size / units))
+            return {"units": font["head"].unitsPerEm,
+                    "advances": dict(font["hmtx"].metrics),
+                    "cmap": dict(font.getBestCmap() or {})}
+    except Exception:
+        return None
+
+
+def _text_width(metrics, text, font_size):
+    """Advance-width sum in the resolved font, or None when unmeasurable.
+
+    Characters missing from the cmap are counted at the full advance — they
+    are reported separately as missing glyphs anyway.
+    """
+    try:
+        units = metrics["units"]
+        width_units = 0
+        for char in text:
+            glyph = metrics["cmap"].get(ord(char))
+            # A missing glyph measures at a full em — conservative for CJK
+            # text, and it is flagged separately as missing anyway.
+            width_units += metrics["advances"][glyph][0] if glyph else units
+        return int(round(width_units * font_size / units))
     except Exception:
         return None
 
@@ -109,13 +121,14 @@ def _cue_rows(document, fps, font_file, area):
     """One display row per cue: text, ms + integer-frame boundaries, the
     reading metrics and the advisory flags."""
     rows = []
+    metrics = _font_metrics(font_file) if font_file else None
     for index, cue in enumerate(document.get("cues", [])):
         start, end = cue["start_ms"], cue["end_ms"]
         text = cue["text"]
         duration = end - start
         cps = round(len(text) / (duration / 1000), 1) if duration else None
-        measured = _text_width(font_file, text, area["font_size"]) \
-            if font_file else None
+        measured = _text_width(metrics, text, area["font_size"]) \
+            if metrics else None
         estimate = int(round(len(text) * area["font_size"]))
         width_px = measured if measured is not None else estimate
         lines = max(1, math.ceil(width_px / max(1, area["usable_width_px"])))
@@ -511,11 +524,12 @@ def _legacy_lock_state(p):
 def _review_state(document):
     review = document.get("review")
     # The same liveness rule the gates apply (_check/validate_lyrics): a
-    # stored review counts only while it carries the review schema version
-    # they read and names the human who affirmed it — a record without
-    # either is the "never reviewed" every gate enforces, whatever hash it
-    # claims.
-    if review and review.get("schema_version") == REVIEW_SCHEMA_VERSION \
+    # stored review counts only while it is a record that carries the
+    # review schema version they read and names the human who affirmed it
+    # — anything else, including a hand-edited non-mapping, is the "never
+    # reviewed" every gate enforces, whatever hash it claims.
+    if isinstance(review, dict) \
+            and review.get("schema_version") == REVIEW_SCHEMA_VERSION \
             and str(review.get("reviewer", "")).strip():
         return {"state": "CURRENT", "reviewer": review.get("reviewer"),
                 "reviewed_at": review.get("reviewed_at"),

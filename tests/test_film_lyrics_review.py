@@ -10,10 +10,12 @@ records here are protocol fixtures, never artwork approval —
 qualification UNQUALIFIED, acceptance PENDING, release NOT_AUTHORIZED.
 """
 import json
+import shutil
 from pathlib import Path
 
 import pytest
 
+from engine.animation_migrate import animation_init
 from engine.core import (FilmError, atomic_text, digest, frame_at,
                          production_fingerprint, read,
                          visual_context_fingerprint, write)
@@ -23,10 +25,38 @@ from engine.lyrics_review import (cue_at, evaluate_candidate,
                                   invalidation_report, source_diff,
                                   workbench)
 
-from test_anim_003 import animation_project, make_sequence
+from test_anim_003 import make_sequence
 from test_compiler_v03 import fixture_project
 
 REVIEWER = "Synthetic fixture reviewer"
+
+
+@pytest.fixture(scope="session")
+def synthetic_project(tmp_path_factory):
+    """Pristine per-test copies of each synthetic fixture shape.
+
+    `fixture_project` renders a PCM master with ffmpeg and probes it on
+    every call. The tree it leaves holds only relative paths and content
+    hashes, so building each (seconds, shots, lyric rows) shape once and
+    copying it under the test's own tmp_path hands the test the same
+    project it would have built — without the per-test ffmpeg round trip.
+    """
+    root = tmp_path_factory.mktemp("lyrics_review_fixtures")
+    built = {}
+
+    def make(tmp_path, *, seconds, lyric_count, shot_count=1):
+        key = (seconds, shot_count, lyric_count)
+        if key not in built:
+            folder = root / f"s{seconds}_shots{shot_count}_rows{lyric_count}"
+            folder.mkdir()
+            built[key] = fixture_project(folder, seconds=seconds,
+                                         shot_count=shot_count,
+                                         lyric_count=lyric_count)
+        target = Path(tmp_path) / built[key].name
+        shutil.copytree(built[key], target)
+        return target
+
+    return make
 
 
 def _time_all(p, reviewer=REVIEWER):
@@ -48,8 +78,9 @@ def _write_lyrics(p, text):
 
 # --- workbench read model -------------------------------------------------
 
-def test_workbench_reads_reviewed_document_and_frames(tmp_path):
-    p = fixture_project(tmp_path, seconds=3, shot_count=1, lyric_count=3)
+def test_workbench_reads_reviewed_document_and_frames(tmp_path,
+                                                      synthetic_project):
+    p = synthetic_project(tmp_path, seconds=3, lyric_count=3)
     board = workbench(p)
     assert board["profile"] == "LEGACY_MV"
     assert board["duration_ms"] == 3000
@@ -64,8 +95,9 @@ def test_workbench_reads_reviewed_document_and_frames(tmp_path):
     assert board["rows"]["unresolved"] == []
 
 
-def test_cue_at_links_listening_position_to_selection(tmp_path):
-    p = fixture_project(tmp_path, seconds=3, shot_count=1, lyric_count=3)
+def test_cue_at_links_listening_position_to_selection(tmp_path,
+                                                      synthetic_project):
+    p = synthetic_project(tmp_path, seconds=3, lyric_count=3)
     board = workbench(p)
     cues = board["cues"]
     on = cue_at({"cues": cues}, cues[0]["start_ms"] + 5, fps=24)
@@ -88,8 +120,9 @@ def test_cue_at_links_listening_position_to_selection(tmp_path):
         cue_at({"cues": cues}, -1)
 
 
-def test_repeat_marker_requires_explicit_expansion(tmp_path):
-    p = fixture_project(tmp_path, seconds=4, shot_count=1, lyric_count=2)
+def test_repeat_marker_requires_explicit_expansion(tmp_path,
+                                                   synthetic_project):
+    p = synthetic_project(tmp_path, seconds=4, lyric_count=2)
     _write_lyrics(p, "[hook]\nRoots remain\n[verse]\nWe belong\n[hook]\n")
     doc = prepare_lyrics(p)
     marker = next(r for r in doc["rows"] if r["kind"] == "repeat")
@@ -118,8 +151,9 @@ def test_repeat_marker_requires_explicit_expansion(tmp_path):
     assert timed["effective_id"] == "L0005:L0002"
 
 
-def test_back_to_back_and_tight_gap_seams_are_explained(tmp_path):
-    p = fixture_project(tmp_path, seconds=3, shot_count=1, lyric_count=3)
+def test_back_to_back_and_tight_gap_seams_are_explained(tmp_path,
+                                                        synthetic_project):
+    p = synthetic_project(tmp_path, seconds=3, lyric_count=3)
     doc = prepare_lyrics(p)
     rows = [r for r in doc["rows"] if r["kind"] == "lyric"]
     doc["cues"] = [
@@ -136,8 +170,9 @@ def test_back_to_back_and_tight_gap_seams_are_explained(tmp_path):
     assert board["counts"]["back_to_back"] == 1
 
 
-def test_long_line_fast_read_and_coverage_gap_flags(tmp_path):
-    p = fixture_project(tmp_path, seconds=3, shot_count=1, lyric_count=1)
+def test_long_line_fast_read_and_coverage_gap_flags(tmp_path,
+                                                    synthetic_project):
+    p = synthetic_project(tmp_path, seconds=3, lyric_count=1)
     _write_lyrics(p, "짧은 첫 구절\n"
                      + "아주 길게 이어지는 두 번째 구절로 화면 가운데 "
                        "세 줄 이상이 필요할 만큼 아주 길고 길게 쓴 가사를 "
@@ -167,8 +202,9 @@ def test_long_line_fast_read_and_coverage_gap_flags(tmp_path):
     assert board["coverage_gaps"][0]["text"] == rows[2]["text"]
 
 
-def test_korean_missing_glyphs_named_per_cue_and_final_blocked(tmp_path):
-    p = fixture_project(tmp_path, seconds=2, shot_count=1, lyric_count=1)
+def test_korean_missing_glyphs_named_per_cue_and_final_blocked(
+        tmp_path, synthetic_project):
+    p = synthetic_project(tmp_path, seconds=2, lyric_count=1)
     _write_lyrics(p, "존재를 긍정해\n")
     _time_all(p)
     board = workbench(p)
@@ -187,8 +223,9 @@ def test_korean_missing_glyphs_named_per_cue_and_final_blocked(tmp_path):
 
 # --- source diff ------------------------------------------------------------
 
-def test_source_diff_shows_pending_edit_and_invalidated_base(tmp_path):
-    p = fixture_project(tmp_path, seconds=3, shot_count=1, lyric_count=2)
+def test_source_diff_shows_pending_edit_and_invalidated_base(
+        tmp_path, synthetic_project):
+    p = synthetic_project(tmp_path, seconds=3, lyric_count=2)
     _time_all(p)
     _write_lyrics(p, "Synthetic fixture line 01\nA changed second line\n")
     diff = source_diff(p)
@@ -225,8 +262,9 @@ def _candidate(p, **overrides):
     return candidate
 
 
-def test_asr_candidate_is_never_treated_as_reviewed(tmp_path):
-    p = fixture_project(tmp_path, seconds=2, shot_count=1, lyric_count=2)
+def test_asr_candidate_is_never_treated_as_reviewed(tmp_path,
+                                                    synthetic_project):
+    p = synthetic_project(tmp_path, seconds=2, lyric_count=2)
     candidate = _candidate(p)
     # Even a candidate smuggled in with a review record stays UNREVIEWED.
     candidate["review"] = {"schema_version": 2, "reviewer": "ASR bot",
@@ -251,8 +289,9 @@ def test_asr_candidate_is_never_treated_as_reviewed(tmp_path):
     assert board["review"]["state"] == "CURRENT"
 
 
-def test_candidate_overlap_and_source_mismatch_are_named(tmp_path):
-    p = fixture_project(tmp_path, seconds=2, shot_count=1, lyric_count=2)
+def test_candidate_overlap_and_source_mismatch_are_named(tmp_path,
+                                                         synthetic_project):
+    p = synthetic_project(tmp_path, seconds=2, lyric_count=2)
     candidate = _candidate(p)
     candidate["cues"][1]["start_ms"] = candidate["cues"][0]["end_ms"] - 100
     result = evaluate_candidate(p, candidate)
@@ -268,8 +307,9 @@ def test_candidate_overlap_and_source_mismatch_are_named(tmp_path):
     assert not bogus["valid"] and bogus["errors"]
 
 
-def test_malformed_candidate_cues_return_error_report_not_exception(tmp_path):
-    p = fixture_project(tmp_path, seconds=2, shot_count=1, lyric_count=2)
+def test_malformed_candidate_cues_return_error_report_not_exception(
+        tmp_path, synthetic_project):
+    p = synthetic_project(tmp_path, seconds=2, lyric_count=2)
     # Cue shapes too malformed for even the tolerant seam scan must come
     # back as the documented invalid report — never raise out of the
     # engine API.
@@ -290,8 +330,9 @@ def test_malformed_candidate_cues_return_error_report_not_exception(tmp_path):
 
 # --- invalidation scope -------------------------------------------------------
 
-def test_legacy_timing_edit_stales_lock_but_keeps_visual_context(tmp_path):
-    p = fixture_project(tmp_path, seconds=2, shot_count=1, lyric_count=2)
+def test_legacy_timing_edit_stales_lock_but_keeps_visual_context(
+        tmp_path, synthetic_project):
+    p = synthetic_project(tmp_path, seconds=2, lyric_count=2)
     from engine.core import lock_production
     lock_production(p, "fixture approver")
     report = invalidation_report(p, "TIMING")
@@ -313,8 +354,11 @@ def test_legacy_timing_edit_stales_lock_but_keeps_visual_context(tmp_path):
     assert any("영상" in s for s in source_report["projection"]["stale"])
 
 
-def test_animation_cue_font_changes_invalidate_subbed_only(tmp_path):
-    p = animation_project(tmp_path, shot_count=2, seconds=2)
+def test_animation_cue_font_changes_invalidate_subbed_only(tmp_path,
+                                                           synthetic_project):
+    p = synthetic_project(tmp_path, seconds=2, lyric_count=2,
+                          shot_count=2)
+    animation_init(p)
     from engine.animation_assets import import_frame_sequence
     for index in range(2):
         import_frame_sequence(
@@ -343,8 +387,11 @@ def test_animation_cue_font_changes_invalidate_subbed_only(tmp_path):
     assert not source["survives"]
 
 
-def test_animation_invalidation_without_sequence_pins_still_reports(tmp_path):
-    p = animation_project(tmp_path, shot_count=2, seconds=2)
+def test_animation_invalidation_without_sequence_pins_still_reports(
+        tmp_path, synthetic_project):
+    p = synthetic_project(tmp_path, seconds=2, lyric_count=2,
+                          shot_count=2)
+    animation_init(p)
     report = invalidation_report(p, "TIMING")
     proj = report["projection"]
     # With no adopted sequences the ANIM-020 graph cannot be built; the
@@ -355,8 +402,9 @@ def test_animation_invalidation_without_sequence_pins_still_reports(tmp_path):
 
 # --- sealed build clean/subbed separation -------------------------------------
 
-def test_build_summary_separates_clean_and_subbed_lyric_binding(tmp_path):
-    p = fixture_project(tmp_path, seconds=2, shot_count=1, lyric_count=2)
+def test_build_summary_separates_clean_and_subbed_lyric_binding(
+        tmp_path, synthetic_project):
+    p = synthetic_project(tmp_path, seconds=2, lyric_count=2)
     from engine.compiler import compile_preview
     compile_preview(p)
     board = workbench(p)
@@ -381,8 +429,9 @@ def test_build_summary_separates_clean_and_subbed_lyric_binding(tmp_path):
         p / "builds/B0001/MASTER_SUBBED.mp4")
 
 
-def test_workbench_handles_missing_analysis_and_empty_document(tmp_path):
-    p = fixture_project(tmp_path, seconds=2, shot_count=1, lyric_count=2)
+def test_workbench_handles_missing_analysis_and_empty_document(
+        tmp_path, synthetic_project):
+    p = synthetic_project(tmp_path, seconds=2, lyric_count=2)
     (p / "analysis/audio.json").unlink()
     board = workbench(p)
     assert board["duration_ms"] is None
@@ -401,8 +450,9 @@ def test_workbench_handles_missing_analysis_and_empty_document(tmp_path):
     assert board["review"]["state"] == "STALE"
 
 
-def test_stale_stored_review_labelled_stale_with_analysis(tmp_path):
-    p = fixture_project(tmp_path, seconds=2, shot_count=1, lyric_count=2)
+def test_stale_stored_review_labelled_stale_with_analysis(tmp_path,
+                                                          synthetic_project):
+    p = synthetic_project(tmp_path, seconds=2, lyric_count=2)
     _time_all(p)
     doc = prepare_lyrics(p)
     doc["cues"][0]["start_ms"] += 40
@@ -419,8 +469,9 @@ def test_stale_stored_review_labelled_stale_with_analysis(tmp_path):
         board["review"]["current_sha256"]
 
 
-def test_review_record_with_wrong_schema_version_is_never_current(tmp_path):
-    p = fixture_project(tmp_path, seconds=2, shot_count=1, lyric_count=2)
+def test_review_record_with_wrong_schema_version_is_never_current(
+        tmp_path, synthetic_project):
+    p = synthetic_project(tmp_path, seconds=2, lyric_count=2)
     _time_all(p)
     doc = prepare_lyrics(p)
     # A hand-edited record whose own schema_version no gate reads, with an
@@ -436,8 +487,9 @@ def test_review_record_with_wrong_schema_version_is_never_current(tmp_path):
     assert board["review"]["state"] == "UNREVIEWED"
 
 
-def test_review_record_with_blank_reviewer_is_never_current(tmp_path):
-    p = fixture_project(tmp_path, seconds=2, shot_count=1, lyric_count=2)
+def test_review_record_with_blank_reviewer_is_never_current(tmp_path,
+                                                            synthetic_project):
+    p = synthetic_project(tmp_path, seconds=2, lyric_count=2)
     _time_all(p)
     doc = prepare_lyrics(p)
     # A hand-edited record with no named human affirmation but intact
@@ -453,8 +505,9 @@ def test_review_record_with_blank_reviewer_is_never_current(tmp_path):
     assert board["review"]["state"] == "UNREVIEWED"
 
 
-def test_review_record_with_wrong_timing_binding_is_never_current(tmp_path):
-    p = fixture_project(tmp_path, seconds=2, shot_count=1, lyric_count=2)
+def test_review_record_with_wrong_timing_binding_is_never_current(
+        tmp_path, synthetic_project):
+    p = synthetic_project(tmp_path, seconds=2, lyric_count=2)
     _time_all(p)
     doc = prepare_lyrics(p)
     # A hand-edited record whose timing binding no longer names the
@@ -470,3 +523,22 @@ def test_review_record_with_wrong_timing_binding_is_never_current(tmp_path):
     (p / "analysis/audio.json").unlink()
     board = workbench(p)
     assert board["review"]["state"] == "STALE"
+
+
+@pytest.mark.parametrize("record", ["approved", ["approved"]])
+def test_review_record_that_is_not_a_mapping_is_never_current(
+        tmp_path, synthetic_project, record):
+    p = synthetic_project(tmp_path, seconds=2, lyric_count=2)
+    _time_all(p)
+    doc = prepare_lyrics(p)
+    # A hand-edited `review` that is not a record at all: _check drops it
+    # as unreviewed (engine/lyrics.py isinstance rule), so the board must
+    # say UNREVIEWED on both paths — and the missing-analysis path, where
+    # nothing sanitizes the stored document first, must not raise.
+    doc["review"] = record
+    write(p / "lyrics/lyrics_timed.json", doc)
+    board = workbench(p)
+    assert board["review"]["state"] == "UNREVIEWED"
+    (p / "analysis/audio.json").unlink()
+    board = workbench(p)
+    assert board["review"]["state"] == "UNREVIEWED"
