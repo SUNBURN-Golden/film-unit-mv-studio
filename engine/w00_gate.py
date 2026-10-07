@@ -36,6 +36,10 @@ work; the records are protocol evidence. Synthetic reviewers are declared
 `SYNTHETIC_FIXTURE` — their records are development evidence only and the
 reported facets stay qualification UNQUALIFIED, acceptance PENDING,
 release NOT_AUTHORIZED.
+
+Schema note: the `w00_pilot`, `approver_delegation`, `w00_spend_approval`
+and `delivery_approval` record types are ANIM-022 additions pending an
+ADR amendment in docs/adr.
 """
 import hashlib
 import json
@@ -47,7 +51,8 @@ from .animation_assets import load_registry
 from .animation_locks import (EVIDENCE_FACETS, EVIDENCE_NOTE, WAVES_PATH,
                               WAVE_ID, _initial_wave, latest_route_decision,
                               load_waves, lock_status)
-from .animation_review import (LIMITATION_DISPOSITIONS, _build_folder,
+from .animation_review import (BINDING_FIELDS, LIMITATION_DISPOSITIONS,
+                               _build_folder, _deliverable_path,
                                _film_binding_current, _issue_list,
                                bound_targets, film_review_status,
                                load_reviews, record_film_review,
@@ -55,7 +60,7 @@ from .animation_review import (LIMITATION_DISPOSITIONS, _build_folder,
 from .animation_schema import (canon_bytes, check_document,
                                load_animation_timeline,
                                require_animation_profile)
-from .builds import list_builds
+from .builds import list_builds, verify_build
 from .core import FilmError, atomic_text, digest, now, project_mutex, read, \
     safe_path
 from .render_provenance import _current_stale, build_manifest, manifest_digest
@@ -704,6 +709,42 @@ def approve_delivery(project, build_id, deliverable, *, approver,
         return {"review": review, "approval": audit}
 
 
+def _clean_film_binding_current(folder, record):
+    """The MASTER_CLEAN.mp4 subset of a sealed FINAL_FILM binding.
+
+    ADR 0001 §8: a font/cue change stales the subbed master and the
+    subbed delivery, never the clean master. The clean approval stays
+    CURRENT while its clean-relevant bindings verify on disk — the
+    deliverable's own digest, the build record and sealed inventory, the
+    edit digest and the audio. The bound font/lyrics-review digests and
+    the subbed frame-sequence root do not apply to the clean file.
+    """
+    try:
+        fields = {k: record[k] for k in BINDING_FIELDS["FINAL_FILM"]}
+        if hashlib.sha256(canon_bytes(fields)).hexdigest() \
+                != record["binding_sha256"]:
+            return False
+        deliverable = _deliverable_path(folder, record["deliverable"])
+        if not deliverable.is_file() \
+                or digest(deliverable) != record["deliverable_sha256"]:
+            return False
+        build_file = folder / "build.json"
+        if not build_file.is_file() \
+                or digest(build_file) != record["build_manifest_sha256"]:
+            return False
+        if not verify_build(folder)["valid"]:
+            return False
+        build = read(build_file)
+        if build["edit_digest"] != record["edit_digest"]:
+            return False
+        master = safe_path(folder, build["audio"]["path"])
+        return master.is_file() \
+            and digest(master) == record["audio_sha256"]
+    except (AttributeError, FilmError, OSError, KeyError, TypeError,
+            ValueError):
+        return False
+
+
 def deliverable_status(project, build_id):
     """Per-deliverable approval state of one sealed build.
 
@@ -729,9 +770,12 @@ def deliverable_status(project, build_id):
         records = [r for r in reviews if r["scope"] == "FINAL_FILM"
                    and r["build_id"] == build_id
                    and r["deliverable"] == deliverable]
+        current = _clean_film_binding_current \
+            if deliverable == "MASTER_CLEAN.mp4" \
+            else _film_binding_current
         bound = [r for r in records
                  if r["build_manifest_sha256"] == manifest_sha
-                 and _film_binding_current(folder, r)]
+                 and current(folder, r)]
         latest = bound[-1] if bound else None
         approved = latest is not None and _approves(latest)
         audit = audit_for.get(latest["review_id"]) if latest else None
@@ -830,6 +874,10 @@ def gate_status(project):
         decision = latest_route_decision(p, initial) \
             if targets["declared"] else None
         rows = _pilot_rows(p, targets, bindings, pilots, manifest_ref)
+        # OUT_OF_SCOPE rows are append-only history for targets that left
+        # the W00 scope; gate reasons consider current targets only.
+        scope_rows = [row for row in rows
+                      if row["state"] != "OUT_OF_SCOPE"]
 
         reasons = []
         if not targets["declared"]:
@@ -842,7 +890,7 @@ def gate_status(project):
             if wave_lock.get("state") != "CURRENT":
                 reasons.append(f"WAVE_LOCK {initial} is "
                                f"{wave_lock.get('state', 'UNLOCKED')}")
-            for row in rows:
+            for row in scope_rows:
                 if row["state"] != "CURRENT":
                     detail = ("no pilot record"
                               if row["state"] == "NO_PILOT_RECORD"
@@ -898,7 +946,7 @@ def gate_status(project):
                         f"additional-spend approval bound to "
                         f"{decision['decision_id']}")
         if decision is not None and decision["decision"] == "KEEP":
-            for row in rows:
+            for row in scope_rows:
                 if row["state"] == "CURRENT" \
                         and row["decision"] != "KEEP":
                     reasons.append(

@@ -748,6 +748,8 @@ def _output(p, entries, locks, route, reviews):
     if c1.button("최종 승인 기록 (approve-film)", key="an_final_ok"):
         _do(lambda: _approve_film(p, pick, reviewer, "APPROVED"),
             f"{pick['build_id']} 최종 승인을 기록했습니다")
+    c1.caption("protocol 검토 기록 전용 — governed 전달 승인(박준태 또는 "
+               "기록된 위임자)은 아래 전달 파일별 승인에서 진행합니다.")
     if c2.button("최종 수정 필요 기록", key="an_final_fix"):
         _do(lambda: _approve_film(p, pick, reviewer, "FIX_REQUIRED"),
             f"{pick['build_id']} 수정 필요를 기록했습니다")

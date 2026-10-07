@@ -21,15 +21,18 @@ from engine.animation_compiler import compile_final_candidate
 from engine.animation_locks import (declare_waves, record_final_lock,
                                     record_plan_lock, record_route_decision,
                                     record_wave_lock)
-from engine.animation_review import (record_cut_review,
+from engine.animation_review import (_film_binding_current, append_review,
+                                     binding_digest, load_reviews,
+                                     record_cut_review,
                                      record_transition_review)
 from engine.animation_schema import canon_bytes, read_canon, write_canon
 from engine.autopilot import autopilot
 from engine.builds import verify_build
 from engine.core import FilmError, read, write
-from engine.w00_gate import (PILOTS_PATH, approve_delivery,
-                             deliverable_status, gate_status, load_pilots,
-                             pilot_targets, record_delegation, record_pilot,
+from engine.w00_gate import (PILOTS_PATH, _clean_film_binding_current,
+                             approve_delivery, deliverable_status,
+                             gate_status, load_pilots, pilot_targets,
+                             record_delegation, record_pilot,
                              record_spend_approval, validate_pilot)
 from engine.segment_fake import configure_fake
 from engine.segment_gen import (import_segment_control, segment_import,
@@ -527,6 +530,24 @@ def test_orphaned_pilot_reports_out_of_scope(tmp_path):
     assert rows["T001"]["state"] == "OUT_OF_SCOPE"
     assert "T001" not in gate["pilot_targets"]["transitions"]
     assert "T005" in gate["pilot_targets"]["transitions"]
+    # The rename stales the plan binding; re-lock and review the renamed
+    # transition so only its missing pilot blocks the gate.
+    record_plan_lock(p, APPROVER)
+    record_transition_review(p, "T005", reviewer=REVIEWER,
+                             methods=TRANSITION_METHODS)
+    _decide(p)
+    gate = gate_status(p)
+    # The orphaned T001 record is history: it must not keep the gate
+    # blocked — only the live T005 target's missing pilot does.
+    assert gate["gate"]["state"] == "BLOCKED"
+    assert gate["gate"]["reasons"] == ["T005: no pilot record"]
+    record_pilot(p, "T005", decision="KEEP", reviewer="r",
+                 reviewer_kind="SYNTHETIC_FIXTURE", reason="fixture")
+    gate = gate_status(p)
+    assert gate["gate"]["state"] == "OPEN"
+    rows = {r["target_id"]: r for r in gate["pilots"]}
+    assert rows["T005"]["state"] == "CURRENT"
+    assert rows["T001"]["state"] == "OUT_OF_SCOPE"
 
 
 def test_stale_film_approval_never_carries_to_new_hash(tmp_path):
@@ -583,6 +604,50 @@ def test_clean_and_subbed_approve_separately(tmp_path):
     assert gate["facets"]["release_state"] == "NOT_AUTHORIZED"
     assert _tree_hash(folder) == before
     assert verify_build(folder)["valid"] is True
+
+
+def test_clean_approval_ignores_font_and_cue_bindings(tmp_path):
+    p = w00_project(tmp_path)
+    build_id = _final_build(p, tmp_path)
+    approve_delivery(p, build_id, "MASTER_CLEAN.mp4",
+                     approver=PRIMARY, reviewer_kind="HUMAN")
+    approve_delivery(p, build_id, "MASTER_SUBBED.mp4",
+                     approver=PRIMARY, reviewer_kind="HUMAN")
+    status = deliverable_status(p, build_id)
+    assert all(row["state"] == "CURRENT"
+               for row in status["deliverables"].values())
+    folder = _build_folder(p, build_id)
+    # A font/cue change stales the subbed master and the subbed delivery
+    # only (ADR 0001 §8). Every file in the sealed build is in its
+    # inventory, so the change is simulated on the record side: the same
+    # approval bound to different font/lyrics-review digests.
+    by_deliverable = {r["deliverable"]: r for r in load_reviews(p)
+                      if r["scope"] == "FINAL_FILM"}
+
+    def rebound(deliverable, review_id):
+        record = dict(by_deliverable[deliverable])
+        record["review_id"] = review_id
+        record["font_sha256"] = "0" * 64
+        record["lyrics_review_sha256"] = "1" * 64
+        record["binding_sha256"] = binding_digest(record)
+        return append_review(p, record)
+
+    changed_clean = rebound("MASTER_CLEAN.mp4", "RV0090")
+    changed_subbed = rebound("MASTER_SUBBED.mp4", "RV0091")
+    # Predicate level: the changed font/cue binding fails the subbed
+    # check but is irrelevant to the clean-only bindings.
+    assert _film_binding_current(folder, changed_subbed) is False
+    assert _clean_film_binding_current(folder, changed_clean) is True
+    status = deliverable_status(p, build_id)
+    clean = status["deliverables"]["MASTER_CLEAN.mp4"]
+    subbed = status["deliverables"]["MASTER_SUBBED.mp4"]
+    # The clean approval treats the record as current; the subbed side
+    # rejects it as stale and keeps the last still-bound approval.
+    assert clean["state"] == "CURRENT"
+    assert clean["review_id"] == "RV0090"
+    assert subbed["state"] == "CURRENT"
+    assert subbed["review_id"] \
+        == by_deliverable["MASTER_SUBBED.mp4"]["review_id"]
 
 
 def test_delivery_approver_rule_and_unknown_deliverable(tmp_path):
