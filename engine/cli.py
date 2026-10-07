@@ -189,6 +189,22 @@ def main(argv=None):
     seal_rec.add_argument("commit_dir")
     seal_rec.add_argument("--root", required=True,
                           help="Archive backend root (objects/)")
+    exec_status = sub.add_parser("execution-status", help="Node film-execution-console: derived read model of execution state — per-stage status for jobs/uploads/commits/pipelines; never a second source of truth")
+    exec_status.add_argument("state_dir",
+                             help="Coordinator state dir (jobs + journal)")
+    exec_status.add_argument("--journal-dir", action="append", default=[],
+                             help="Extra dir holding a job_journal.jsonl "
+                                  "(upload/commit scopes); repeatable")
+    exec_status.add_argument("--perf-root", action="append", default=[],
+                             help="Dir holding a committed perf state.json; "
+                                  "repeatable")
+    exec_explain = sub.add_parser("execution-explain", help="film-execution-console: stop point, reusable verified artifacts, new-attempt verdict and recovery offers for one item (job_key, up-<object_id> or commit key)")
+    exec_explain.add_argument("state_dir")
+    exec_explain.add_argument("item",
+                              help="item_id (job:<key> / upload:<id> / "
+                                   "commit:<key>) or the bare ref")
+    exec_explain.add_argument("--journal-dir", action="append", default=[])
+    exec_explain.add_argument("--perf-root", action="append", default=[])
     for name in ["review-cut", "review-transition"]:
         review = sub.add_parser(name, help="FRAME_ANIMATION_V1: record a human review bound to the current adopted digests")
         review.add_argument("project")
@@ -565,6 +581,16 @@ def main(argv=None):
         elif a.command == "archive-seal-reconcile":
             from .journal_cli import archive_seal_reconcile
             result = archive_seal_reconcile(a.commit_dir, a.root)
+        elif a.command == "execution-status":
+            from .execution_console import execution_status
+            result = execution_status(a.state_dir,
+                                      journal_dirs=a.journal_dir,
+                                      perf_roots=a.perf_root)
+        elif a.command == "execution-explain":
+            from .execution_console import execution_explain
+            result = execution_explain(a.state_dir, a.item,
+                                       journal_dirs=a.journal_dir,
+                                       perf_roots=a.perf_root)
         elif a.command == "review-cut":
             from .animation_review import record_cut_review
             with project_mutex(a.project):
