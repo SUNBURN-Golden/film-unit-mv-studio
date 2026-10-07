@@ -473,15 +473,109 @@ def test_build_audio_contract_path_stays_inside_the_build(built):
 
 def test_font_finding_repro_names_the_build(built):
     p, build_id = built
-    # Point the subtitle font at a non-font file: the cmap check cannot
-    # verify coverage, so a FONT_* finding is guaranteed on any box.
-    config = read(Path(p) / "project.yaml")
-    config["subtitles"] = {"font_file": "input/brief.md"}
-    write(Path(p) / "project.yaml", config)
+    # Replace the build's sealed subtitle font with a non-font file: the
+    # cmap check cannot verify coverage, so a FONT_* finding is guaranteed
+    # on any box.
+    fonts_dir = Path(p) / "builds" / build_id / "subtitle_fonts"
+    fonts_dir.mkdir(exist_ok=True)
+    for sealed in fonts_dir.glob("subtitle.*"):
+        sealed.unlink()
+    (fonts_dir / "subtitle.ttf").write_bytes(b"not a font")
     report = diagnose_build(p, build_id)
     fonts = [f for f in report["findings"] if f["kind"].startswith("FONT_")]
     assert fonts
     assert all(f["repro"].endswith("--build " + build_id) for f in fonts)
+
+
+def _tree(folder):
+    return {str(f.relative_to(folder)): digest(f)
+            for f in Path(folder).rglob("*") if f.is_file()} \
+        if Path(folder).is_dir() else {}
+
+
+def test_build_labels_and_font_come_from_what_the_build_sealed(built):
+    p, build_id = built
+    before = diagnose_build(p, build_id, store=False)
+    assert not [d for d in before["intended"] if d["kind"] == "STILL"]
+    # Later live edits: every shot declared STATIC, the whole song declared
+    # silent, and the subtitle font pointed at a non-font file.
+    shots = read(Path(p) / "manifest/shots.json")
+    for shot in shots:
+        shot["render_mode"] = "STATIC"
+    write(Path(p) / "manifest/shots.json", shots)
+    analysis = read(Path(p) / "analysis/audio.json")
+    analysis["silence_regions"] = [{"in_ms": 0, "out_ms": 2000}]
+    write(Path(p) / "analysis/audio.json", analysis)
+    config = read(Path(p) / "project.yaml")
+    config["subtitles"] = {"font_file": "input/brief.md"}
+    write(Path(p) / "project.yaml", config)
+    assert [d for d in intended_regions(p) if d["kind"] == "STILL"]
+    after = diagnose_build(p, build_id, store=False)
+    # The sealed MP4 keeps the labels and font result its own snapshot,
+    # cues and font give it.
+    assert after["intended"] == before["intended"]
+    assert [(f["key"], f["severity"]) for f in after["findings"]] \
+        == [(f["key"], f["severity"]) for f in before["findings"]]
+    assert after["font"] == before["font"]
+
+
+def test_diagnosis_never_rewrites_live_lyrics(built):
+    p, build_id = built
+    # An edited lyric source would make prepare_lyrics replace the timing
+    # document and clear its review; diagnosis must not touch it.
+    source = Path(p) / "input/lyrics.txt"
+    source.write_text(source.read_text(encoding="utf-8") + "Edited line\n",
+                      encoding="utf-8")
+    lyrics_before = _tree(Path(p) / "lyrics")
+    diagnose_build(p, build_id)
+    assert _tree(Path(p) / "lyrics") == lyrics_before
+
+
+def test_delivery_symlink_outside_the_build_is_refused(built, tmp_path):
+    p, build_id = built
+    target = Path(p) / "builds" / build_id / "MASTER_CLEAN.mp4"
+    outside = tmp_path / "outside.mp4"
+    shutil.copyfile(target, outside)
+    target.unlink()
+    target.symlink_to(outside)
+    with pytest.raises(FilmError):
+        diagnose_build(p, build_id)
+
+
+def test_unsealed_motion_plan_counts_only_when_its_review_bound_it(
+        tmp_path, monkeypatch):
+    from test_anim_003 import animation_project
+    import engine.animation_review as animation_review
+    p = animation_project(tmp_path)
+    build_dir = Path(p) / "builds" / "B0001"
+    for relative in ("project.yaml", "timeline/edit.json"):
+        (build_dir / "snapshot" / relative).parent.mkdir(parents=True,
+                                                         exist_ok=True)
+        shutil.copyfile(Path(p) / relative,
+                        build_dir / "snapshot" / relative)
+    plan = _shot_plan("S001", "STATIC")
+    _store_plan(p, plan)
+    plan_file = Path(p) / "animation/shots/S001/plan.json"
+    bound_sha = digest(plan_file)
+    monkeypatch.setattr(animation_review, "load_reviews", lambda _p: [
+        {"scope": "CUT", "review_id": "R0001", "shot_id": "S001",
+         "motion_plan_sha256": bound_sha}])
+    record = {"profile": "FRAME_ANIMATION_V1",
+              "reviews": {"cuts": {"S001-1": "R0001"}}}
+    stills = [d for d in intended_regions(p, record, build_dir)
+              if d["kind"] == "STILL"]
+    assert stills == [{"kind": "STILL", "start_ms": 0, "end_ms": 1000,
+                       "source": "S001 motion_intent STATIC"}]
+    # A draft preview binds no CUT review: the live plan is not its plan.
+    assert not [d for d in intended_regions(
+        p, {"profile": "FRAME_ANIMATION_V1"}, build_dir)
+        if d["kind"] == "STILL"]
+    # A plan edited after the build no longer speaks for it.
+    plan["tracks"]["camera"]["pivot"] = [1, 1]
+    _store_plan(p, plan)
+    assert digest(plan_file) != bound_sha
+    assert not [d for d in intended_regions(p, record, build_dir)
+                if d["kind"] == "STILL"]
 
 
 def test_master_silence_regions_cover_detection_window_edges(tmp_path,

@@ -19,7 +19,7 @@ Checks (ffprobe / ffmpeg decodes, numpy statistics):
 - audio: stream count and channel count against the expected contract,
   clipped-sample runs and silence runs measured on the decoded PCM;
 - content: black-frame runs and still-frame runs measured on decoded pixels;
-- font coverage: the project's reviewed cue characters against the resolved
+- font coverage: the build's sealed cue characters against its sealed
   subtitle font cmap (reuses ``engine.lyrics._font``).
 
 Intended stills, blackouts and silence declared in the plan/timeline (a
@@ -558,19 +558,36 @@ def _scan_audio(path, artifact, fps, intended, provenance, findings, *,
             "silent_windows": sum(silent), "clipped_windows": sum(clipped)}
 
 
-def _check_font(project, artifact, duration_ms, provenance, findings,
+def _check_font(project, build_dir, artifact, provenance, findings,
                 build_id):
-    """Subtitle glyph coverage of the reviewed cue characters — the same
-    cmap check Final gates on, reported here as measurement."""
+    """Subtitle glyph coverage of the cues this build burned against the
+    font it sealed (`lyrics_timed.json`, `subtitle_fonts/`) — the same cmap
+    check Final gates on, reported here as measurement. Only sealed build
+    bytes are read: the live project's font and lyric timing are neither
+    consulted nor rewritten."""
     repro = ("python -m engine.cli diagnose " + shlex.quote(str(project))
              + " --build " + shlex.quote(str(build_id)))
     try:
-        from .lyrics import _font, validate_lyrics
-        document, _ = validate_lyrics(project, duration_ms, strict=False)
-        config = read(Path(project) / "project.yaml")
+        from .lyrics import _font
+        timed = safe_path(build_dir, "lyrics_timed.json")
+        if not timed.is_file():
+            raise FilmError(f"{build_id} sealed no lyrics_timed.json")
+        document = read(timed)
         text = "".join(cue["text"] for cue in document.get("cues", []))
-        _, report = _font(Path(project), config, text)
-    except FilmError as e:
+        sealed = read(safe_path(build_dir, "subtitle_report.json"), {})
+        family = (sealed.get("font") or {}).get("requested_family") \
+            or "DejaVu Sans"
+        fonts = sorted(safe_path(build_dir, "subtitle_fonts")
+                       .glob("subtitle.*"))
+        if fonts:
+            _, report = _font(build_dir, {"subtitles": {
+                "font_name": family,
+                "font_file": str(fonts[0].relative_to(build_dir))}}, text)
+        else:
+            report = {"status": "unverified", "missing_codepoints": [],
+                      "family": family,
+                      "note": f"{build_id} sealed no subtitle font file"}
+    except (FilmError, KeyError, TypeError, ValueError, AttributeError) as e:
         findings.append(_finding(
             "FONT_CHECK_SKIPPED", "CANDIDATE", artifact,
             _stream_location("subtitle"),
@@ -592,9 +609,11 @@ def _check_font(project, artifact, duration_ms, provenance, findings,
             "FONT_UNVERIFIED", "CANDIDATE", artifact,
             _stream_location("subtitle"),
             f"font glyph coverage is {status}; Final requires a verified "
-            "full-coverage font",
+            "full-coverage font"
+            + (f" ({report['note']})" if report.get("note") else ""),
             repro, provenance))
     return {"font_status": status, "font_family": report.get("family"),
+            "font_sha256": report.get("sha256"),
             "missing_codepoints": missing}
 
 
@@ -728,7 +747,33 @@ def _build_expect(record, build_dir):
                            audio_channels=channels)
 
 
-def intended_regions(project, record=None):
+def _bound_plan_digests(project, record):
+    """shot_id -> motion plan digests the build's own CUT reviews bound.
+
+    A Build 2 record names the review ids that authorized it; each CUT
+    review binds `motion_plan_sha256`, so a live plan with those bytes is
+    the plan the build was compiled under. The review log is append-only.
+    """
+    reviews = record.get("reviews")
+    cuts = reviews.get("cuts") if type(reviews) is dict else None
+    if type(cuts) is not dict or not cuts:
+        return {}
+    review_ids = {v for v in cuts.values() if type(v) is str}
+    try:
+        from .animation_review import load_reviews
+        rows = load_reviews(project)
+    except FilmError:
+        return {}
+    bound = {}
+    for row in rows:
+        if row.get("scope") == "CUT" and row.get("review_id") in review_ids \
+                and row.get("motion_plan_sha256"):
+            bound.setdefault(row.get("shot_id"), set()).add(
+                row["motion_plan_sha256"])
+    return bound
+
+
+def intended_regions(project, record=None, build_dir=None):
     """Stills, blackouts and silence the plan/timeline itself declares.
 
     - a legacy `STATIC` shot is the explicit editorial choice for an
@@ -741,15 +786,30 @@ def intended_regions(project, record=None):
       declaration of intent;
     - the master's own measured `silence_regions` make matching output
       silence inherent to the song, not a defect.
+
+    With `build_dir` the declarations are the ones that build sealed: its
+    `snapshot/` copy of the project, shot list, timeline and audio
+    analysis. Motion plans are not snapshotted, so a live plan counts only
+    when its bytes are the ones the build's CUT reviews bound — a later
+    edit to the live project never relabels an already sealed MP4.
     """
+    return _declarations(project, record, build_dir)[0]
+
+
+def _declarations(project, record=None, build_dir=None):
+    """(declared regions, declarations ignored because the build did not
+    seal them)."""
     p = Path(project)
-    declared = []
+    declared, unbound = [], []
     record = record or {}
-    config = read(p / "project.yaml")
+    src = p if build_dir is None else safe_path(build_dir, "snapshot")
+    bound = {} if build_dir is None else _bound_plan_digests(p, record)
+    config = read(safe_path(src, "project.yaml"), {}) or {}
     fmt = record.get("format") or config.get("format") or {}
     fps = int(fmt.get("fps") or 24)
-    profile = config.get("production_profile") or "LEGACY_MV"
-    shots_path = p / "manifest/shots.json"
+    profile = record.get("profile") or config.get("production_profile") \
+        or "LEGACY_MV"
+    shots_path = safe_path(src, "manifest/shots.json")
     if profile == "LEGACY_MV" and shots_path.is_file():
         try:
             shots = read(shots_path) or []
@@ -771,10 +831,18 @@ def intended_regions(project, record=None):
                                            read_canon,
                                            validate_animation_timeline)
             from .motion_plan import plan_path
-            document = load_animation_timeline(p)
+            document = load_animation_timeline(src)
             layout = validate_animation_timeline(document)
             for entry in layout["entries"]:
-                plan_file = safe_path(p, plan_path(entry["shot_id"]))
+                plan_file = safe_path(src, plan_path(entry["shot_id"]))
+                if build_dir is not None and not plan_file.is_file():
+                    plan_file = safe_path(p, plan_path(entry["shot_id"]))
+                    if plan_file.is_file() and digest(plan_file) \
+                            not in bound.get(entry["shot_id"], ()):
+                        unbound.append(f"{entry['shot_id']} plan.json is "
+                                       "not the plan this build's CUT "
+                                       "reviews bound")
+                        continue
                 if not plan_file.is_file():
                     continue
                 try:
@@ -833,7 +901,11 @@ def intended_regions(project, record=None):
                                   "exposure hold"})
         except FilmError:
             pass
-    analysis_path = p / "analysis/audio.json"
+    analysis_path = safe_path(src, "analysis/audio.json")
+    if build_dir is not None and not analysis_path.is_file() \
+            and (p / "analysis/audio.json").is_file():
+        unbound.append("analysis/audio.json silence_regions are not "
+                       "sealed in this build")
     if analysis_path.is_file():
         analysis = read(analysis_path, {}) or {}
         for region in analysis.get("silence_regions") or []:
@@ -849,7 +921,7 @@ def intended_regions(project, record=None):
                     "start_ms": max(0, region["in_ms"] - AUDIO_WINDOW_MS),
                     "end_ms": region["out_ms"] + AUDIO_WINDOW_MS,
                     "source": "measured master silence_regions"})
-    return declared
+    return declared, unbound
 
 
 def _artifact_provenance(record, build_dir, name, role):
@@ -891,14 +963,17 @@ def diagnose_build(project, build_id, *, intended=None, artifacts=None,
     p = Path(project)
     _check_build_id(build_id)
     build_dir = safe_path(p, f"builds/{build_id}")
-    record_path = build_dir / "build.json"
+    record_path = safe_path(build_dir, "build.json")
     if not record_path.is_file():
         raise FilmError(f"No build record for {build_id}")
     record = read(record_path)
     expect = _build_expect(record, build_dir)
-    declared = intended_regions(p, record) + normalize_intended(intended)
+    sealed, unbound = _declarations(p, record, build_dir)
+    declared = sealed + normalize_intended(intended)
+    # safe_path keeps every delivery read inside the build directory — a
+    # symlink pointing elsewhere is refused, never decoded.
     names = [name for name in _ARTIFACT_ROLES
-             if (build_dir / name).is_file()]
+             if safe_path(build_dir, name).is_file()]
     if artifacts:
         names = [n for n in names if n in artifacts]
     if not names:
@@ -926,6 +1001,7 @@ def diagnose_build(project, build_id, *, intended=None, artifacts=None,
                     ["build_json_sha256"]},
         "artifacts": {},
         "intended": declared,
+        "intended_unbound": unbound,
         "checks": ["streams", "pts", "duration", "decode", "black_frames",
                    "still_frames", "audio_channels", "clipping", "silence",
                    "artifact_hash", "font_coverage"],
@@ -955,16 +1031,10 @@ def diagnose_build(project, build_id, *, intended=None, artifacts=None,
         report["findings"].extend(artifact_findings)
         report["artifacts"][name] = sub["artifacts"][name]
         report["artifacts"][name]["provenance"] = provenance
-    duration_ms = record.get("duration_ms")
-    if duration_ms is None and expect.get("frames"):
-        duration_ms = int(Fraction(expect["frames"], expect["fps"]) * 1000)
-    if duration_ms is not None:
-        font_findings = []
-        font_measure = _check_font(p, names[0], duration_ms,
-                                   base_provenance, font_findings,
-                                   build_id)
-        report["findings"].extend(font_findings)
-        report["font"] = font_measure
+    font_findings = []
+    report["font"] = _check_font(p, build_dir, names[0], base_provenance,
+                                 font_findings, build_id)
+    report["findings"].extend(font_findings)
     report["summary"] = _summarize(report["findings"])
     _number_findings(report)
     if store:
