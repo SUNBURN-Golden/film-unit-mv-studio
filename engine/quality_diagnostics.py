@@ -23,11 +23,12 @@ Checks (ffprobe / ffmpeg decodes, numpy statistics):
   subtitle font cmap (reuses ``engine.lyrics._font``).
 
 Intended stills, blackouts and silence declared in the plan/timeline (a
-``STATIC`` shot, a static shot plan, the master's own measured silence, or an
-explicit ``intended`` declaration) are labelled ``INTENDED``. Undeclared
-matches stay ``CANDIDATE`` findings a user classifies as
-``ACCEPTED_INTENDED`` / ``DEFECT`` / ``NOT_A_DEFECT`` with a recorded reason;
-the classification is stored in the report and never changes the artifact.
+legacy ``STATIC`` shot, ``motion_intent: STATIC``, a declared exposure
+``hold``, the master's own measured silence, or an explicit ``intended``
+declaration) are labelled ``INTENDED``. Undeclared matches stay ``CANDIDATE``
+findings a user classifies as ``ACCEPTED_INTENDED`` / ``DEFECT`` /
+``NOT_A_DEFECT`` with a recorded reason; the classification is stored in the
+report and never changes the artifact.
 """
 from pathlib import Path
 import platform
@@ -76,6 +77,13 @@ MIN_RUN_MS = 250         # runs shorter than this are not reported
 _ARTIFACT_ROLES = {"MASTER_SUBBED.mp4": "subbed", "MASTER_CLEAN.mp4": "clean",
                    "DRAFT_PREVIEW.mp4": "draft"}
 _INTENDED_KINDS = ("BLACK", "STILL", "SILENCE")
+_BUILD_ID = re.compile(r"B[0-9]{4,}")
+
+
+def _check_build_id(build_id):
+    if not _BUILD_ID.fullmatch(str(build_id)):
+        raise FilmError("build_id must be a B0001-style build directory name")
+    return str(build_id)
 
 
 def _tool_versions():
@@ -550,9 +558,12 @@ def _scan_audio(path, artifact, fps, intended, provenance, findings, *,
             "silent_windows": sum(silent), "clipped_windows": sum(clipped)}
 
 
-def _check_font(project, artifact, duration_ms, provenance, findings):
+def _check_font(project, artifact, duration_ms, provenance, findings,
+                build_id):
     """Subtitle glyph coverage of the reviewed cue characters — the same
     cmap check Final gates on, reported here as measurement."""
+    repro = ("python -m engine.cli diagnose " + shlex.quote(str(project))
+             + " --build " + shlex.quote(str(build_id)))
     try:
         from .lyrics import _font, validate_lyrics
         document, _ = validate_lyrics(project, duration_ms, strict=False)
@@ -564,8 +575,7 @@ def _check_font(project, artifact, duration_ms, provenance, findings):
             "FONT_CHECK_SKIPPED", "CANDIDATE", artifact,
             _stream_location("subtitle"),
             f"font coverage check could not run: {str(e)[:200]}",
-            "python -m engine.cli diagnose "
-            + shlex.quote(str(project)), provenance))
+            repro, provenance))
         return {}
     status = report.get("status")
     missing = report.get("missing_codepoints") or []
@@ -575,8 +585,7 @@ def _check_font(project, artifact, duration_ms, provenance, findings):
             _stream_location("subtitle"),
             f"{len(missing)} cue characters have no glyph: "
             + ", ".join(missing[:20]),
-            "python -m engine.cli diagnose "
-            + shlex.quote(str(project)), provenance,
+            repro, provenance,
             measurement={"missing": missing}))
     elif status != "verified":
         findings.append(_finding(
@@ -584,8 +593,7 @@ def _check_font(project, artifact, duration_ms, provenance, findings):
             _stream_location("subtitle"),
             f"font glyph coverage is {status}; Final requires a verified "
             "full-coverage font",
-            "python -m engine.cli diagnose "
-            + shlex.quote(str(project)), provenance))
+            repro, provenance))
     return {"font_status": status, "font_family": report.get("family"),
             "missing_codepoints": missing}
 
@@ -706,7 +714,7 @@ def _build_expect(record, build_dir):
     channels, audio_streams = None, None
     audio_rel = (record.get("audio") or {}).get("path")
     if audio_rel:
-        master = build_dir / audio_rel
+        master = safe_path(build_dir, audio_rel)
         if master.is_file():
             try:
                 sound = next(s for s in probe(master)["streams"]
@@ -723,22 +731,26 @@ def _build_expect(record, build_dir):
 def intended_regions(project, record=None):
     """Stills, blackouts and silence the plan/timeline itself declares.
 
-    - a `STATIC` shot is the explicit editorial choice for an intended
-      still over its frame range (PROJECT_SPEC);
-    - an `animation_shot_plan` whose camera and every layer hold a null
-      (static identity) transform and at most one drawing declares the
-      same intent for that cut's output range;
+    - a legacy `STATIC` shot is the explicit editorial choice for an
+      intended still over its frame range — `render_mode` is a LEGACY_MV
+      field, so it is read only on the legacy profile;
+    - an `animation_shot_plan` with `motion_intent: STATIC` declares the
+      same intent for that cut's output range, and an exposure slot's
+      `hold` flag declares the still over the frames every static layer
+      holds — a null transform is only static identity, never a
+      declaration of intent;
     - the master's own measured `silence_regions` make matching output
       silence inherent to the song, not a defect.
     """
     p = Path(project)
     declared = []
     record = record or {}
-    fmt = record.get("format") or read(p / "project.yaml").get("format") \
-        or {}
+    config = read(p / "project.yaml")
+    fmt = record.get("format") or config.get("format") or {}
     fps = int(fmt.get("fps") or 24)
+    profile = config.get("production_profile") or "LEGACY_MV"
     shots_path = p / "manifest/shots.json"
-    if shots_path.is_file():
+    if profile == "LEGACY_MV" and shots_path.is_file():
         try:
             shots = read(shots_path) or []
         except FilmError:
@@ -753,39 +765,72 @@ def intended_regions(project, record=None):
                 "kind": "STILL", "start_ms": int(Fraction(start, fps) * 1000),
                 "end_ms": int(Fraction(end, fps) * 1000),
                 "source": f"{shot['id']} render_mode STATIC"})
-    config = read(p / "project.yaml")
-    if (config.get("production_profile") or "LEGACY_MV") \
-            == "FRAME_ANIMATION_V1":
+    if profile == "FRAME_ANIMATION_V1":
         try:
             from .animation_schema import (load_animation_timeline,
+                                           read_canon,
                                            validate_animation_timeline)
             from .motion_plan import plan_path
             document = load_animation_timeline(p)
             layout = validate_animation_timeline(document)
             for entry in layout["entries"]:
-                plan_file = safe_path(
-                    p, plan_path(entry["shot_id"]))
+                plan_file = safe_path(p, plan_path(entry["shot_id"]))
                 if not plan_file.is_file():
                     continue
                 try:
-                    from .animation_schema import read_canon
                     plan = read_canon(plan_file)
                 except FilmError:
                     continue
-                tracks = plan.get("tracks") or {}
-                camera = tracks.get("camera") or {}
-                layers = tracks.get("layers") or {}
-                static = camera.get("transform") is None and all(
-                    (layer.get("transform") is None
-                     and len(layer.get("drawings") or []) <= 1)
-                    for layer in layers.values())
-                if static and layers:
-                    start, end = entry["output_range"]
+                if type(plan) is not dict:
+                    continue
+                out_start, out_end = entry["output_range"]
+                if plan.get("motion_intent") == "STATIC":
+                    # STATIC is the explicit human intent declaration
+                    # (schema §5); it is never inferred from transforms.
                     declared.append({
                         "kind": "STILL",
-                        "start_ms": int(Fraction(start, fps) * 1000),
-                        "end_ms": int(Fraction(end, fps) * 1000),
-                        "source": f"{entry['shot_id']} static shot plan"})
+                        "start_ms": int(Fraction(out_start, fps) * 1000),
+                        "end_ms": int(Fraction(out_end, fps) * 1000),
+                        "source": f"{entry['shot_id']} "
+                                  "motion_intent STATIC"})
+                    continue
+                tracks = plan.get("tracks") or {}
+                camera = tracks.get("camera") if type(tracks) is dict \
+                    else None
+                layers = tracks.get("layers") if type(tracks) is dict \
+                    else None
+                if type(camera) is not dict \
+                        or camera.get("transform") is not None \
+                        or type(layers) is not dict or not layers:
+                    continue
+                # Inside an ANIMATED cut an intended still exists only
+                # where every layer's exposure carries the contract's
+                # declared `hold` over the same frames.
+                common = [(0, out_end - out_start)]
+                for layer in layers.values():
+                    if type(layer) is not dict \
+                            or layer.get("transform") is not None:
+                        common = []
+                        break
+                    holds = [(s["start"], s["end"])
+                             for schedule in layer.get("exposure") or []
+                             if type(schedule) is dict
+                             for s in schedule.get("slots") or []
+                             if type(s) is dict and s.get("hold") is True
+                             and type(s.get("start")) is int
+                             and type(s.get("end")) is int]
+                    common = [(max(a, c), min(b, d))
+                              for a, b in common for c, d in holds
+                              if max(a, c) < min(b, d)]
+                for start, end in common:
+                    declared.append({
+                        "kind": "STILL",
+                        "start_ms": int(Fraction(out_start + start, fps)
+                                        * 1000),
+                        "end_ms": int(Fraction(out_start + end, fps)
+                                      * 1000),
+                        "source": f"{entry['shot_id']} declared "
+                                  "exposure hold"})
         except FilmError:
             pass
     analysis_path = p / "analysis/audio.json"
@@ -795,9 +840,14 @@ def intended_regions(project, record=None):
             if type(region.get("in_ms")) is int \
                     and type(region.get("out_ms")) is int \
                     and region["out_ms"] > region["in_ms"]:
+                # The analyzer's ~-45 dBFS hop-grid regions and this
+                # decoder's 50 ms silence windows measure the same span
+                # at different resolutions; one window of edge tolerance
+                # keeps the master's own declared silence INTENDED.
                 declared.append({
-                    "kind": "SILENCE", "start_ms": region["in_ms"],
-                    "end_ms": region["out_ms"],
+                    "kind": "SILENCE",
+                    "start_ms": max(0, region["in_ms"] - AUDIO_WINDOW_MS),
+                    "end_ms": region["out_ms"] + AUDIO_WINDOW_MS,
                     "source": "measured master silence_regions"})
     return declared
 
@@ -839,6 +889,7 @@ def diagnose_build(project, build_id, *, intended=None, artifacts=None,
     `qc/diagnostics/<build_id>.json`; artifact bytes are never touched.
     """
     p = Path(project)
+    _check_build_id(build_id)
     build_dir = safe_path(p, f"builds/{build_id}")
     record_path = build_dir / "build.json"
     if not record_path.is_file():
@@ -910,17 +961,18 @@ def diagnose_build(project, build_id, *, intended=None, artifacts=None,
     if duration_ms is not None:
         font_findings = []
         font_measure = _check_font(p, names[0], duration_ms,
-                                   base_provenance, font_findings)
+                                   base_provenance, font_findings,
+                                   build_id)
         report["findings"].extend(font_findings)
         report["font"] = font_measure
     report["summary"] = _summarize(report["findings"])
     _number_findings(report)
     if store:
-        report_path = p / DIAGNOSTICS_DIR / f"{build_id}.json"
+        target = report_path(p, build_id)
         # A re-run of the same build keeps the user's classifications on
         # identical findings — the judgement binds the measured finding,
         # not the run.
-        previous = read(report_path, {}) if report_path.is_file() else {}
+        previous = read(target, {}) if target.is_file() else {}
         remembered = {f["key"]: f["classification"]
                       for f in previous.get("findings", [])
                       if f.get("classification")}
@@ -928,13 +980,14 @@ def diagnose_build(project, build_id, *, intended=None, artifacts=None,
             if finding["key"] in remembered:
                 finding["classification"] = remembered[finding["key"]]
         report["summary"] = _summarize(report["findings"])
-        write(report_path, report)
-        report["report_path"] = str(report_path)
+        write(target, report)
+        report["report_path"] = str(target)
     return report
 
 
 def report_path(project, build_id):
-    return Path(project) / DIAGNOSTICS_DIR / f"{build_id}.json"
+    return safe_path(project, f"{DIAGNOSTICS_DIR}/"
+                              f"{_check_build_id(build_id)}.json")
 
 
 def load_report(project, build_id):

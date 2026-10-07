@@ -264,6 +264,97 @@ def test_parse_and_normalize_intended():
                              "end_ms": 0}])
 
 
+# --- declared intent on the animation contract -----------------------------------
+
+
+def _pins(count=1):
+    return [{"asset_id": f"A{i + 1:04d}", "revision": 1,
+             "content_sha256": "0" * 64} for i in range(count)]
+
+
+def _layer(slots, drawings=1, transform=None, track="layer"):
+    return {"drawings": _pins(drawings), "transform": transform,
+            "mask": None,
+            "exposure": [{"track": track, "start": 0,
+                          "end": slots[-1]["end"], "stride": 1,
+                          "phase": 0, "slots": slots}]}
+
+
+def _shot_plan(shot_id, intent, camera=None, layers=None):
+    return {"document_type": "animation_shot_plan", "schema_version": 1,
+            "shot_id": shot_id, "motion_intent": intent,
+            "tracks": {"camera": {"pivot": [0, 0], "transform": camera},
+                       "layers": layers or {}}}
+
+
+def _store_plan(p, plan):
+    from engine.animation_schema import write_canon
+    write_canon(Path(p) / "animation" / "shots" / plan["shot_id"]
+                / "plan.json", plan)
+
+
+def test_static_motion_intent_declares_the_whole_cut(tmp_path):
+    from test_anim_003 import animation_project
+    p = animation_project(tmp_path)
+    # motion_intent STATIC is the human's declaration — a moving camera
+    # or a several-drawing table does not withdraw it.
+    camera = {"channels": {"translate": {
+        "curve": "LINEAR",
+        "keys": [{"frame": 0, "value": [0, 0]},
+                 {"frame": 12, "value": [40, 0]}]}}}
+    layer = _layer([{"start": i, "end": i + 1, "drawing": i % 2}
+                    for i in range(24)], drawings=2)
+    _store_plan(p, _shot_plan("S001", "STATIC", camera=camera,
+                              layers={"subject": layer}))
+    stills = [d for d in intended_regions(p) if d["kind"] == "STILL"]
+    assert stills == [{"kind": "STILL", "start_ms": 0, "end_ms": 1000,
+                       "source": "S001 motion_intent STATIC"}]
+
+
+def test_animated_plan_static_identity_declares_nothing(tmp_path):
+    from test_anim_003 import animation_project
+    p = animation_project(tmp_path)
+    # Null transforms and one drawing are just static identity on an
+    # ANIMATED plan — an undeclared freeze must stay a CANDIDATE.
+    layer = _layer([{"start": i, "end": i + 1, "drawing": 0}
+                    for i in range(24)])
+    _store_plan(p, _shot_plan("S001", "ANIMATED",
+                              layers={"subject": layer}))
+    assert not [d for d in intended_regions(p) if d["kind"] == "STILL"]
+
+
+def test_declared_exposure_hold_marks_only_the_held_frames(tmp_path):
+    from test_anim_003 import animation_project
+    p = animation_project(tmp_path)
+    slots = ([{"start": i, "end": i + 1, "drawing": 0}
+              for i in range(8)]
+             + [{"start": 8, "end": 16, "drawing": 0, "hold": True}]
+             + [{"start": i, "end": i + 1, "drawing": 0}
+                for i in range(16, 24)])
+    layers = {"a": _layer(slots, track="a"), "b": _layer(slots, track="b")}
+    _store_plan(p, _shot_plan("S001", "ANIMATED", layers=layers))
+    stills = [d for d in intended_regions(p) if d["kind"] == "STILL"]
+    assert stills == [{"kind": "STILL", "start_ms": 333, "end_ms": 666,
+                       "source": "S001 declared exposure hold"}]
+    # A hold on only one layer is not a whole-frame still.
+    layers["b"] = _layer([{"start": i, "end": i + 1, "drawing": 0}
+                          for i in range(24)], track="b")
+    _store_plan(p, _shot_plan("S001", "ANIMATED", layers=layers))
+    assert not [d for d in intended_regions(p) if d["kind"] == "STILL"]
+
+
+def test_render_mode_still_scope_is_legacy_only(tmp_path):
+    from test_anim_003 import animation_project
+    p = animation_project(tmp_path)
+    # render_mode is a LEGACY_MV field; on the animation profile the
+    # plan's motion_intent/hold declarations are the contract.
+    shots = read(Path(p) / "manifest/shots.json")
+    for shot in shots:
+        shot["render_mode"] = "STATIC"
+    write(Path(p) / "manifest/shots.json", shots)
+    assert not [d for d in intended_regions(p) if d["kind"] == "STILL"]
+
+
 # --- sealed-build diagnosis ------------------------------------------------------
 
 
@@ -345,6 +436,75 @@ def test_failed_or_missing_build_is_an_error(built):
     p, _ = built
     with pytest.raises(FilmError):
         diagnose_build(p, "B9999")
+
+
+def test_report_paths_reject_non_build_ids(built):
+    p, build_id = built
+    report = diagnose_build(p, build_id)
+    finding = report["findings"][0]
+    for bad in ("../reviews/r1", "../../etc/hostname", "x", "B1"):
+        with pytest.raises(FilmError):
+            diagnose_build(p, bad)
+        with pytest.raises(FilmError):
+            load_report(p, bad)
+        with pytest.raises(FilmError):
+            classify_finding(p, bad, finding["id"], "DEFECT", "reason",
+                             "reviewer")
+    # A lookalike JSON elsewhere under qc/ is never read or rewritten.
+    planted = Path(p) / "qc/reviews/r1.json"
+    write(planted, {"findings": [{"id": "F001", "key": "k",
+                                  "severity": "CANDIDATE"}]})
+    with pytest.raises(FilmError):
+        classify_finding(p, "../reviews/r1", "F001", "DEFECT", "reason",
+                         "reviewer")
+    assert read(planted)["findings"] == [{"id": "F001", "key": "k",
+                                          "severity": "CANDIDATE"}]
+
+
+def test_build_audio_contract_path_stays_inside_the_build(built):
+    p, build_id = built
+    record_path = Path(p) / "builds" / build_id / "build.json"
+    record = read(record_path)
+    record["audio"]["path"] = "../../analysis/audio.json"
+    write(record_path, record)
+    with pytest.raises(FilmError):
+        diagnose_build(p, build_id)
+
+
+def test_font_finding_repro_names_the_build(built):
+    p, build_id = built
+    # Point the subtitle font at a non-font file: the cmap check cannot
+    # verify coverage, so a FONT_* finding is guaranteed on any box.
+    config = read(Path(p) / "project.yaml")
+    config["subtitles"] = {"font_file": "input/brief.md"}
+    write(Path(p) / "project.yaml", config)
+    report = diagnose_build(p, build_id)
+    fonts = [f for f in report["findings"] if f["kind"].startswith("FONT_")]
+    assert fonts
+    assert all(f["repro"].endswith("--build " + build_id) for f in fonts)
+
+
+def test_master_silence_regions_cover_detection_window_edges(tmp_path,
+                                                           clips):
+    (tmp_path / "proj").mkdir()
+    p = fixture_project(tmp_path / "proj", seconds=2, shot_count=1)
+    measured = diagnose_media(clips / "silent.mp4", expect=_base_expect())
+    run = _findings(measured, "SILENCE_RUN", "CANDIDATE")[0]
+    a, b = run["location"]["start_ms"], run["location"]["end_ms"]
+    # The analyzer's hop-grid region can sit just inside the measured
+    # run; one detection window of tolerance keeps it INTENDED.
+    analysis = read(Path(p) / "analysis/audio.json")
+    analysis["silence_regions"] = [{"in_ms": a + 40, "out_ms": b - 40}]
+    write(Path(p) / "analysis/audio.json", analysis)
+    declared = intended_regions(p)
+    silence = [d for d in declared if d["kind"] == "SILENCE"]
+    assert silence == [{"kind": "SILENCE", "start_ms": a + 40 - 50,
+                        "end_ms": b - 40 + 50,
+                        "source": "measured master silence_regions"}]
+    report = diagnose_media(clips / "silent.mp4", expect=_base_expect(),
+                            intended=declared)
+    assert all(f["severity"] == "INTENDED"
+               for f in _findings(report, "SILENCE_RUN"))
 
 
 # --- classification ---------------------------------------------------------------
