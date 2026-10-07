@@ -368,6 +368,22 @@ def main(argv=None):
     reb.add_argument("--changes", required=True,
                      help="JSON file with the declared change list, e.g. "
                           "[{\"class\": \"PICTURE\", \"instance_id\": \"I002\", \"member_index\": 7}]")
+    doctor = sub.add_parser("build-doctor", help="film-replay-doctor: diagnose why a saved build cannot be replayed or rebuilt — manifest linkage, missing/corrupt assets, toolchain drift, unsupported profile")
+    doctor.add_argument("build_dir")
+    doctor.add_argument("--deep", action="store_true", help="Recompute the sealed sequence roots from the archived members (slower)")
+    doctor.add_argument("--no-project", action="store_true", help="Skip comparing the live project's current inputs")
+    adoctor = sub.add_parser("archive-doctor", help="film-replay-doctor: diagnose a sealed storage_archive — index pin, member ranges, corrupt pack; a bounded restore never silently becomes a full download")
+    adoctor.add_argument("manifest")
+    adoctor.add_argument("--root", help="Archive object root (default: the manifest's parent 'manifests/..' root)")
+    adoctor.add_argument("--members", help="Comma-separated member ids to plan/verify (default: all)")
+    adoctor.add_argument("--whole-pack-cap", type=int, default=None,
+                         help="Predeclared byte cap enabling the explicit WHOLE_PACK_VERIFIED fallback")
+    rpkt = sub.add_parser("replay-packet", help="film-replay-doctor: write a credential-free CANON replay packet for a sealed build")
+    rpkt.add_argument("build_dir")
+    rpkt.add_argument("--output", required=True)
+    rcheck = sub.add_parser("replay-check", help="film-replay-doctor: compare a produced replay output against the sealed inventory — differing bytes are NEW_ARTIFACTs, never the same build")
+    rcheck.add_argument("build_dir")
+    rcheck.add_argument("produced_dir")
     encode_build = sub.add_parser("encode-build", help="ANIM-015: encode+verify a sealed Build 2 build's delivery frames with a chosen driver")
     encode_build.add_argument("build_dir")
     encode_build.add_argument("--driver", required=True,
@@ -880,6 +896,21 @@ def main(argv=None):
             from .render_provenance import rebuild_plan_report
             changes = json.loads(Path(a.changes).read_text(encoding="utf-8"))
             result = rebuild_plan_report(a.project, changes)
+        elif a.command == "build-doctor":
+            from .replay_doctor import build_doctor_command
+            result = build_doctor_command(a.build_dir, deep=a.deep,
+                                          compare_project=not a.no_project)
+        elif a.command == "archive-doctor":
+            from .replay_doctor import archive_doctor_command
+            result = archive_doctor_command(a.manifest, root=a.root,
+                                            members=a.members,
+                                            whole_pack_cap=a.whole_pack_cap)
+        elif a.command == "replay-packet":
+            from .replay_doctor import replay_packet_command
+            result = replay_packet_command(a.build_dir, a.output)
+        elif a.command == "replay-check":
+            from .replay_doctor import replay_check_command
+            result = replay_check_command(a.build_dir, a.produced_dir)
         elif a.command == "encode-build":
             from .animation_compiler import encode_build_delivery
             result = encode_build_delivery(a.build_dir, a.driver, a.output,
