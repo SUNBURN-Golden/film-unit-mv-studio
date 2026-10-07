@@ -11,11 +11,13 @@ import pytest
 
 from engine.animation_assets import (import_frame_sequence,
                                      import_layer_rgba, import_mask,
-                                     load_registry, resolve_shot_sequence)
+                                     load_registry, resolve_shot_sequence,
+                                     save_registry)
 from engine.animation_locks import (declare_waves, record_plan_lock,
                                     record_wave_lock)
 from engine.animation_preview import compile_draft_preview
-from engine.animation_review import record_cut_review
+from engine.animation_review import (record_cut_review,
+                                     record_transition_review)
 from engine.asset_library import (cleanup_unused, detach_asset, library_view,
                                   replace_asset)
 from engine.core import FilmError, digest
@@ -353,6 +355,125 @@ def test_cleanup_refuses_a_revision_pinned_by_another_asset(tmp_path):
     assert (layer["asset_id"], 1) in protected   # mask target pin
     assert (mask["asset_id"], 1) in \
         {(c["asset_id"], c["revision"]) for c in result["candidates"]}
+
+
+def test_cleanup_protects_transition_digest_bound_revisions(tmp_path):
+    """A TRANSITION review binds each endpoint's sequence digest: the bound
+    revisions stay protected even after the cuts are detached, when the
+    bare instance+revision link can no longer name an asset."""
+    p = animation_project(tmp_path, shot_count=2)
+    first = import_seq(p, tmp_path, shot="S001", seed=48, name="one")
+    second = import_seq(p, tmp_path, shot="S002", seed=88, name="two")
+    record_transition_review(p, "T001", reviewer="fixture reviewer",
+                             methods=["TRANSITION_FULL_SPEED_PLAYBACK"])
+    detach_asset(p, "S001")
+    detach_asset(p, "S002")
+    result = cleanup_unused(p, execute=True)
+    protected = {(r["asset_id"], r["revision"]): r["reasons"]
+                 for r in result["protected"]}
+    for imported in (first, second):
+        reasons = protected[(imported["asset_id"], 1)]
+        assert any("transition sequence digest" in reason
+                   for reason in reasons)
+    assert result["deleted"] == []
+    assert (p / "animation/assets" / first["asset_id"] / "r1").is_dir()
+
+
+def test_cleanup_unlinks_a_member_symlink_without_touching_target(tmp_path):
+    """A member path that is a symlink loses only the link, never the
+    bytes it points at."""
+    p = animation_project(tmp_path, shot_count=1)
+    seq = import_seq(p, tmp_path, seed=46)
+    replace_asset(p, seq["asset_id"],
+                  folder=make_sequence(tmp_path / "r2", 24, seed=87),
+                  shot_id="S001")
+    record = load_registry(p)["assets"][seq["asset_id"]]["revisions"]["1"]
+    member = p / record["files"][0]["relative_name"]
+    target = p / "input/lyrics.txt"
+    payload = target.read_bytes()
+    member.unlink()
+    member.symlink_to(target)
+    result = cleanup_unused(p, execute=True)
+    assert target.read_bytes() == payload
+    assert not member.is_symlink() and not member.exists()
+    deleted = {(d["asset_id"], d["revision"]) for d in result["deleted"]}
+    assert (seq["asset_id"], 1) in deleted
+    assert "1" not in \
+        load_registry(p)["assets"][seq["asset_id"]]["revisions"]
+
+
+def test_cleanup_refuses_a_symlinked_revision_dir(tmp_path):
+    """A revision directory that is itself a symlink is refused whole —
+    the target tree and the registry record are both untouched."""
+    p = animation_project(tmp_path, shot_count=1)
+    seq = import_seq(p, tmp_path, seed=47)
+    replace_asset(p, seq["asset_id"],
+                  folder=make_sequence(tmp_path / "r2", 24, seed=89),
+                  shot_id="S001")
+    revision_dir = p / "animation/assets" / seq["asset_id"] / "r1"
+    elsewhere = tmp_path / "elsewhere"
+    revision_dir.rename(elsewhere)
+    revision_dir.symlink_to(elsewhere)
+    result = cleanup_unused(p, execute=True)
+    refused = {(r["asset_id"], r["revision"]) for r in result["refused"]}
+    assert (seq["asset_id"], 1) in refused
+    assert sorted(f.name for f in elsewhere.iterdir()) == \
+        [f"f{i:06d}.png" for i in range(24)]
+    assert "1" in \
+        load_registry(p)["assets"][seq["asset_id"]]["revisions"]
+
+
+def test_cleanup_refuses_a_member_path_with_dotdot(tmp_path):
+    """A registry member whose relative_name escapes the revision
+    directory is refused; nothing outside it is removed."""
+    p = animation_project(tmp_path, shot_count=1)
+    seq = import_seq(p, tmp_path, seed=45)
+    replace_asset(p, seq["asset_id"],
+                  folder=make_sequence(tmp_path / "r2", 24, seed=85),
+                  shot_id="S001")
+    outside = p / "input/lyrics.txt"
+    payload = outside.read_bytes()
+    registry = load_registry(p)
+    record = registry["assets"][seq["asset_id"]]["revisions"]["1"]
+    record["files"][0]["relative_name"] = \
+        f"animation/assets/{seq['asset_id']}/r1/../../../input/lyrics.txt"
+    save_registry(p, registry)
+    result = cleanup_unused(p, execute=True)
+    assert outside.read_bytes() == payload
+    refused = {(r["asset_id"], r["revision"]) for r in result["refused"]}
+    assert (seq["asset_id"], 1) in refused
+    entry = load_registry(p)["assets"][seq["asset_id"]]
+    assert "1" in entry["revisions"]
+    assert (p / "animation/assets" / seq["asset_id"] / "r1").is_dir()
+
+
+def test_cleanup_never_retargets_a_surviving_current_revision(tmp_path):
+    """Identical-content reimport can adopt an older revision again;
+    deleting a different unused revision must leave current alone."""
+    p = animation_project(tmp_path, shot_count=2)
+    first = make_sequence(tmp_path / "keep", 24, seed=49)
+    seq = import_frame_sequence(p, "S001", folder=first)
+    asset_id = seq["asset_id"]
+    replace_asset(p, asset_id,
+                  folder=make_sequence(tmp_path / "b", 24, seed=90),
+                  shot_id="S001")                              # r2
+    record_cut_review(p, "I001", reviewer="fixture reviewer",
+                      methods=["CUT_FULL_SPEED_PLAYBACK"])     # pins r2
+    replace_asset(p, asset_id,
+                  folder=make_sequence(tmp_path / "c", 24, seed=91),
+                  shot_id="S001")                              # r3
+    reused = import_frame_sequence(p, "S001", folder=first)    # adopts r1
+    assert reused["revision"] == 1 and reused["new_revision"] is False
+    assert load_registry(p)["assets"][asset_id]["current_revision"] == 1
+    result = cleanup_unused(p, execute=True)
+    entry = load_registry(p)["assets"][asset_id]
+    assert entry["current_revision"] == 1
+    assert set(entry["revisions"]) == {"1", "2"}
+    deleted = {(d["asset_id"], d["revision"]) for d in result["deleted"]}
+    candidates = {(c["asset_id"], c["revision"])
+                  for c in result["candidates"]}
+    assert deleted == {(asset_id, 3)}
+    assert (asset_id, 1) not in candidates
 
 
 # --- boundaries ---------------------------------------------------------------

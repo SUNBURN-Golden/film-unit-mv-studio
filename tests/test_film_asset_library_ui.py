@@ -155,8 +155,9 @@ def test_cleanup_panel_dry_run_then_execute(box):
     at = run_panel(project)
     assert not at.exception
     # The dry-run listing is rendered without clicking anything.
+    assert any("삭제 후보" in m.value for m in at.markdown)
     tables = [d.value.to_string() for d in at.dataframe]
-    assert any("삭제" not in t or True for t in tables)
+    assert any("A0001" in t and "r1" in t for t in tables)
     assert load_registry(project)["assets"]["A0001"]["revisions"].keys() \
         == {"1", "2"}
     checkbox = next(c for c in at.checkbox if c.key == "al_clean_confirm")

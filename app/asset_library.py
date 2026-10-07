@@ -5,8 +5,8 @@ FRAME_ANIMATION_V1 projects only — control_panel gates the tab on the
 production profile, so LEGACY_MV projects render exactly as before. Every
 imported asset stays DRAFT, the rights column is always UNVERIFIED and a
 verified member hash is shown as byte integrity — never as a license,
-permission or artwork approval. Member thumbnails drawn here are derived
-previews, not the original bytes.
+permission or artwork approval. Member images drawn here are the original
+member bytes scaled for display — a display scaling, never an approval.
 
 Actions call the engine directly: replace opens a new revision, detach
 drops a cut's assignment pin, and cleanup runs its dry-run listing on
@@ -113,7 +113,8 @@ def _detail(p, view):
                      and f["relative_name"].endswith(".png")), None)
     if original is not None:
         st.image(str(safe_path(p, original["relative_name"])), width=200,
-                 caption="파생 썸네일 — 원본 바이트·승인 기록이 아닙니다")
+                 caption="원본 멤버 바이트를 표시용으로 축소한 것입니다 — "
+                         "별도 프록시 단계는 아직 없고 승인 기록이 아닙니다")
     if revision["not_verified"]:
         st.caption("미확인 항목: " + ", ".join(revision["not_verified"]))
     return asset, revision

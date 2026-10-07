@@ -34,13 +34,16 @@ execute, so a revision that gained a reference is never removed.
 LEGACY_MV projects do not enter this module at all; every entry point
 requires the FRAME_ANIMATION_V1 profile.
 """
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import json
+import os
 
-from .animation_assets import (ASSET_ROOT, import_draft_image,
+from .animation_assets import (ASSET_ROOT, SEQUENCE_KINDS,
+                               import_draft_image,
                                import_frame_sequence, import_layer_rgba,
                                import_mask, import_replacement_drawing,
                                import_rig_spec, load_registry, save_registry)
+from .animation_review import sequence_content_digest
 from .animation_schema import (SHOT_ID, load_animation_timeline, read_canon,
                                require_animation_profile)
 from .builds import list_builds
@@ -196,8 +199,9 @@ def _collect_refs(p, registry, *, errors):
         fail(f"{ROUTES_PATH} unreadable; decision protection incomplete: {exc}")
 
     # 5. Review records: CUT binds asset_id+revision; TRANSITION binds the
-    # endpoint revision numbers without an asset id (second pass below).
-    transition_refs = []
+    # endpoint revision numbers without an asset id (second pass below) and
+    # each endpoint's sequence digest (third pass).
+    transition_refs, transition_digests = [], []
     try:
         path = safe_path(p, APPROVALS_PATH)
         if path.is_file():
@@ -215,6 +219,8 @@ def _collect_refs(p, registry, *, errors):
                         transition_refs.append(
                             (record.get(f"{side}_instance"),
                              record.get(f"{side}_revision"), label))
+                        transition_digests.append(
+                            (record.get(f"{side}_sequence_digest"), label))
     except (FilmError, OSError) as exc:
         fail(f"{APPROVALS_PATH} unreadable; review protection incomplete: {exc}")
 
@@ -295,6 +301,27 @@ def _collect_refs(p, registry, *, errors):
                              entry["revisions"][str(revision)]
                              ["content_sha256"]},
                         f"{label} (transition endpoint)")
+
+    # Third pass: a transition review also binds each endpoint's sequence
+    # digest — match it against every registered sequence revision so the
+    # revision a review bound stays protected even when the bare revision
+    # number can no longer be linked back to an asset through the cut.
+    if transition_digests:
+        bound = {}
+        for asset_id, entry in registry["assets"].items():
+            for record in entry["revisions"].values():
+                if record["kind"] in SEQUENCE_KINDS:
+                    bound.setdefault(
+                        sequence_content_digest(record), []).append(
+                            (asset_id, record))
+        for sha, label in transition_digests:
+            if type(sha) is not str:
+                continue
+            for asset_id, record in bound.get(sha, ()):
+                pin_ref({"asset_id": asset_id,
+                         "revision": record["revision"],
+                         "content_sha256": record["content_sha256"]},
+                        f"{label} (transition sequence digest)")
 
     return pin_refs, content_refs, shot_assets
 
@@ -603,14 +630,98 @@ def _scan_unused(p, registry):
         for label in sorted(entry["revisions"], key=int):
             record = entry["revisions"][label]
             refs = _refs_for(pin_refs, content_refs, asset_id, record)
+            reasons = set(refs["reasons"])
+            # The adopted current revision must always name a live record;
+            # while other revisions remain it is never a delete candidate.
+            if record["revision"] == entry["current_revision"] \
+                    and len(entry["revisions"]) > 1:
+                reasons.add(f"current revision of {asset_id}")
             row = {"asset_id": asset_id, "revision": record["revision"],
                    "kind": record["kind"],
                    "content_sha256": record["content_sha256"],
                    "members": len(record["files"]),
                    "bytes": sum(f["byte_length"] for f in record["files"]),
-                   "reasons": sorted(refs["reasons"])}
-            (protected if refs["reasons"] else candidates).append(row)
+                   "reasons": sorted(reasons)}
+            (protected if reasons else candidates).append(row)
     return candidates, protected
+
+
+def _member_target(p, revision_dir, relative):
+    """One recorded member's on-disk path, or a refusal reason.
+
+    The path is joined lexically and never resolved: a member name that is
+    absolute or carries a `..` component, a symlinked component anywhere
+    between the project root and the file, or a normalised path that is
+    not strictly inside the revision directory all refuse the revision's
+    whole deletion plan.
+    """
+    if type(relative) is not str or not relative:
+        return None, "member relative_name is empty or not a string"
+    pure = PurePosixPath(relative)
+    if pure.is_absolute() or ".." in pure.parts:
+        return None, f"member path escapes the revision directory: {relative}"
+    target = Path(os.path.normpath(str(Path(p) / relative)))
+    if target == revision_dir or revision_dir not in target.parents:
+        return None, f"member path is outside the revision directory: {relative}"
+    node = Path(p)
+    for part in Path(os.path.normpath(relative)).parts[:-1]:
+        node = node / part
+        if node.is_symlink():
+            return None, f"member path crosses a symlink: {relative}"
+    return target, None
+
+
+def _revision_plan(p, asset_id, revision, record):
+    """The full delete plan for one revision, or a refusal reason.
+
+    Nothing is resolved and no symlink is followed: the revision directory
+    and every component above it must be real directories, every recorded
+    member must validate lexically inside it, and link objects found
+    inside are unlinked as links — their targets are never touched.
+    """
+    node = Path(p)
+    for part in (ASSET_ROOT, asset_id, f"r{revision}"):
+        node = node / part
+        if node.is_symlink():
+            return None, (f"revision directory crosses a symlink: "
+                          f"{ASSET_ROOT}/{asset_id}/r{revision}")
+    revision_dir = node
+    if revision_dir.exists() and not revision_dir.is_dir():
+        return None, "revision path is not a directory"
+    files, dirs = [], []
+    for member in record["files"]:
+        target, reason = _member_target(p, revision_dir,
+                                        member["relative_name"])
+        if reason is not None:
+            return None, reason
+        if (target.is_symlink() or target.is_file()) and target not in files:
+            files.append(target)
+    if revision_dir.is_dir():
+        for root, dirnames, filenames in os.walk(revision_dir,
+                                                 followlinks=False):
+            root = Path(root)
+            descend = []
+            for name in dirnames:
+                found = root / name
+                if found.is_symlink():
+                    if found not in files:
+                        files.append(found)   # unlink the link, keep target
+                elif found.is_dir():
+                    dirs.append(found)
+                    descend.append(name)
+                else:
+                    return None, \
+                        f"non-regular entry in revision directory: {found}"
+            dirnames[:] = descend
+            for name in filenames:
+                found = root / name
+                if not found.is_symlink() and not found.is_file():
+                    return None, \
+                        f"non-regular file in revision directory: {found}"
+                if found not in files:
+                    files.append(found)
+        dirs.append(revision_dir)
+    return {"files": files, "dirs": dirs}, None
 
 
 def cleanup_unused(project, *, execute=False):
@@ -620,10 +731,11 @@ def cleanup_unused(project, *, execute=False):
     is silent on it — never the current assignments, never a revision a
     current or historical build resolved or adopted, never one named by a
     scope LOCK, review, route decision, draft ledger, work packet or
-    another asset's pin fields. On execute the evidence is recomputed
-    inside the project mutex and only still-unprotected revisions lose
-    their registry record and their own revision directory; nothing else
-    on disk is touched.
+    another asset's pin fields, and never the asset's adopted current
+    revision while other revisions remain. On execute the evidence is
+    recomputed inside the project mutex and only still-unprotected
+    revisions lose their registry record and their own revision
+    directory; nothing else on disk is touched.
     """
     p = Path(project)
     if not execute:
@@ -631,55 +743,75 @@ def cleanup_unused(project, *, execute=False):
         registry = load_registry(p)
         candidates, protected = _scan_unused(p, registry)
         return {"dry_run": True, "candidates": candidates,
-                "protected": protected, "deleted": [],
+                "protected": protected, "deleted": [], "refused": [],
                 "files_removed": 0, "facets": dict(FACETS),
                 "note": "dry run; nothing was deleted"}
     with project_mutex(p):
         require_animation_profile(p)
         registry = load_registry(p)
         candidates, protected = _scan_unused(p, registry)
-        deleted, files_removed = [], 0
+        # Validate every deletion plan before anything is removed: a
+        # revision whose paths do not check out is refused whole and keeps
+        # its registry record and its bytes.
+        plans, refused = [], []
         for row in candidates:
             asset_id, revision = row["asset_id"], row["revision"]
             entry = registry["assets"].get(asset_id)
-            if entry is None or str(revision) not in entry["revisions"]:
-                continue
-            record = entry["revisions"].pop(str(revision))
-            base = f"{ASSET_ROOT}/{asset_id}/r{revision}/"
-            removed = []
-            for member in record["files"]:
-                relative = member["relative_name"]
-                if not relative.startswith(base):
-                    continue          # only ever inside the revision dir
-                target = safe_path(p, relative)
-                if target.is_file() and not target.is_symlink():
-                    target.unlink()
-                    removed.append(relative)
-            revision_dir = safe_path(p, base.rstrip("/"))
-            if revision_dir.is_dir():
-                for extra in sorted(revision_dir.rglob("*")):
-                    if extra.is_file() and not extra.is_symlink():
-                        extra.unlink()
-                        removed.append(
-                            base + "/".join(
-                                extra.relative_to(revision_dir).parts))
-                for folder in sorted(revision_dir.rglob("*"),
-                                     key=lambda f: -len(f.parts)):
-                    if folder.is_dir():
-                        folder.rmdir()
-                revision_dir.rmdir()
-            asset_dir = safe_path(p, f"{ASSET_ROOT}/{asset_id}")
-            if asset_dir.is_dir() and not any(asset_dir.iterdir()):
-                asset_dir.rmdir()
-            if entry["revisions"]:
-                entry["current_revision"] = max(
-                    int(r) for r in entry["revisions"])
+            record = entry["revisions"].get(str(revision)) \
+                if entry else None
+            reason = None
+            if record is None:
+                reason = "registry record is gone"
+            elif revision == entry["current_revision"] \
+                    and len(entry["revisions"]) > 1:
+                reason = f"r{revision} is the current revision of {asset_id}"
+            if reason is None:
+                plan, reason = _revision_plan(p, asset_id, revision, record)
+            if reason is not None:
+                refused.append({**row, "status": "REFUSED",
+                                "reason": reason})
             else:
-                del registry["assets"][asset_id]
-            deleted.append({**row, "files_removed": len(removed)})
-            files_removed += len(removed)
+                plans.append((row, plan))
+        # The registry is updated first, so an error while unlinking can
+        # only leave unrecorded files behind — never a record that claims
+        # deleted bytes still exist.
+        deleted = []
+        for row, _plan in plans:
+            entry = registry["assets"][row["asset_id"]]
+            del entry["revisions"][str(row["revision"])]
+            if entry["revisions"]:
+                # current_revision moves only when the deleted revision was
+                # the current one itself.
+                if str(entry["current_revision"]) not in entry["revisions"]:
+                    entry["current_revision"] = max(
+                        int(r) for r in entry["revisions"])
+            else:
+                del registry["assets"][row["asset_id"]]
+            deleted.append({**row, "status": "DELETED", "files_removed": 0})
         save_registry(p, registry)
+        files_removed = 0
+        for (row, plan), out in zip(plans, deleted):
+            for target in plan["files"]:
+                try:
+                    os.unlink(target)      # unlinks links, never targets
+                    out["files_removed"] += 1
+                except OSError as exc:
+                    out.setdefault("errors", []).append(str(exc))
+            for folder in sorted(plan["dirs"], key=lambda d: -len(d.parts)):
+                try:
+                    folder.rmdir()
+                except OSError as exc:
+                    out.setdefault("errors", []).append(str(exc))
+            asset_dir = Path(p) / ASSET_ROOT / row["asset_id"]
+            try:
+                if asset_dir.is_dir() and not asset_dir.is_symlink() \
+                        and not any(asset_dir.iterdir()):
+                    asset_dir.rmdir()
+            except OSError as exc:
+                out.setdefault("errors", []).append(str(exc))
+            files_removed += out["files_removed"]
         return {"dry_run": False, "candidates": candidates,
                 "protected": protected, "deleted": deleted,
+                "refused": refused,
                 "files_removed": files_removed, "facets": dict(FACETS),
                 "note": "deleted only revisions no evidence chain pins"}
