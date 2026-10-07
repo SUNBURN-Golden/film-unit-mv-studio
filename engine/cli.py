@@ -340,6 +340,18 @@ def main(argv=None):
     perf_plan = sub.add_parser("perf-plan", help="ANIM-017: dependency graph + AUTO_PERFORMANCE ExecutionPlan + capability preflight; nothing executes")
     perf_plan.add_argument("project")
     perf_plan.add_argument("--state-dir", help="Capability registry state dir; default <project>/render/perf/registry")
+    forecast = sub.add_parser("resource-forecast", help="Node film-resource-forecast: pre-execution resource forecast for an ExecutionPlan — per-line measurement provenance or UNKNOWN, disk/entitlement/quote checks, proposed alternatives; nothing executes or charges")
+    forecast.add_argument("project")
+    forecast.add_argument("--plan", help="ExecutionPlan 1 JSON; default <project>/execution/plan.json then the perf graph's AUTO_PERFORMANCE plan")
+    forecast.add_argument("--state-dir", help="Registry + subscriptions dir; default <project>/render/perf/registry")
+    forecast.add_argument("--observation", help="JSON file with a full current observation (environment plus driver/credential_epoch/allowance/caps/route/transport bindings). The default observation records only the device environment, not those bindings, so stored evidence stays STALE under it; a full observation file is needed to make evidence CURRENT")
+    forecast.add_argument("--no-observe", action="store_true",
+        help="Skip the current observation — stored evidence stays STALE and every measured line degrades to UNKNOWN")
+    forecast.add_argument("--disk-free-bytes", type=int, default=None,
+        help="Override the observed USER_DESKTOP free-space observation")
+    forecast.add_argument("--packet", action="append", default=[],
+        help="Issued packet dir (or packet.json); a quote change since issuance is reported")
+    forecast.add_argument("--now-ms", type=int, default=None)
     perf_bench = sub.add_parser("perf-benchmark", help="ANIM-017: cold/warm/one-cut/interrupt benchmark on a local working copy; secret-free report; complete bound measurements register into the perf registry")
     perf_bench.add_argument("project")
     perf_bench.add_argument("--work-dir", help="Working copy dir (default: system temp)")
@@ -843,6 +855,18 @@ def main(argv=None):
         elif a.command == "perf-plan":
             from .perf_scheduler import perf_plan_command
             result = perf_plan_command(a.project, state_dir=a.state_dir)
+        elif a.command == "resource-forecast":
+            from .resource_forecast import resource_forecast_command
+            observation = json.loads(Path(a.observation)
+                                     .read_text(encoding="utf-8")) \
+                if a.observation else None
+            disk = {"USER_DESKTOP": {"free_bytes": a.disk_free_bytes,
+                                     "source": "--disk-free-bytes"}} \
+                if a.disk_free_bytes is not None else None
+            result = resource_forecast_command(
+                a.project, plan_path=a.plan, state_dir=a.state_dir,
+                observation=observation, observe=not a.no_observe,
+                disk=disk, packet_paths=a.packet, now_ms=a.now_ms)
         elif a.command == "perf-benchmark":
             from .perf_scheduler import perf_benchmark_command
             result = perf_benchmark_command(
