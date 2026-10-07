@@ -82,6 +82,16 @@ DELEGATION_SCOPES = ("W00_PILOT", "W00_SPEND", "DELIVERY_APPROVAL", "ALL")
 FILM_METHODS = ["FULL_SPEED_WHOLE_FILM", "TECHNICAL_VALIDATION"]
 ISSUE_DISPOSITIONS = {"FIX_REQUIRED", *LIMITATION_DISPOSITIONS}
 
+# Sealed-inventory members a font/cue change touches (ADR 0001 §8): the
+# subtitle exports and font, the lyric/cue snapshot, the burned delivery
+# frames and the subbed master. None of them feeds MASTER_CLEAN.mp4.
+SUBTITLE_SIDE_FILES = {"MASTER_SUBBED.mp4", "lyrics.ass", "lyrics.srt",
+                       "lyrics_source.txt", "lyrics_timed.json",
+                       "subtitle_report.json", "snapshot/input/lyrics.txt",
+                       "snapshot/lyrics/lyrics_source.txt",
+                       "snapshot/lyrics/lyrics_timed.json"}
+SUBTITLE_SIDE_DIRS = ("subtitle_fonts/", "final_frames/")
+
 # Durable job states that fence progression: the submission/cancel outcome
 # is unconfirmed — reconcile the same job identity, never a new one.
 AMBIGUOUS_STATES = {"SUBMITTING", "UNKNOWN", "CANCEL_REQUESTED"}
@@ -524,12 +534,29 @@ def _target_bindings(p, targets):
     return out
 
 
+def _render_provenance():
+    """engine.render_provenance, or None where its ANIM-017 scheduler
+    dependency cannot load (the Unix-only `resource` module on Windows).
+    Any other import failure is a real defect and propagates."""
+    try:
+        from . import render_provenance
+    except ModuleNotFoundError as exc:
+        if exc.name != "resource":
+            raise
+        return None
+    return render_provenance
+
+
 def _manifest_ref(p):
     """The current render_manifest digest, or None when the film cannot be
-    resolved yet (later-wave shots unproduced). Never invented."""
-    from .render_provenance import build_manifest, manifest_digest
+    resolved yet (later-wave shots unproduced) or the manifest builder is
+    unavailable on this platform. Never invented."""
+    provenance = _render_provenance()
+    if provenance is None:
+        return None
     try:
-        return "render_manifest:" + manifest_digest(build_manifest(p))
+        return "render_manifest:" + provenance.manifest_digest(
+            provenance.build_manifest(p))
     except (FilmError, OSError, KeyError, TypeError, ValueError):
         return None
 
@@ -709,15 +736,22 @@ def approve_delivery(project, build_id, deliverable, *, approver,
         return {"review": review, "approval": audit}
 
 
+def _subtitle_side(relative):
+    relative = relative.replace("\\", "/")
+    return relative in SUBTITLE_SIDE_FILES \
+        or relative.startswith(SUBTITLE_SIDE_DIRS)
+
+
 def _clean_film_binding_current(folder, record):
     """The MASTER_CLEAN.mp4 subset of a sealed FINAL_FILM binding.
 
     ADR 0001 §8: a font/cue change stales the subbed master and the
     subbed delivery, never the clean master. The clean approval stays
     CURRENT while its clean-relevant bindings verify on disk — the
-    deliverable's own digest, the build record and sealed inventory, the
-    edit digest and the audio. The bound font/lyrics-review digests and
-    the subbed frame-sequence root do not apply to the clean file.
+    deliverable's own digest, the build record, every sealed inventory
+    member outside the subtitle side, the edit digest and the audio. The
+    bound font/lyrics-review digests, the subtitle-side inventory members
+    and the subbed frame-sequence root do not apply to the clean file.
     """
     try:
         fields = {k: record[k] for k in BINDING_FIELDS["FINAL_FILM"]}
@@ -732,7 +766,8 @@ def _clean_film_binding_current(folder, record):
         if not build_file.is_file() \
                 or digest(build_file) != record["build_manifest_sha256"]:
             return False
-        if not verify_build(folder)["valid"]:
+        if any(not _subtitle_side(error)
+               for error in verify_build(folder)["errors"]):
             return False
         build = read(build_file)
         if build["edit_digest"] != record["edit_digest"]:
@@ -751,7 +786,11 @@ def deliverable_status(project, build_id):
     An approval is CURRENT only while its bound digests still verify on
     disk — a new artifact hash needs a new approval; an old approval never
     carries over. `governed` means the governing review was recorded
-    through `approve_delivery` under the approver policy.
+    through `approve_delivery` under the approver policy: the latest
+    still-bound review, or — when later bound reviews only re-approve
+    without that audit (the protocol `approve-film` record) — the latest
+    governed approval they did not supersede. A later non-approving
+    review always ends governance.
     """
     from .animation_review import _approves
     p = Path(project)
@@ -778,7 +817,14 @@ def deliverable_status(project, build_id):
                  and current(folder, r)]
         latest = bound[-1] if bound else None
         approved = latest is not None and _approves(latest)
-        audit = audit_for.get(latest["review_id"]) if latest else None
+        audit = None
+        for record in reversed(bound):
+            if record["review_id"] in audit_for:
+                if record is latest or _approves(record):
+                    audit = audit_for[record["review_id"]]
+                break
+            if not _approves(record):
+                break
         out[deliverable] = {
             "deliverable": deliverable,
             "deliverable_sha256":
@@ -789,6 +835,7 @@ def deliverable_status(project, build_id):
                       else "STALE" if records else "UNREVIEWED"),
             "review_id": latest["review_id"] if approved else None,
             "governed": audit is not None,
+            "governing_review_id": audit["review_id"] if audit else None,
             "approval_id": audit["approval_id"] if audit else None,
             "approver": audit["approver"] if audit else None,
             "reviewer_kind": audit["reviewer_kind"] if audit else None,
@@ -852,7 +899,7 @@ def gate_status(project):
     approvals, per-deliverable delivery state and the evidence facets.
     Computes no work and executes nothing.
     """
-    from .render_provenance import _current_stale
+    provenance = _render_provenance()
     p = Path(project)
     with project_mutex(p):
         config = require_animation_profile(p)
@@ -1042,7 +1089,8 @@ def gate_status(project):
                             deliveries[b["build_id"]]["deliverables"]}
                         for b in builds}},
                 "issues": issues,
-                "closure": _current_stale(reviews, locks),
+                "closure": provenance._current_stale(reviews, locks)
+                if provenance is not None else None,
                 "quote": {"jobs": quotes, "totals": quote_totals},
                 "usage": {"reservations": usage,
                           "reserved_totals": usage_totals},

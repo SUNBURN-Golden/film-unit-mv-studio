@@ -24,8 +24,9 @@ from engine.animation_locks import (declare_waves, record_final_lock,
                                     record_plan_lock, record_route_decision,
                                     record_wave_lock)
 from engine.animation_review import (_film_binding_current, append_review,
-                                     binding_digest, load_reviews,
-                                     record_cut_review,
+                                     binding_digest, film_review_status,
+                                     load_reviews, record_cut_review,
+                                     record_film_review,
                                      record_transition_review)
 from engine.animation_schema import canon_bytes, read_canon, write_canon
 from engine.autopilot import autopilot
@@ -620,9 +621,9 @@ def test_clean_approval_ignores_font_and_cue_bindings(tmp_path):
                for row in status["deliverables"].values())
     folder = _build_folder(p, build_id)
     # A font/cue change stales the subbed master and the subbed delivery
-    # only (ADR 0001 §8). Every file in the sealed build is in its
-    # inventory, so the change is simulated on the record side: the same
-    # approval bound to different font/lyrics-review digests.
+    # only (ADR 0001 §8). Record side here: the same approval bound to
+    # different font/lyrics-review digests (the on-disk side is covered
+    # by test_clean_approval_survives_on_disk_font_and_cue_change).
     by_deliverable = {r["deliverable"]: r for r in load_reviews(p)
                       if r["scope"] == "FINAL_FILM"}
 
@@ -650,6 +651,103 @@ def test_clean_approval_ignores_font_and_cue_bindings(tmp_path):
     assert subbed["state"] == "CURRENT"
     assert subbed["review_id"] \
         == by_deliverable["MASTER_SUBBED.mp4"]["review_id"]
+
+
+def test_clean_approval_survives_on_disk_font_and_cue_change(tmp_path):
+    p = w00_project(tmp_path)
+    build_id = _final_build(p, tmp_path)
+    clean_out = approve_delivery(p, build_id, "MASTER_CLEAN.mp4",
+                                 approver=PRIMARY, reviewer_kind="HUMAN")
+    approve_delivery(p, build_id, "MASTER_SUBBED.mp4",
+                     approver=PRIMARY, reviewer_kind="HUMAN")
+    folder = _build_folder(p, build_id)
+    # Font, cue and subbed-master bytes change inside the sealed build:
+    # its inventory check now fails on the subtitle side only.
+    for relative in ("subtitle_fonts/subtitle.ttf", "lyrics.ass",
+                     "lyrics_timed.json", "snapshot/lyrics/lyrics_timed.json",
+                     "MASTER_SUBBED.mp4"):
+        target = folder / relative
+        target.write_bytes(target.read_bytes() + b"changed")
+    assert verify_build(folder)["valid"] is False
+    status = deliverable_status(p, build_id)
+    clean = status["deliverables"]["MASTER_CLEAN.mp4"]
+    subbed = status["deliverables"]["MASTER_SUBBED.mp4"]
+    # The governed clean approval stays CURRENT with its own audit.
+    assert clean["state"] == "CURRENT" and clean["governed"] is True
+    assert clean["approver"] == PRIMARY
+    assert clean["approval_id"] == clean_out["approval"]["approval_id"]
+    assert clean["review_id"] == clean_out["review"]["review_id"]
+    # The subbed approval and the protocol FINAL_FILM status go stale.
+    assert subbed["state"] == "STALE" and subbed["governed"] is False
+    assert subbed["approver"] is None
+    assert film_review_status(p, build_id)["state"] == "STALE"
+    # A change outside the subtitle side stales the clean approval too.
+    edit = folder / "snapshot/timeline/edit.json"
+    edit.write_bytes(edit.read_bytes() + b" ")
+    clean = deliverable_status(p, build_id)["deliverables"][
+        "MASTER_CLEAN.mp4"]
+    assert clean["state"] == "STALE" and clean["approver"] is None
+
+
+def test_protocol_review_never_hides_the_governed_approval(tmp_path):
+    p = w00_project(tmp_path)
+    build_id = _final_build(p, tmp_path)
+    governed = approve_delivery(p, build_id, "MASTER_SUBBED.mp4",
+                                approver=PRIMARY, reviewer_kind="HUMAN")
+
+    def subbed():
+        return deliverable_status(p, build_id)["deliverables"][
+            "MASTER_SUBBED.mp4"]
+
+    def protocol(decision, **kw):
+        # The approve-film path: a FINAL_FILM review under any name.
+        return record_film_review(p, build_id, reviewer="anyone",
+                                  methods=["FULL_SPEED_WHOLE_FILM",
+                                           "TECHNICAL_VALIDATION"],
+                                  decision=decision, **kw)
+
+    later = protocol("APPROVED")
+    row = subbed()
+    # A later re-approval without the audit keeps the governed approval.
+    assert row["state"] == "CURRENT" and row["review_id"] \
+        == later["review_id"]
+    assert row["governed"] is True and row["approver"] == PRIMARY
+    assert row["governing_review_id"] == governed["review"]["review_id"]
+    assert row["approval_id"] == governed["approval"]["approval_id"]
+    # A later FIX_REQUIRED ends it; a re-approval under any name after
+    # that does not revive the governed approval.
+    protocol("FIX_REQUIRED", unresolved_major_issues=[
+        {"scope": [0, 1], "disposition": "FIX_REQUIRED",
+         "note": "fixture"}])
+    row = subbed()
+    assert row["state"] == "CHANGES_REQUIRED" and row["governed"] is False
+    assert row["approver"] is None
+    protocol("APPROVED")
+    row = subbed()
+    assert row["state"] == "CURRENT" and row["governed"] is False
+    assert row["approver"] is None and row["governing_review_id"] is None
+
+
+def test_gate_runs_without_unix_only_resource_module(tmp_path, monkeypatch):
+    """On Windows `engine.perf_scheduler` (behind render_provenance) cannot
+    import `resource`. The gate and pilot records still work there: the
+    manifest ref and the closure projection are reported as unavailable
+    (None), never invented."""
+    import engine
+    p = _prepared_w00(tmp_path)
+    monkeypatch.setitem(sys.modules, "resource", None)
+    for name in ("perf_scheduler", "render_provenance"):
+        monkeypatch.delitem(sys.modules, f"engine.{name}", raising=False)
+        monkeypatch.delattr(engine, name, raising=False)
+    records = _keep_pilots(p)
+    assert all(r["manifest_ref"] is None for r in records)
+    _decide(p)
+    gate = gate_status(p)
+    assert gate["gate"]["state"] == "OPEN"
+    assert gate["closure"] is None and gate["manifest_ref"] is None
+    assert "engine.perf_scheduler" not in sys.modules
+    monkeypatch.undo()
+    assert gate_status(p)["closure"] is not None
 
 
 def test_delivery_approver_rule_and_unknown_deliverable(tmp_path):
