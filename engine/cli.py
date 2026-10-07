@@ -264,6 +264,27 @@ def main(argv=None):
     accept.add_argument("--reviewer", required=True)
     verify = sub.add_parser("verify-build")
     verify.add_argument("build_dir")
+    diag = sub.add_parser("diagnose", help="film-quality-diagnostics: technical media diagnostics on a sealed build's MP4s — decode/PTS/duration/audio/black/still/font; never an approval or aesthetic score")
+    diag.add_argument("project")
+    diag.add_argument("--build", required=True)
+    diag.add_argument("--artifact", choices=["MASTER_SUBBED.mp4",
+                                             "MASTER_CLEAN.mp4",
+                                             "DRAFT_PREVIEW.mp4"],
+                      help="limit the diagnosis to one delivery file")
+    diag.add_argument("--intended",
+                      help="declare intended regions beyond the plan/"
+                           "timeline: KIND:STARTMS-ENDMS,... with KIND in "
+                           "BLACK,STILL,SILENCE")
+    diag_cls = sub.add_parser("diagnose-classify", help="Classify one diagnostics finding with a reason — ACCEPTED_INTENDED/DEFECT/NOT_A_DEFECT; the artifact is never changed")
+    diag_cls.add_argument("project")
+    diag_cls.add_argument("--build", required=True)
+    diag_cls.add_argument("--finding", required=True,
+                          help="finding id (F001…) or key from the report")
+    diag_cls.add_argument("--decision", required=True,
+                          choices=["ACCEPTED_INTENDED", "DEFECT",
+                                   "NOT_A_DEFECT"])
+    diag_cls.add_argument("--reason", required=True)
+    diag_cls.add_argument("--reviewer", required=True)
     replay = sub.add_parser("replay-build")
     replay.add_argument("build_dir")
     replay.add_argument("--output", required=True)
@@ -658,6 +679,29 @@ def main(argv=None):
         elif a.command == "verify-build":
             from .builds import verify_build
             result = verify_build(a.build_dir)
+        elif a.command == "diagnose":
+            from .quality_diagnostics import (diagnose_build,
+                                              parse_intended)
+            declared = parse_intended(a.intended) if a.intended else None
+            report = diagnose_build(
+                a.project, a.build, intended=declared,
+                artifacts=[a.artifact] if a.artifact else None)
+            result = {"report": report.get("report_path"),
+                      "build": a.build, "not_an_approval": True,
+                      "summary": report["summary"],
+                      "findings": [
+                          {"id": f["id"], "severity": f["severity"],
+                           "kind": f["kind"], "artifact": f["artifact"],
+                           "location": f["location"],
+                           "detail": f["detail"], "repro": f["repro"]}
+                          for f in report["findings"]]}
+        elif a.command == "diagnose-classify":
+            from .quality_diagnostics import classify_finding
+            report = classify_finding(a.project, a.build, a.finding,
+                                      a.decision, a.reason, a.reviewer)
+            result = {"finding": a.finding, "decision": a.decision,
+                      "summary": report["summary"],
+                      "artifact_unchanged": True}
         elif a.command == "replay-build":
             from .builds import replay_build
             result = replay_build(a.build_dir, a.output)
