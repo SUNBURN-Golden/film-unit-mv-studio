@@ -9,11 +9,14 @@ cleanup of unused revisions.
 Identity is content. An asset revision is its
 (asset_id, revision, content_sha256) triple — never its filename. Two
 members that share a source file name but hash differently are different
-content; the view reports such name collisions explicitly instead of
-merging them. Stored member files are the real originals: the library
-labels every recorded member ORIGINAL, flags files inside a revision
-directory that no record pins as UNRECORDED, and treats any thumbnail the
-UI draws as a derived preview — never the original and never an approval.
+content; the view reports such name collisions across different assets
+explicitly instead of merging them (successive revisions of one asset
+naturally reuse member names). Stored member files are the real
+originals: the library labels every recorded member ORIGINAL, checks it
+at its lexical path without following symlinks, and flags files inside a
+revision directory that no record pins as UNRECORDED. There is no proxy
+or thumbnail tier: any picture the UI draws is the original member bytes
+scaled for display — never an approval.
 
 Rights are not hashes. Member hash verification proves byte integrity
 only: every revision's rights check is UNVERIFIED, and no license,
@@ -338,26 +341,53 @@ def _refs_for(pin_refs, content_refs, asset_id, record):
     return merged
 
 
+def _hold_reasons(asset_id, entry, record, refs):
+    """Every reason a revision may not be deleted: its evidence-chain refs
+    plus the current-revision hold. The adopted current revision must
+    always name a live record; while other revisions remain it is never a
+    delete candidate."""
+    reasons = set(refs["reasons"])
+    if record["revision"] == entry["current_revision"] \
+            and len(entry["revisions"]) > 1:
+        reasons.add(f"current revision of {asset_id}")
+    return reasons
+
+
+def _crosses_symlink(p, parts):
+    """True when any component joined below the project root is a link."""
+    node = Path(p)
+    for part in parts:
+        node = node / part
+        if node.is_symlink():
+            return True
+    return False
+
+
 def _member_files(p, asset_id, record, verify_bytes):
     """Per-member integrity: ORIGINAL for recorded members, UNRECORDED for
-    files the registry never pinned inside the revision directory."""
+    files the registry never pinned inside the revision directory.
+
+    Paths are checked lexically, exactly as cleanup plans them: a member
+    that is a symlink, crosses a symlinked component, or whose name
+    leaves the revision directory is not a stored original and reports
+    MISSING — it is never hashed through the link and never raises.
+    """
     files, integrity = [], "VERIFIED"
     recorded = set()
+    revision_parts = (ASSET_ROOT, asset_id, f"r{record['revision']}")
+    revision_dir = Path(p).joinpath(*revision_parts)
     for member in record["files"]:
         relative = member["relative_name"]
         recorded.add(relative)
         status = "VERIFIED"
-        if verify_bytes:
-            path = safe_path(p, relative)
-            if path.is_symlink() or not path.is_file():
-                status = "MISSING"
-            elif path.stat().st_size != member["byte_length"]:
+        path, refusal = _member_target(p, revision_dir, relative)
+        if refusal is not None or path.is_symlink() or not path.is_file():
+            status = "MISSING"
+        elif verify_bytes:
+            if path.stat().st_size != member["byte_length"]:
                 status = "LENGTH_MISMATCH"
             elif digest(path) != member["sha256"]:
                 status = "HASH_MISMATCH"
-        else:
-            if not safe_path(p, relative).is_file():
-                status = "MISSING"
         if status == "MISSING":
             integrity = "MISSING"
         elif status != "VERIFIED" and integrity != "MISSING":
@@ -368,8 +398,7 @@ def _member_files(p, asset_id, record, verify_bytes):
                       "frame_index": member.get("frame_index"),
                       "source_name": member.get("source_name"),
                       "role": "ORIGINAL", "status": status})
-    revision_dir = safe_path(p, f"{ASSET_ROOT}/{asset_id}/r{record['revision']}")
-    if revision_dir.is_dir():
+    if not _crosses_symlink(p, revision_parts) and revision_dir.is_dir():
         for found in sorted(revision_dir.rglob("*")):
             if not found.is_file() or found.is_symlink():
                 continue
@@ -408,6 +437,7 @@ def library_view(project, *, kind=None, revision=None, origin=None,
         for label in sorted(entry["revisions"], key=int):
             record = entry["revisions"][label]
             refs = _refs_for(pin_refs, content_refs, asset_id, record)
+            reasons = _hold_reasons(asset_id, entry, record, refs)
             files, integrity = _member_files(p, asset_id, record, verify_bytes)
             if integrity == "MISSING" or (integrity == "CORRUPT"
                                         and worst == "VERIFIED"):
@@ -436,8 +466,8 @@ def library_view(project, *, kind=None, revision=None, origin=None,
                 "bytes": sum(f["byte_length"] for f in record["files"]),
                 "files": files, "integrity": integrity,
                 "current": record["revision"] == entry["current_revision"],
-                "used_in": uses, "held_by": sorted(refs["reasons"]),
-                "protected": bool(refs["reasons"]),
+                "used_in": uses, "held_by": sorted(reasons),
+                "protected": bool(reasons),
                 "source_names": [m.get("source_name")
                                  for m in record["files"]
                                  if m.get("source_name")],
@@ -452,9 +482,14 @@ def library_view(project, *, kind=None, revision=None, origin=None,
                        "rights": dict(RIGHTS_UNVERIFIED),
                        "used_in": used_in, "builds": sorted(builds),
                        "integrity": worst})
+    # A collision is the same source name holding different bytes in two
+    # different assets; one asset's successive revisions reusing its own
+    # member names is the revision contract, not a collision.
     collisions = [{"source_name": name, "holders": holders}
                   for name, holders in sorted(name_map.items())
-                  if len({h["sha256"] for h in holders}) > 1]
+                  if any(a["asset_id"] != b["asset_id"]
+                         and a["sha256"] != b["sha256"]
+                         for a in holders for b in holders)]
     view = {"document": "asset_library_view", "generated_at": now(),
             "profile": "FRAME_ANIMATION_V1", "facets": dict(FACETS),
             "rights_note": RIGHTS_UNVERIFIED["note"],
@@ -630,12 +665,7 @@ def _scan_unused(p, registry):
         for label in sorted(entry["revisions"], key=int):
             record = entry["revisions"][label]
             refs = _refs_for(pin_refs, content_refs, asset_id, record)
-            reasons = set(refs["reasons"])
-            # The adopted current revision must always name a live record;
-            # while other revisions remain it is never a delete candidate.
-            if record["revision"] == entry["current_revision"] \
-                    and len(entry["revisions"]) > 1:
-                reasons.add(f"current revision of {asset_id}")
+            reasons = _hold_reasons(asset_id, entry, record, refs)
             row = {"asset_id": asset_id, "revision": record["revision"],
                    "kind": record["kind"],
                    "content_sha256": record["content_sha256"],

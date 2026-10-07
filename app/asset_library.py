@@ -21,7 +21,7 @@ import tempfile
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import streamlit as st
 
-from app.animation_ui import _guarded, _do, _jsonable, _upload_name
+from app.animation_ui import _guarded, _jsonable, _upload_name
 from engine.asset_library import (cleanup_unused, detach_asset,
                                   library_view, replace_asset)
 from engine.core import FilmError, safe_path
@@ -33,6 +33,16 @@ KIND_KO = {"FRAME_SEQUENCE": "프레임 시퀀스", "COMPOSITE_SEQUENCE": "합�
 STATUS_KO = {"VERIFIED": "검증됨", "MISSING": "누락", "CORRUPT": "손상",
              "LENGTH_MISMATCH": "길이 불일치", "HASH_MISMATCH": "해시 불일치",
              "UNRECORDED": "기록 없음"}
+
+
+def _do(fn, message):
+    """Run a mutating engine action; flash it on this panel and redraw."""
+    result = _guarded(fn)
+    if result is not None:
+        st.session_state["al_flash"] = message
+        st.session_state["al_detail"] = result
+        st.rerun()
+    return result
 
 
 def _filters(view):
@@ -249,8 +259,9 @@ def render_asset_library(p):
         st.warning(warning)
     for collision in base["name_collisions"]:
         st.warning(
-            f"같은 파일명 '{collision['source_name']}'이지만 내용이 다른 "
-            "별개 자산입니다: " + ", ".join(
+            f"같은 파일명 '{collision['source_name']}'을 서로 다른 자산이 "
+            "다른 내용으로 갖고 있습니다 — 파일명이 아니라 (자산, 리비전, "
+            "content hash)로 구분되는 별개 콘텐츠입니다: " + ", ".join(
                 f"{h['asset_id']} r{h['revision']}"
                 for h in collision["holders"]))
     if not base["assets"]:

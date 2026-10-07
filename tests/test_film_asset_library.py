@@ -136,6 +136,57 @@ def test_unrecorded_files_in_a_revision_dir_are_flagged(tmp_path):
     assert extra[0]["status"] == "UNRECORDED"
 
 
+def test_member_symlink_is_never_verified_through_the_link(tmp_path):
+    """A member replaced by a link to identical bytes is not the stored
+    original: it reports MISSING instead of hashing the link target."""
+    p = animation_project(tmp_path, shot_count=1)
+    seq = import_seq(p, tmp_path, seed=6)
+    record = load_registry(p)["assets"][seq["asset_id"]]["revisions"]["1"]
+    member = p / record["files"][0]["relative_name"]
+    copy = p / "input/copy.png"
+    copy.write_bytes(member.read_bytes())       # same bytes, same sha256
+    member.unlink()
+    member.symlink_to(copy)
+    block = revision(library_view(p), seq["asset_id"], 1)
+    statuses = {f["relative_name"]: f["status"] for f in block["files"]}
+    assert statuses[record["files"][0]["relative_name"]] == "MISSING"
+    assert block["integrity"] == "MISSING"
+    assert revision(library_view(p, verify_bytes=False),
+                    seq["asset_id"], 1)["integrity"] == "MISSING"
+
+
+def test_escaping_member_paths_report_missing_and_never_raise(tmp_path):
+    """A member link leaving the project, a `..` member name and a
+    symlinked revision directory are reported, not raised — the view (and
+    so the panel's cleanup controls) stays available."""
+    p = animation_project(tmp_path, shot_count=3)
+    linked = import_seq(p, tmp_path, shot="S001", seed=12, name="a")
+    dotted = import_seq(p, tmp_path, shot="S002", seed=13, name="b")
+    moved = import_seq(p, tmp_path, shot="S003", seed=14, name="c")
+    registry = load_registry(p)
+    member = p / registry["assets"][linked["asset_id"]]["revisions"]["1"] \
+        ["files"][0]["relative_name"]
+    outside = tmp_path / "outside.png"
+    outside.write_bytes(member.read_bytes())
+    member.unlink()
+    member.symlink_to(outside)
+    registry["assets"][dotted["asset_id"]]["revisions"]["1"]["files"][0] \
+        ["relative_name"] = (f"animation/assets/{dotted['asset_id']}/r1/"
+                             "../../../input/lyrics.txt")
+    save_registry(p, registry)
+    revision_dir = p / "animation/assets" / moved["asset_id"] / "r1"
+    elsewhere = tmp_path / "elsewhere"
+    revision_dir.rename(elsewhere)
+    revision_dir.symlink_to(elsewhere)
+    view = library_view(p)
+    for asset_id in (linked["asset_id"], dotted["asset_id"]):
+        assert revision(view, asset_id, 1)["integrity"] == "MISSING"
+    block = revision(view, moved["asset_id"], 1)
+    assert block["integrity"] == "MISSING"
+    assert {f["status"] for f in block["files"]} == {"MISSING"}
+    assert not any(f["role"] == "UNRECORDED" for f in block["files"])
+
+
 def test_same_filename_different_hash_are_distinct_assets(tmp_path):
     """Acceptance 1: a filename never makes two byte contents one asset."""
     p = animation_project(tmp_path, shot_count=2)
@@ -162,6 +213,22 @@ def test_same_filename_and_same_bytes_share_the_digest(tmp_path):
     view = library_view(p)
     assert not any(c["source_name"] == "f0000.png"
                    for c in view["name_collisions"])
+
+
+def test_revisions_of_one_asset_sharing_member_names_are_no_collision(tmp_path):
+    """Replacing a sequence reuses its f####.png member names under the same
+    asset id; that is the revision contract, not two assets."""
+    p = animation_project(tmp_path, shot_count=1)
+    seq = import_seq(p, tmp_path, seed=15)
+    replace_asset(p, seq["asset_id"],
+                  folder=make_sequence(tmp_path / "r2", 24, seed=16),
+                  shot_id="S001")
+    view = library_view(p)
+    one, two = revision(view, seq["asset_id"], 1), revision(view, seq["asset_id"], 2)
+    assert one["content_sha256"] != two["content_sha256"]
+    assert "f0000.png" in one["source_names"] \
+        and "f0000.png" in two["source_names"]
+    assert view["name_collisions"] == []
 
 
 def test_filters_by_kind_origin_and_used_cut(tmp_path):
@@ -272,6 +339,24 @@ def test_cleanup_dry_run_lists_candidates_and_deletes_nothing(tmp_path):
     assert (p / "manifest/animation_assets.json").read_bytes() == registry_bytes
     record = load_registry(p)["assets"][seq["asset_id"]]["revisions"]["1"]
     assert (p / record["files"][0]["relative_name"]).is_file()
+
+
+def test_view_unprotected_count_matches_the_cleanup_listing(tmp_path):
+    """The view's protection includes the current-revision hold, so its
+    unprotected count equals the cleanup dry-run candidates."""
+    p = animation_project(tmp_path, shot_count=1)
+    seq = import_seq(p, tmp_path, seed=17)
+    replace_asset(p, seq["asset_id"],
+                  folder=make_sequence(tmp_path / "r2", 24, seed=18),
+                  shot_id="S001")
+    detach_asset(p, "S001")             # r2 is now held only as current
+    view = library_view(p)
+    result = cleanup_unused(p)
+    assert view["summary"]["unprotected"] == len(result["candidates"]) == 1
+    current = revision(view, seq["asset_id"], 2)
+    assert current["protected"] is True
+    assert current["held_by"] == [f"current revision of {seq['asset_id']}"]
+    assert revision(view, seq["asset_id"], 1)["protected"] is False
 
 
 def test_cleanup_execute_deletes_only_unprotected_revisions(tmp_path):

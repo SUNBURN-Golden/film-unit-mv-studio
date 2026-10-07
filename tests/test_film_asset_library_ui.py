@@ -64,6 +64,10 @@ def uploader(at, key):
     return next(f for f in at.file_uploader if f.key == key)
 
 
+def tab(at, label):
+    return next(t for t in at.tabs if t.label == label)
+
+
 def texts(at):
     return " ".join(e.value for e in
                     list(at.caption) + list(at.subheader) + list(at.markdown))
@@ -108,8 +112,26 @@ def test_unreadable_registry_shows_an_error_not_a_traceback(box):
     (project / "manifest/animation_assets.json").write_text("{not json")
     at = run_panel(project)
     assert not at.exception
-    assert any("error" in e.type.lower() or True for e in at.error)
-    assert at.error                              # the panel reported the error
+    # The asset tab itself reports the unreadable registry by name.
+    assert any("animation_assets.json" in e.value
+               for e in tab(at, "09 · 자산").error)
+
+
+def test_escaping_member_link_keeps_the_cleanup_controls(box):
+    project, _ = screen(box, imports=1)
+    record = load_registry(project)["assets"]["A0001"]["revisions"]["1"]
+    member = project / record["files"][0]["relative_name"]
+    outside = box / "outside.png"
+    outside.write_bytes(member.read_bytes())
+    member.unlink()
+    member.symlink_to(outside)                  # leaves the project
+    at = run_panel(project)
+    assets = tab(at, "09 · 자산")
+    assert not assets.error
+    assert any(c.key == "al_clean_confirm" for c in assets.checkbox)
+    frame = next(d.value for d in assets.dataframe
+                 if "A0001" in d.value.to_string())
+    assert "누락" in frame.to_string()
 
 
 def test_legacy_mv_project_has_no_asset_library_tab(box):
@@ -127,7 +149,10 @@ def test_detach_via_panel_drops_the_cut_pin(box):
     sel(at, "al_det_shot_A0001").select("S001").run()
     button(at, "al_det_go_A0001").click().run()
     assert not at.exception
-    assert any("pin을 해제" in s.value for s in at.success)
+    # The flash lands on the asset tab, not on 08 · ANIMATION.
+    assert any("pin을 해제" in s.value for s in tab(at, "09 · 자산").success)
+    assert not any("pin을 해제" in s.value
+                   for s in tab(at, "08 · ANIMATION").success)
     assert "S001" not in load_registry(project)["assignments"]
     assert "S002" in load_registry(project)["assignments"]
 
@@ -142,6 +167,8 @@ def test_replace_via_panel_opens_a_new_revision(box):
     uploader(at, "al_rep_files_A0001").set_value(payload).run()
     button(at, "al_rep_go_A0001").click().run()
     assert not at.exception
+    assert any("새 리비전으로 교체" in s.value
+               for s in tab(at, "09 · 자산").success)
     registry = load_registry(project)
     assert registry["assets"]["A0001"]["current_revision"] == 2
     assert registry["assignments"]["S001"]["revision"] == 2
