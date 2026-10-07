@@ -89,8 +89,9 @@ with web_tab:
     render_connection(p)
     from app.archive_ui import render_archive
     render_archive(p)
-    from app.capability_ui import render_capabilities
+    from app.capability_ui import render_capabilities, render_forecast
     render_capabilities(p)
+    render_forecast(p)
 
 with brief_tab:
     from app.brief_board import render_brief_board
