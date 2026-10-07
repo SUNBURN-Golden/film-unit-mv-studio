@@ -611,6 +611,9 @@ def _output(p, entries, locks, route, reviews):
     if c2.button("최종 수정 필요 기록", key="an_final_fix"):
         _do(lambda: _approve_film(p, pick, reviewer, "FIX_REQUIRED"),
             f"{pick['build_id']} 수정 필요를 기록했습니다")
+    st.divider()
+    from app.diagnostics_ui import render_diagnostics
+    render_diagnostics(p, pick["build_id"])
 
 
 def _b_flash(action, result):
