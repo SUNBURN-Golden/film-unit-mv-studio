@@ -324,7 +324,7 @@ def _exposure_digest(schedules):
         {"schedules": [schedule_digest(s) for s in schedules]})).hexdigest()
 
 
-def bound_targets(p, exposure=None, strict=True):
+def bound_targets(p, exposure=None, strict=True, document=None):
     """The current CUT/TRANSITION bound fields for the whole edit.
 
     Every timeline entry must resolve to its pinned sequence — a review can
@@ -333,10 +333,14 @@ def bound_targets(p, exposure=None, strict=True):
     With strict=False an unresolvable entry yields an {"unresolved": reason}
     placeholder instead of raising, so scope/status reporting can inspect a
     partially produced timeline; reviews still only ever bind real content.
+    `document` may supply a candidate `animation_timeline` (a draft) instead
+    of the file on disk, so callers can project bindings for a change that
+    has not landed yet.
     """
     p = Path(p)
     require_animation_profile(p)
-    document = load_animation_timeline(p)
+    if document is None:
+        document = load_animation_timeline(p)
     audit = audit_timeline(document)
     entries = {e["instance_id"]: e for e in document["entries"]}
     intent = shared_intent_digest(p)
@@ -407,7 +411,7 @@ def _approves(record):
             and not record["unresolved_major_issues"])
 
 
-def review_status(project, exposure=None, strict=True):
+def review_status(project, exposure=None, strict=True, document=None):
     """Per-target state: CURRENT, CHANGES_REQUIRED, STALE or UNREVIEWED.
 
     A target is STALE when records exist for it but none binds the current
@@ -416,9 +420,11 @@ def review_status(project, exposure=None, strict=True):
     that binds the current digests without approving (FIX_REQUIRED or open
     issues) reports CHANGES_REQUIRED, which blocks just as hard. With
     strict=False unresolvable entries report UNRESOLVED instead of raising.
+    `document` may name a candidate `animation_timeline` (a draft) to
+    project what the states would be after that document lands.
     """
     p = Path(project)
-    targets = bound_targets(p, exposure, strict=strict)
+    targets = bound_targets(p, exposure, strict=strict, document=document)
     records = load_reviews(p)
     status = {}
     for scope, key in (("cuts", "CUT"), ("transitions", "TRANSITION")):

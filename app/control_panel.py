@@ -78,6 +78,7 @@ tab_names = ["00 · AI 모델", "00 · 웹사이트 연결", "01 · 제작 준�
 if production_profile(config) == "FRAME_ANIMATION_V1":
     tab_names.append("08 · ANIMATION")
     tab_names.append("09 · 자산")
+    tab_names.append("10 · 컷 작업대")
 models_tab, web_tab, brief_tab, *tabs = st.tabs(tab_names)
 
 with models_tab:
@@ -483,3 +484,7 @@ if len(tabs) > 8:
     with tabs[8]:
         from app.asset_library import render_asset_library
         render_asset_library(p)
+if len(tabs) > 9:
+    with tabs[9]:
+        from app.shot_board import render_shot_board
+        render_shot_board(p)
