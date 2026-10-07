@@ -63,7 +63,6 @@ from .animation_schema import (canon_bytes, check_document,
 from .builds import list_builds, verify_build
 from .core import FilmError, atomic_text, digest, now, project_mutex, read, \
     safe_path
-from .render_provenance import _current_stale, build_manifest, manifest_digest
 
 PRIMARY_APPROVER = "박준태"
 
@@ -528,6 +527,7 @@ def _target_bindings(p, targets):
 def _manifest_ref(p):
     """The current render_manifest digest, or None when the film cannot be
     resolved yet (later-wave shots unproduced). Never invented."""
+    from .render_provenance import build_manifest, manifest_digest
     try:
         return "render_manifest:" + manifest_digest(build_manifest(p))
     except (FilmError, OSError, KeyError, TypeError, ValueError):
@@ -852,6 +852,7 @@ def gate_status(project):
     approvals, per-deliverable delivery state and the evidence facets.
     Computes no work and executes nothing.
     """
+    from .render_provenance import _current_stale
     p = Path(project)
     with project_mutex(p):
         config = require_animation_profile(p)

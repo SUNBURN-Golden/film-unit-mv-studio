@@ -10,6 +10,8 @@ release NOT_AUTHORIZED.
 """
 import hashlib
 import json
+import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -720,3 +722,18 @@ def test_w00_status_cli(tmp_path, capsys):
     legacy = fixture_project(tmp_path / "legacy", seconds=2)
     assert cli.main(["w00-status", str(legacy)]) == 1
     assert "LEGACY_MV" in capsys.readouterr().err
+
+
+def test_panel_import_needs_no_unix_only_module():
+    """The frozen desktop self-test imports app.animation_ui on Windows,
+    where the Unix-only `resource` module (used by perf_scheduler) does not
+    exist. Importing the W00 gate must not pull perf_scheduler in."""
+    root = Path(__file__).resolve().parents[1]
+    code = ("import sys; sys.modules['resource'] = None\n"
+            "import importlib\n"
+            "for name in ('engine.w00_gate', 'app.animation_ui'):\n"
+            "    importlib.import_module(name)\n"
+            "assert 'engine.perf_scheduler' not in sys.modules\n")
+    result = subprocess.run([sys.executable, "-c", code], cwd=root,
+                            capture_output=True, text=True, timeout=120)
+    assert result.returncode == 0, result.stderr[-2000:]
