@@ -153,6 +153,13 @@ def test_pipeline_item_maps_committed_snapshot_to_six_stages(tmp_path):
     assert i["stages"]["verify"]["status"] == "VERIFIED"
     assert i["stages"]["upload"]["status"] == "PENDING"
     assert i["stages"]["seal"]["status"] == "PENDING"
+    # nothing archived for this snapshot: upload verification is not
+    # applicable — it must not read as an unfinished verification beside
+    # the VERIFIED verify cell, and the snapshot is work in hand
+    assert i["closed"] is False
+    assert i["in_flight"] is True
+    assert i["indicators"]["upload_verify"] == {
+        "level": None, "state": "NOT_APPLICABLE"}
 
 
 def test_pipeline_partial_encode_does_not_claim_a_muxed_mp4(tmp_path):
@@ -171,10 +178,14 @@ def test_pipeline_partial_encode_does_not_claim_a_muxed_mp4(tmp_path):
     sd = tmp_path / "state"
     sd.mkdir()
     console = ExecutionConsole(state_dir=sd, perf_roots=[perf])
-    mux = item(console.status(), f"pipeline:{perf.name}")["stages"]["mux"]
+    pi = item(console.status(), f"pipeline:{perf.name}")
+    mux = pi["stages"]["mux"]
     assert mux["status"] == "PARTIAL"
     assert "mux ran" not in mux["detail"]
     assert "subbed" in mux["detail"]
+    # a snapshot with a missing encode role is not closed
+    assert pi["closed"] is False
+    assert pi["in_flight"] is True
 
 
 def test_pipeline_item_links_archive_commit_by_snapshot(tmp_path):
@@ -198,6 +209,13 @@ def test_pipeline_item_links_archive_commit_by_snapshot(tmp_path):
     i = item(console.status(), f"pipeline:{perf.name}")
     assert i["stages"]["upload"]["status"] == "UPLOADED"
     assert i["stages"]["seal"]["status"] == "SEALED"
+    # UPLOADED + SEALED is the closed shape — the stop-point expander
+    # opens for it, and the caption mirrors the commit's verify levels
+    # instead of reading unfinished
+    assert i["closed"] is True
+    assert i["in_flight"] is False
+    assert i["indicators"]["upload_verify"]["verified"] is True
+    assert i["indicators"]["upload_verify"]["levels"]
 
 
 # -- 완료 판정 1: CANCEL_REQUESTED is never terminal -------------------------------
@@ -406,6 +424,47 @@ def test_partial_upload_new_session_after_restart(tmp_path):
     assert sessions[1]["data"]["session_seq"] == 2
     intents = [r for r in journal.records if r["event"] == "UPLOAD_INTENT"]
     assert len(intents) == 1           # the intent itself was continued
+
+
+def test_upload_stop_point_is_the_live_session_not_a_fenced_one(tmp_path):
+    """After a fence the interrupt point is the live session's offset —
+    a fenced session's higher offset is history (its bytes died with the
+    session), never the number a resume continues from."""
+    backend = FakeDriveBackend(provider_checksum="sha256")
+    up_dir = tmp_path / "up"
+    journal = DurableJournal(up_dir / "job_journal.jsonl")
+    # drive 1: one chunk confirmed (offset 128), then the budget stops
+    tracker = UploadTracker(journal, backend, upload=UPLOAD,
+                            retry=dict(RETRY, max_requests=4))
+    data = b"D" * 1000
+    with pytest.raises(FilmError, match="TRANSPORT_RETRY_EXHAUSTED"):
+        tracker.put("obj-1", data)
+    # drive 2: a restarted tracker holds no session URI — resume fences
+    # session 1 and opens session 2, which is still at offset 0 when the
+    # request budget stops again
+    tracker = UploadTracker(journal, backend, upload=UPLOAD,
+                            retry=dict(RETRY, max_retries=1,
+                                       max_requests=2))
+    with pytest.raises(FilmError, match="TRANSPORT_RETRY_EXHAUSTED"):
+        tracker.put("obj-1", data)
+    sd = tmp_path / "state"
+    sd.mkdir()
+    console = ExecutionConsole(state_dir=sd, journal_dirs=[up_dir],
+                               backends={str(up_dir): backend})
+    i = item(console.status(), "up-obj-1")
+    dead, live = i["sessions"]
+    assert dead["fenced"] and dead["confirmed"] == 128   # history only
+    assert not live["fenced"] and live["confirmed"] == 0
+    # the stop point names the live session and shows ITS offset — not
+    # the dead session's higher number
+    assert i["live_session"] == live["ref"]
+    assert i["confirmed_bytes"] == 0
+    assert i["state"] == "PENDING"
+    assert "128" not in (i["stages"]["upload"].get("detail") or "")
+    d = console.explain("up-obj-1")
+    assert d["stop_point"]["confirmed_bytes"] == 0
+    assert d["stop_point"]["sessions"][0]["confirmed"] == 128
+    assert any("fenced session" in n for n in d["notes"])
 
 
 def test_uploaded_and_verified_are_distinct_facts(tmp_path):

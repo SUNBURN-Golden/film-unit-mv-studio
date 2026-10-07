@@ -575,9 +575,14 @@ class ExecutionConsole:
                 continue
             for intent_id, row in tracker.status().items():
                 oid = row["object_id"]
-                confirmed = max((s["confirmed"] for s in row["sessions"]),
-                                default=0)
                 live = [s for s in row["sessions"] if not s["fenced"]]
+                # The interrupt point is the live session's server-confirmed
+                # offset: resume continues that session, and an explicit
+                # replacement starts from its own offset. A fenced session's
+                # higher number is history — its bytes died with the session —
+                # so a max() over every session would report a dead offset
+                # as the stop point.
+                confirmed = live[-1]["confirmed"] if live else 0
                 ver = verified.get(oid)
                 if ver:
                     vstage = _stage("VERIFIED", level=ver["level"],
@@ -696,6 +701,12 @@ class ExecutionConsole:
                 "the server-confirmed offset is the only truth — chunks are "
                 "re-sent only after a same-session status query, and a "
                 "dropped chunk is never assumed written")
+        if any(s["fenced"] for s in item["sessions"]):
+            notes.append(
+                "a fenced session's offset is history, not the stop point — "
+                "its bytes died with the session; resume continues the live "
+                "session (or opens an explicit new one) from its own "
+                "server-confirmed offset")
         if not item["sessions"] and item["state"] != "PENDING":
             notes.append("no live session survives a restart — the next "
                          "resume journals an explicit new session for the "
@@ -943,6 +954,16 @@ class ExecutionConsole:
                 stages["seal"] = _stage(
                     "PENDING",
                     detail="no archive commit recorded for this snapshot")
+            # A sealed archive row reports its transfer as UPLOADED — with
+            # the seal SEALED that is the closed shape (the commit row's
+            # own gate is state == "SEALED").
+            closed = all(stages[s]["status"] in
+                         ("SEALED", "DONE", "VERIFIED", "UPLOADED",
+                          "NOT_APPLICABLE") for s in STAGES)
+            commit_verify = (
+                dict(adv[0]["indicators"]["upload_verify"])
+                if linked else
+                {"level": None, "state": "NOT_APPLICABLE"})
             items.append({
                 "item_id": f"pipeline:{root.name}",
                 "kind": "pipeline",
@@ -955,13 +976,13 @@ class ExecutionConsole:
                 "indicators": {
                     "network": {"state": "NONE", "lost": []},
                     "remote": {"last_report": None, "basis": "inapplicable"},
-                    "upload_verify": {"level": None,
-                                      "state": "NOT_APPLICABLE"},
+                    "upload_verify": commit_verify,
                 },
-                "closed": all(stages[s]["status"] in
-                              ("SEALED", "DONE", "VERIFIED",
-                               "NOT_APPLICABLE") for s in STAGES),
-                "in_flight": False,
+                "closed": closed,
+                # Same convention as the commit row: a snapshot that is not
+                # fully archived yet is work in hand, so the panel opens
+                # its stop point instead of skipping the expander.
+                "in_flight": not closed,
                 "qualification_state": "UNQUALIFIED",
             })
         return items

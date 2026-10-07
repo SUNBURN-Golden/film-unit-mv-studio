@@ -6,11 +6,12 @@ tests/test_film_execution_console_ui.py. Environment:
 - EXEC_FIXTURE_DIR      writable scratch dir (state/ + commit/ inside)
 - EXEC_FIXTURE_SCENARIO empty | nodir | running | cancel_requested |
                         race | unknown | disconnect | verify_fails |
-                        fenced | commit
+                        fenced | commit | pipeline
 
 Everything is built on the local fakes (FakeRemoteWorker /
 FakeDriveBackend) — no network, no credentials, UNQUALIFIED.
 """
+import json
 import os
 import sys
 from pathlib import Path
@@ -110,8 +111,29 @@ def _build():
             required_kinds=("frames", "preview"), coverage=[0, 3])
         cc.run(ck)
 
+    perf_roots = []
+    if scenario == "pipeline":
+        # a fully rendered, delivery-verified snapshot with no archive
+        # commit recorded yet — the pipeline row is work in hand
+        perf = base / "perf"
+        perf.mkdir()
+        (perf / "state.json").write_text(json.dumps({
+            "state_version": 1,
+            "input": {"snapshot_digest":
+                      __import__("hashlib").sha256(
+                          b"console-snapshot").hexdigest()},
+            "clean": {"sequence_root": "c" * 64, "frames": [{"key": "k"}]},
+            "subbed": {"sequence_root": "s" * 64},
+            "encodes": {"clean": {"artifact_sha256": "a" * 64,
+                                  "verification": {"valid": True}},
+                        "subbed": {"artifact_sha256": "b" * 64,
+                                   "verification": {"valid": True}}},
+            "generated_at": "2026-01-01T00:00:00Z"}), encoding="utf-8")
+        perf_roots = [perf]
+
     return {"coordinator": c, "worker": worker, "state_dir": state_dir,
-            "commit_dir": commit_dir, "backend": backend}
+            "commit_dir": commit_dir, "backend": backend,
+            "perf_roots": perf_roots}
 
 
 if "exec_fixture" not in st.session_state:
@@ -123,4 +145,5 @@ render_execution_console(
     journal_dirs=[fx["commit_dir"]],
     workers={fx["worker"].worker_id: fx["worker"]}
     if fx["worker"] else {},
-    backends={str(fx["commit_dir"]): fx["backend"]})
+    backends={str(fx["commit_dir"]): fx["backend"]},
+    perf_roots=fx["perf_roots"])

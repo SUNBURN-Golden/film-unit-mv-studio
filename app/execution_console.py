@@ -89,7 +89,8 @@ def _render_item(console, item):
         remote_txt = f"{remote_txt} — {remote['detail']}"
     verify_txt = verify.get("level") or \
         ", ".join(verify.get("levels") or []) or \
-        ("확인됨" if verify.get("verified") else "없음/미완료")
+        ("해당 없음" if verify.get("state") == "NOT_APPLICABLE" else
+         "확인됨" if verify.get("verified") else "없음/미완료")
     st.caption(f"네트워크 **{net['state']}**"
                + (f" ({', '.join(net['lost'])})" if net.get("lost") else "")
                + f" · 원격 **{remote_txt}** ({remote['basis']})"

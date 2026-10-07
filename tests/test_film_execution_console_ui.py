@@ -143,6 +143,21 @@ def test_fenced_journal_is_an_error_state(tmp_path, monkeypatch):
 
 # -- archive commit (upload vs verify) ---------------------------------------------
 
+def test_pipeline_opens_its_stop_point_and_reads_not_applicable(
+        tmp_path, monkeypatch):
+    at = run_panel(tmp_path, monkeypatch, "pipeline")
+    # the pipeline row is the only item and it is work in hand — its
+    # stop-point expander opens (it was never opened before)
+    assert any("파이프라인" in m.value for m in at.markdown)
+    assert len([e for e in at.expander if "중단 위치" in e.label]) == 1
+    # beside the VERIFIED verify cell the upload-verification caption
+    # says not-applicable — nothing is archived for this snapshot —
+    # instead of reading unfinished
+    caps = [c.value for c in at.caption]
+    assert any("업로드 검증" in c and "해당 없음" in c for c in caps)
+    assert not any("없음/미완료" in c for c in caps)
+
+
 def test_sealed_commit_shows_uploaded_and_verified(tmp_path, monkeypatch):
     at = run_panel(tmp_path, monkeypatch, "commit")
     bodies = texts(at)
