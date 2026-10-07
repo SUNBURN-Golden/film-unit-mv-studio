@@ -510,14 +510,17 @@ def _legacy_lock_state(p):
 
 def _review_state(document):
     review = document.get("review")
-    # The same liveness rule the gates apply (validate_lyrics): a stored
-    # review counts only while it carries the review schema version they
-    # read — a record that does not is the "never reviewed" every gate
-    # enforces, whatever hash it claims.
-    if review and review.get("schema_version") == REVIEW_SCHEMA_VERSION:
+    # The same liveness rule the gates apply (_check/validate_lyrics): a
+    # stored review counts only while it carries the review schema version
+    # they read and names the human who affirmed it — a record without
+    # either is the "never reviewed" every gate enforces, whatever hash it
+    # claims.
+    if review and review.get("schema_version") == REVIEW_SCHEMA_VERSION \
+            and str(review.get("reviewer", "")).strip():
         return {"state": "CURRENT", "reviewer": review.get("reviewer"),
                 "reviewed_at": review.get("reviewed_at"),
-                "lyrics_review_sha256": review.get("lyrics_review_sha256")}
+                "lyrics_review_sha256": review.get("lyrics_review_sha256"),
+                "timing_sha256": review.get("timing_sha256")}
     return {"state": "UNREVIEWED"}
 
 
@@ -757,6 +760,7 @@ def workbench(project):
     board["repeats"] = _repeat_report(document)
     board["coverage_gaps"] = _coverage_gaps(document)
 
+    board["timing_sha256"] = timing_fingerprint(document)
     review = _review_state(document)
     if review["state"] == "UNREVIEWED" and isinstance(stored_review, dict):
         # validate_lyrics nulls an unbindable stored approval before this
@@ -772,14 +776,14 @@ def workbench(project):
     if review["state"] == "CURRENT":
         # The same verdict validate_lyrics reaches: the stored approval
         # counts only while it binds the exact current document/settings/
-        # font — a fingerprint it can no longer match is stale, never
-        # silently revived.
+        # font, and the timing it was affirmed over — a fingerprint it can
+        # no longer match is stale, never silently revived.
         if review["current_sha256"] is None:
             review["state"] = "UNVERIFIABLE"
-        elif review["lyrics_review_sha256"] != review["current_sha256"]:
+        elif review["lyrics_review_sha256"] != review["current_sha256"] \
+                or review["timing_sha256"] != board["timing_sha256"]:
             review["state"] = "STALE"
     board["review"] = review
-    board["timing_sha256"] = timing_fingerprint(document)
     board["document_path"] = "lyrics/lyrics_timed.json"
 
     counts = {"cues": len(cue_rows),

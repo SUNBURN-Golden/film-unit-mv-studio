@@ -434,3 +434,39 @@ def test_review_record_with_wrong_schema_version_is_never_current(tmp_path):
     (p / "analysis/audio.json").unlink()
     board = workbench(p)
     assert board["review"]["state"] == "UNREVIEWED"
+
+
+def test_review_record_with_blank_reviewer_is_never_current(tmp_path):
+    p = fixture_project(tmp_path, seconds=2, shot_count=1, lyric_count=2)
+    _time_all(p)
+    doc = prepare_lyrics(p)
+    # A hand-edited record with no named human affirmation but intact
+    # hashes: _check strips it (engine/lyrics.py reviewer rule), so the
+    # board must not relabel it CURRENT — on either the analysis-present
+    # relabel path or the missing-analysis path.
+    doc["review"]["reviewer"] = "   "
+    write(p / "lyrics/lyrics_timed.json", doc)
+    board = workbench(p)
+    assert board["review"]["state"] == "UNREVIEWED"
+    (p / "analysis/audio.json").unlink()
+    board = workbench(p)
+    assert board["review"]["state"] == "UNREVIEWED"
+
+
+def test_review_record_with_wrong_timing_binding_is_never_current(tmp_path):
+    p = fixture_project(tmp_path, seconds=2, shot_count=1, lyric_count=2)
+    _time_all(p)
+    doc = prepare_lyrics(p)
+    # A hand-edited record whose timing binding no longer names the
+    # current document, with an intact review fingerprint: _check strips
+    # it for the same reason, so the board reports the stale approval it
+    # is, never 현재 — on both paths.
+    doc["review"]["timing_sha256"] = "0" * 64
+    write(p / "lyrics/lyrics_timed.json", doc)
+    board = workbench(p)
+    assert board["review"]["state"] == "STALE"
+    assert board["review"]["lyrics_review_sha256"] == \
+        board["review"]["current_sha256"]
+    (p / "analysis/audio.json").unlink()
+    board = workbench(p)
+    assert board["review"]["state"] == "STALE"
