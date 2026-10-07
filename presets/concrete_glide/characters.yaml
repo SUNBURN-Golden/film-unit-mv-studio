@@ -1,0 +1,38 @@
+draft: true
+characters:
+  - id: CHAR_MIRA
+    name: Mira
+    role: Adult route keeper; protective through practical acts rather than intimidation
+    variants:
+      - MIRA_FRONT
+      - MIRA_SIDE
+      - MIRA_DAY_SILHOUETTE
+      - MIRA_NIGHT_SILHOUETTE
+    invariants:
+      age_group: adult woman
+      hair: Flat cropped hair with a squared back contour; no hat or goggles
+      silhouette: Broad long utility vest over narrow straight trousers
+      clothing: Ochre utility vest, dark blue sleeves and charcoal trousers
+      identifying_detail: One oversized offset pocket at the left hip
+      scale: Slightly taller and broader than Tov; preserve the relative scale
+    behavior: Checks the next foothold, waits at crossings and points with an open hand; calm economical gestures
+    reference_images: []
+  - id: CHAR_TOV
+    name: Tov
+    role: Young adult apprentice; curious about the city and attentive to its small inhabitants
+    variants:
+      - TOV_FRONT
+      - TOV_SIDE
+      - TOV_DAY_SILHOUETTE
+      - TOV_NIGHT_SILHOUETTE
+    invariants:
+      age_group: young adult man
+      hair: One tall looped bun on an otherwise smooth head silhouette
+      silhouette: Compact short jacket above wide straight trouser legs
+      clothing: Rust-red short jacket and muted concrete-gray trousers
+      identifying_detail: Single pale diagonal shoulder strap, right shoulder to left hip
+      scale: Slightly shorter and narrower than Mira; preserve the relative scale
+    behavior: Leans toward sounds, pauses to notice window lights and follows before learning to lead
+    reference_images: []
+director_request: Reference art required (레퍼런스 아트 필요). Design original front, side, day and night silhouette sheets for both adults before character LOCK. The demo's geometric figures establish blocking only and are not approved character reference art.
+note: No source-film characters, costume combinations, faces or trace-based sheets. Review identities together in both blue shadow and warm window light.

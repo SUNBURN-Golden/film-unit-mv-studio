@@ -402,7 +402,7 @@ def main(argv=None):
         if name == "compile":
             p.add_argument("--output")
         if name == "package":
-            p.add_argument("--preset", choices=["neutral", "water_please"], help="Optional production preset; new projects default to neutral")
+            p.add_argument("--preset", help="Production preset directory name (e.g. concrete_glide); defaults to neutral")
         if name == "lock":
             p.add_argument("--reviewer", required=True)
             p.add_argument("--mock-only", action="store_true")

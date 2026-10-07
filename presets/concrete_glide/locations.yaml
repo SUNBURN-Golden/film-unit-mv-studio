@@ -1,0 +1,37 @@
+draft: true
+city:
+  name: Gunjo City
+  description: An original hillside service city built around a retired freight viaduct, narrow repair shops and inhabited concrete terraces
+  continuity: A stepped water tower, the freight viaduct and amber window clusters remain orientation landmarks across shots.
+locations:
+  - id: LOC_WATER_TOWER_ROOF
+    description: Shared roof with a stepped rectangular water tower, clotheslines and a view down several terrace levels; departure and orientation landmark
+    spatial_path: Cross the parapet plane, then descend toward the service stair without teleporting between roof levels
+    reference_images: []
+    required_views: [wide, medium, detail]
+  - id: LOC_SWITCHBACK_ALLEY
+    description: Switchback service stairs between concrete walls, cable bundles and closed repair-shop shutters
+    spatial_path: Track around alternating corners with near walls briefly occluding the figures; preserve downhill travel direction
+    reference_images: []
+    required_views: [wide, medium, detail]
+  - id: LOC_UNDER_VIADUCT
+    description: Retired freight viaduct with square piers, hanging service lamps and a narrow pedestrian route beneath the beams
+    spatial_path: Repeating piers pass in the foreground while the distant roof line moves more slowly
+    reference_images: []
+    required_views: [wide, medium, prop]
+  - id: LOC_MARKET_SKYLINE
+    description: Market roof lookout above overlapping awnings, plain geometric signboards and amber upper-floor windows
+    spatial_path: Rise from awning height to reveal the roofscape; keep the water tower visible as the route's starting point
+    reference_images: []
+    required_views: [wide, medium, prop]
+  - id: LOC_EMPTY_FOUNDRY
+    description: Open former foundry yard with broken concrete slabs, shallow rainwater and a surviving illuminated caretaker window; non-graphic ruins
+    spatial_path: Give the negative space time to register; a deliberate hold or slow lateral move is appropriate for the emotional pause
+    reference_images: []
+    required_views: [wide, medium, detail]
+  - id: LOC_LANTERN_PASSAGE
+    description: Night passage connecting occupied homes, simple amber service lanterns and a final view back toward the stepped water tower
+    spatial_path: Track alongside the pair, then let them lead into the warm middle distance; the city remains larger than the characters
+    reference_images: []
+    required_views: [wide, medium, prop]
+director_request: Reference art required (레퍼런스 아트 필요). Build original wide, medium and prop/detail references with consistent landmark placement before location LOCK. All current reference arrays are intentionally empty.

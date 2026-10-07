@@ -55,6 +55,8 @@ python -m engine.cli package projects/project_001 --preset water_please
 
 이미 패키지가 있으면 덮어쓰지 않습니다. 기존 프로젝트를 수정하거나 다른 프로젝트 ID를 사용하세요. Storyboard의 기본 이미지는 제작용 캐릭터 그림이 아닌 타이밍 확인용 슬레이트입니다.
 
+군청빛 오리지널 도시와 활공 카메라 초안은 [`concrete_glide` preset 및 240초 로컬 애니마틱](docs/CONCRETE_GLIDE_PRESET.md)을 참고하세요: `package projects/<id> --preset concrete_glide`.
+
 가사의 원본은 `input/lyrics.txt`입니다. `lyrics-prepare`는 원문을 보관하고 `lyrics/lyrics_timed.json`의 원문 행과 빈 타이밍을 준비합니다. **글자 수나 곡 길이로 보컬 시점을 추측하지 않습니다.** 실제 음원을 들으며 JSON을 편집하거나, 별도 정렬 도구에서 얻은 타이밍을 원문과 대조해 가져옵니다. 보컬 분리 파일을 필수로 요구하지 않으며, 자동 ASR·강제 정렬 모델은 이 컴파일러에 연결되어 있지 않습니다.
 
 ```bash
