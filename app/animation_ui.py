@@ -783,6 +783,9 @@ def _output(p, entries, locks, route, reviews):
     if pick.get("document_type") == "animation_build" \
             and pick.get("status") == "COMPLETE":
         _deliveries(p, pick)
+    st.divider()
+    from app.diagnostics_ui import render_diagnostics
+    render_diagnostics(p, pick["build_id"])
 
 
 def _b_flash(action, result):

@@ -40,6 +40,7 @@ DOCUMENT_SCHEMAS = {
     "subscription_result": 1,
     "capability_measurement": 1,
     "render_manifest": 1,
+    "replay_packet": 1,
     "w00_pilot": 1,
     "approver_delegation": 1,
     "w00_spend_approval": 1,
