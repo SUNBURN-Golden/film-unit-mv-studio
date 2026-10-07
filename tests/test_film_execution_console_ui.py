@@ -136,6 +136,27 @@ def test_missing_state_dir_is_info_not_error(tmp_path, monkeypatch):
     assert not at.error
 
 
+# -- control-panel shape (project=, no explicit state_dir) ------------------------
+
+def test_project_panel_reads_render_execution_without_a_path_field(
+        tmp_path, monkeypatch):
+    at = run_panel(tmp_path, monkeypatch, "project_running")
+    # the project's own execution state is shown ...
+    assert any("RUNNING" in m.value for m in at.markdown)
+    assert not any("실행 상태 폴더가 없습니다" in i.body for i in at.info)
+    # ... and no free-text path field exists — a path typed into the
+    # browser never becomes the folder this tab reads
+    assert not at.text_input
+
+
+def test_project_panel_without_state_dir_is_info_not_error(
+        tmp_path, monkeypatch):
+    at = run_panel(tmp_path, monkeypatch, "project_nodir")
+    assert any("실행 상태 폴더가 없습니다" in i.body for i in at.info)
+    assert not at.error
+    assert not at.text_input
+
+
 def test_fenced_journal_is_an_error_state(tmp_path, monkeypatch):
     at = run_panel(tmp_path, monkeypatch, "fenced")
     assert any("fence" in e.value.lower() for e in at.error)

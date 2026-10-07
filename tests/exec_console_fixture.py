@@ -6,7 +6,10 @@ tests/test_film_execution_console_ui.py. Environment:
 - EXEC_FIXTURE_DIR      writable scratch dir (state/ + commit/ inside)
 - EXEC_FIXTURE_SCENARIO empty | nodir | running | cancel_requested |
                         race | unknown | disconnect | verify_fails |
-                        fenced | commit | pipeline
+                        fenced | commit | pipeline | project_running |
+                        project_nodir
+                        (project_* drives the panel the way the control
+                        panel does — project=, no explicit state_dir)
 
 Everything is built on the local fakes (FakeRemoteWorker /
 FakeDriveBackend) — no network, no credentials, UNQUALIFIED.
@@ -26,7 +29,8 @@ from app.execution_console import render_execution_console
 
 base = Path(os.environ["EXEC_FIXTURE_DIR"])
 scenario = os.environ.get("EXEC_FIXTURE_SCENARIO", "empty")
-state_dir = base / "state"
+state_dir = base / "render" / "execution" \
+    if scenario == "project_running" else base / "state"
 commit_dir = base / "commit"
 
 
@@ -54,7 +58,8 @@ def _build():
     backend = FakeDriveBackend(provider_checksum="sha256")
 
     if scenario in {"running", "cancel_requested", "race", "unknown",
-                    "disconnect", "verify_fails", "fenced"}:
+                    "disconnect", "verify_fails", "fenced",
+                    "project_running"}:
         plan = remote_plan()
         key = c.plan_jobs(plan)[0]
         c.reserve(key)
@@ -140,10 +145,18 @@ if "exec_fixture" not in st.session_state:
     st.session_state["exec_fixture"] = _build()
 fx = st.session_state["exec_fixture"]
 
-render_execution_console(
-    state_dir=fx["state_dir"], coordinator=fx["coordinator"],
+kwargs = dict(
+    coordinator=fx["coordinator"],
     journal_dirs=[fx["commit_dir"]],
     workers={fx["worker"].worker_id: fx["worker"]}
     if fx["worker"] else {},
     backends={str(fx["commit_dir"]): fx["backend"]},
     perf_roots=fx["perf_roots"])
+
+if scenario in ("project_running", "project_nodir"):
+    # the control-panel shape: the project path only — the panel must
+    # derive <project>/render/execution itself and never offer a
+    # free-text path field
+    render_execution_console(project=base, **kwargs)
+else:
+    render_execution_console(state_dir=fx["state_dir"], **kwargs)

@@ -175,15 +175,14 @@ def render_execution_console(project=None, *, state_dir=None,
                "상태입니다 — 새 진실 원천이 아니며, 폴링·자동 재시도는 "
                "없습니다. fake/local 실행은 UNQUALIFIED입니다.")
     if state_dir is None:
-        default = (Path(project) / "render" / "execution") if project \
-            else None
-        if default is None:
+        if not project:
             st.info("프로젝트를 선택하면 실행 상태를 표시합니다.")
             return
-        name = Path(project).name if project else "none"
-        state_dir = st.text_input(
-            "실행 상태 폴더 (coordinator state dir)",
-            str(default), key=f"exec_console_dir_{name}")
+        # Read only this project's own execution state dir — a path typed
+        # into the browser never reaches a filesystem read here
+        # (py/path-injection). Any other location stays a CLI concern
+        # (`engine/cli.py execution-status <state_dir>`).
+        state_dir = Path(project) / "render" / "execution"
     root = Path(state_dir)
     if not root.is_dir():
         st.info("실행 상태 폴더가 없습니다 — 작업이 계획·제출되면 "
