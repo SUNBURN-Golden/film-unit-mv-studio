@@ -36,7 +36,6 @@ from .archive_commit import ArchiveCommitter
 from .core import FilmError, now
 from .durable_journal import DurableJournal
 from .execution_workers import Coordinator
-from .perf_scheduler import _load_state
 from .upload_tracker import UploadTracker
 
 CONSOLE_VERSION = 1
@@ -206,6 +205,14 @@ class ExecutionConsole:
         # upload record exists — resume_upload can then drive the same
         # session in this session (the URIs never persist to the journal).
         if injected is not None:
+            # One file, one writer: a caller-bound tracker holding its own
+            # DurableJournal instance of this same file is rebound to the
+            # shared one — a second instance would append with a stale
+            # head/seq and corrupt the chain for every writer after it.
+            if getattr(injected.journal, "path", None) is not None \
+                    and Path(injected.journal.path).resolve() \
+                    == path.resolve():
+                injected.journal = journal
             self._trackers[key] = injected
         elif "upload" in scopes or backend is not None:
             try:
@@ -217,11 +224,25 @@ class ExecutionConsole:
                 self._replay_errors[key] = str(exc)
         if "commit" in scopes:
             try:
-                self._committers[key] = ArchiveCommitter(
+                committer = ArchiveCommitter(
                     d, backend, upload=self._upload_kw["upload"],
                     retry=self._upload_kw["retry"])
             except FilmError as exc:
                 self._replay_errors[key] = str(exc)
+            else:
+                # Same one-writer rule for the committer and the tracker
+                # it re-drives on a resume: they share this dir's journal
+                # and the console's tracker so an action's appends are
+                # visible to every later write and read on this console.
+                if committer.journal.fence_reason:
+                    journal.fence(committer.journal.fence_reason)
+                committer.journal = journal
+                tracker = self._trackers.get(key)
+                if tracker is not None:
+                    committer.tracker = tracker
+                else:
+                    committer.tracker.journal = journal
+                self._committers[key] = committer
 
     # -- journal record helpers --------------------------------------------
 
@@ -252,6 +273,14 @@ class ExecutionConsole:
         cancel_intent = any(r["event"] == "CANCEL_INTENT" for r in records)
         lost = [r["event"] for r in records
                 if r["event"] in ("SUBMIT_LOST", "CANCEL_LOST")]
+        if state == "UNKNOWN" and not lost:
+            # UNKNOWN always means a remote answer never landed: the
+            # reconcile-time disconnect journals only STATE -> UNKNOWN
+            # (there is no *_LOST event for a dropped status query), and
+            # a restart leaves the pending SUBMIT_INTENT as the marker.
+            lost = ["STATUS_LOST" if any(
+                r["event"] == "STATE" and r["data"].get("to") == "UNKNOWN"
+                for r in records) else "SUBMIT_LOST"]
         cov = self.coordinator.coverage(key)
         covered, missing = cov["covered"], cov["missing"]
 
@@ -788,9 +817,12 @@ class ExecutionConsole:
         if state == "OBJECTS_PENDING":
             recovery.append({
                 "action": "resume_upload", "allowed": True,
-                "needs": ["backend"],
+                "needs": ["backend", "data"],
                 "reason": "re-drive the same commit — the upload tracker "
-                          "resumes each object from its confirmed offset"})
+                          "resumes each object from its confirmed offset; "
+                          "the artifact declarations must be re-supplied "
+                          "(the journal pins bytes by hash, never stores "
+                          "them)"})
 
         item = dict(item)
         item.update({
@@ -812,6 +844,13 @@ class ExecutionConsole:
     # -- pipeline (perf state) items -------------------------------------------
 
     def _pipeline_items(self, commits):
+        # Lazy like every other perf_scheduler caller (capability_ui,
+        # animation_ui, cli): perf_scheduler imports `resource`, which does
+        # not exist on Windows — the desktop app must still import this
+        # module and render coordinator/journal items with no perf roots.
+        if not self.perf_roots:
+            return []
+        from .perf_scheduler import _load_state
         items = []
         for root in self.perf_roots:
             state = _load_state(root)
@@ -839,11 +878,15 @@ class ExecutionConsole:
                     f"{r}:{e['artifact_sha256'][:12]}"
                     for r, e in sorted(have.items())))
             stages["mux"] = _stage(
-                "DONE" if have else "PENDING",
+                "DONE" if _ENCODE_ROLE_SET <= set(have) else
+                "PARTIAL" if have else "PENDING",
                 detail="mux ran inside encode_delivery (stream-copy); the "
                        "artifact is the muxed MP4" if have else None)
+            # Only a verification report that actually passed counts —
+            # `verify_delivery` writes {"valid": True, ...} or raises.
             verified_roles = [r for r, e in have.items()
-                              if e.get("verification")]
+                              if (e.get("verification") or {})
+                              .get("valid")]
             stages["verify"] = _stage(
                 "VERIFIED" if have and
                 set(verified_roles) >= set(have) and
@@ -1037,7 +1080,7 @@ class ExecutionConsole:
                         "result": "REFUSED",
                         "reason": "JOURNAL_RECONCILIATION_REQUIRED: the "
                                   "commit journal is fenced"}
-            return self._run_commit(item, action)
+            return self._run_commit(item, action, data)
         return {"action": action, "item_id": item["item_id"],
                 "result": "REFUSED",
                 "reason": "a committed pipeline snapshot has no recovery "
@@ -1080,9 +1123,9 @@ class ExecutionConsole:
                         "reason": f"verify runs only on "
                                   f"OUTPUT_PENDING_VERIFY, not "
                                   f"{job['state']}"}
-            checkpoint = self.coordinator.verify_outputs(key)
+            state = self.coordinator.verify_outputs(key)
             return {"action": action, "item_id": item["item_id"],
-                    "result": "OK", "checkpoint": checkpoint}
+                    "result": "OK", "state": state}
         if action == "seal":
             if job["state"] != "VERIFIED" or job.get("sealed"):
                 return {"action": action, "item_id": item["item_id"],
@@ -1175,19 +1218,44 @@ class ExecutionConsole:
                 "result": "REFUSED",
                 "reason": f"unknown upload action {action!r}"}
 
-    def _run_commit(self, item, action):
-        if action != "reconcile_commit":
+    def _run_commit(self, item, action, data):
+        if action not in ("reconcile_commit", "resume_upload"):
             return {"action": action, "item_id": item["item_id"],
                     "result": "REFUSED",
                     "reason": f"unknown commit action {action!r}"}
+        committer = self._committers.get(item["source"])
+        if committer is None:
+            return {"action": action, "item_id": item["item_id"],
+                    "result": "REFUSED",
+                    "reason": "commit journal replay error — reconcile "
+                              "the journal first"}
         backend = self.backends.get(item["source"])
         if backend is None:
             return {"action": action, "item_id": item["item_id"],
                     "result": "REFUSED",
-                    "reason": "no archive backend bound — reconcile needs "
-                              "the live backend"}
-        committer = ArchiveCommitter(Path(item["source"]), backend)
-        answer = committer.reconcile(item["ref"])
+                    "reason": "no archive backend bound — the action "
+                              "needs the live backend"}
+        # The bound committer writes through the same DurableJournal the
+        # console's tracker uses — a second instance would stamp stale
+        # seq/prev_digest and corrupt the chain for later appends.
+        committer.backend = backend
+        committer.tracker.backend = backend
+        if action == "reconcile_commit":
+            answer = committer.reconcile(item["ref"])
+        else:
+            if item["state"] != "OBJECTS_PENDING":
+                return {"action": action, "item_id": item["item_id"],
+                        "result": "REFUSED",
+                        "reason": f"resume_upload re-drives an "
+                                  f"OBJECTS_PENDING commit, not "
+                                  f"{item['state']}"}
+            try:
+                # `data` re-supplies the artifact declarations — the
+                # journal pins them by hash and never stores the bytes.
+                answer = committer.run(item["ref"], artifacts=data)
+            except FilmError as exc:
+                return {"action": action, "item_id": item["item_id"],
+                        "result": "REFUSED", "reason": str(exc)}
         return {"action": action, "item_id": item["item_id"],
                 "result": "OK", "answer": answer}
 

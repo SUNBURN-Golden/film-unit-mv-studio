@@ -8,6 +8,8 @@ it never mints a second source of truth, never polls, never auto-retries.
 """
 import hashlib
 import json
+import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -21,7 +23,7 @@ from anim_014_kit import (CONTRACT, coordinator, members_for, receipt_for,
 from engine.archive_commit import ArchiveCommitter
 from engine.cli import main as cli_main
 from engine.core import FilmError
-from engine.durable_journal import DurableJournal, TAIL_CLEAN
+from engine.durable_journal import DurableJournal, TAIL_CLEAN, load_journal
 from engine.execution_console import (STAGES, ExecutionConsole,
                                       execution_explain, execution_status)
 from engine.execution_workers import Coordinator
@@ -134,10 +136,10 @@ def test_pipeline_item_maps_committed_snapshot_to_six_stages(tmp_path):
              "clean": {"sequence_root": "c" * 64, "frames": [{"key": "k"}]},
              "subbed": {"sequence_root": "s" * 64},
              "encodes": {"clean": {"artifact_sha256": enc_sha,
-                                   "verification": {"ok": True},
+                                   "verification": {"valid": True},
                                    "encode_digest": "e" * 64},
                          "subbed": {"artifact_sha256": enc_sha,
-                                    "verification": {"ok": True},
+                                    "verification": {"valid": True},
                                     "encode_digest": "e" * 64}},
              "generated_at": "2026-01-01T00:00:00Z"}
     (perf / "state.json").write_text(json.dumps(state), encoding="utf-8")
@@ -163,9 +165,9 @@ def test_pipeline_item_links_archive_commit_by_snapshot(tmp_path):
         "clean": {"sequence_root": "c" * 64, "frames": []},
         "subbed": {"sequence_root": "s" * 64},
         "encodes": {"clean": {"artifact_sha256": "a" * 64,
-                              "verification": {"ok": True}},
+                              "verification": {"valid": True}},
                     "subbed": {"artifact_sha256": "b" * 64,
-                               "verification": {"ok": True}}},
+                               "verification": {"valid": True}}},
         "generated_at": "2026-01-01T00:00:00Z"}), encoding="utf-8")
     sd = tmp_path / "state"
     sd.mkdir()
@@ -230,6 +232,10 @@ def test_disconnect_moves_running_to_unknown(tmp_path):
     i = item(console.status(), key)
     assert i["state"] == "UNKNOWN"
     assert i["stages"]["compose"]["status"] == "UNKNOWN"
+    # the dropped status answer is network loss — the lamp is lit even
+    # though no *_LOST journal event exists for this path
+    assert i["indicators"]["network"]["state"] == "LOST"
+    assert i["indicators"]["network"]["lost"] == ["STATUS_LOST"]
     assert i["indicators"]["remote"]["detail"]
     # revived runtime: the same request id reconciles back
     worker.revive()
@@ -524,6 +530,84 @@ def test_commit_reuse_is_only_object_verified(tmp_path):
     assert rec["resume_upload"]["allowed"]
 
 
+def test_commit_resume_upload_redrives_the_same_commit(tmp_path):
+    """OBJECTS_PENDING offers resume_upload and it must actually run —
+    the artifact declarations are re-supplied, the commit identity is
+    re-driven to SEALED, never duplicated."""
+    cc, backend, ck = make_commit(tmp_path)
+    sd = tmp_path / "state"
+    sd.mkdir()
+    console = ExecutionConsole(state_dir=sd,
+                             journal_dirs=[tmp_path / "commit"],
+                             backends={str(tmp_path / "commit"): backend})
+    commit = item(console.status(), ck)
+    assert commit["state"] == "OBJECTS_PENDING"
+    # without the artifact bytes the run refuses with the real reason —
+    # not "unknown commit action"
+    out = console.run_action(ck, "resume_upload")
+    assert out["result"] == "REFUSED"
+    assert "COMMIT_BYTES_REQUIRED" in out["reason"]
+    # re-supplying the same declarations re-drives the same commit to seal
+    out = console.run_action(ck, "resume_upload", data=artifacts())
+    assert out["result"] == "OK" and out["answer"]["state"] == "SEALED"
+    assert item(console.status(), ck)["state"] == "SEALED"
+    assert load_journal(tmp_path / "commit" / "job_journal.jsonl")["tail"] \
+        == TAIL_CLEAN
+
+
+def test_reconcile_commit_keeps_every_journal_writer_in_sync(tmp_path):
+    """A commit action writes through the journal instance the console's
+    tracker shares — a second DurableJournal on the same file stamps a
+    stale head/seq and corrupts the chain for the next append."""
+    backend = FakeDriveBackend(provider_checksum="sha256")
+    up_dir = tmp_path / "commit"
+    # a partial upload intent lives in the same journal file as the commit
+    journal = DurableJournal(up_dir / "job_journal.jsonl")
+    tracker = UploadTracker(journal, backend, upload=UPLOAD, retry=RETRY)
+    data = b"D" * 1000
+    backend.upload_partial = {2: 40, 4: 0}
+    with pytest.raises(FilmError, match="TRANSPORT_RETRY_EXHAUSTED"):
+        tracker.put("obj-9", data)
+    backend.upload_partial.clear()
+    # the commit reaches SEAL_UNKNOWN: the manifest publish answer is lost
+    cc = ArchiveCommitter(up_dir, backend, upload=UPLOAD, retry=RETRY)
+    ck = cc.begin_commit("build-1", artifacts(), snapshot_digest=SNAP,
+                         recipe_digest=RECIPE, toolchain_digest=TOOLCHAIN,
+                         required_kinds=("frames", "preview"),
+                         coverage=[0, 3])
+    real_put = backend.put_object
+    dropped = {"n": 0}
+
+    def put(object_id, payload):
+        if object_id.startswith("manifest-") and not dropped["n"]:
+            dropped["n"] += 1
+            raise ConnectionDropped("manifest publish answer lost")
+        return real_put(object_id, payload)
+
+    backend.put_object = put
+    assert cc.run(ck)["state"] == "SEAL_UNKNOWN"
+    backend.put_object = real_put
+    sd = tmp_path / "state"
+    sd.mkdir()
+    console = ExecutionConsole(state_dir=sd, journal_dirs=[up_dir],
+                             trackers={str(up_dir): tracker},
+                             backends={str(up_dir): backend},
+                             upload=dict(UPLOAD),
+                             retry=dict(RETRY, max_retries=3))
+    assert item(console.status(), ck)["state"] == "SEAL_UNKNOWN"
+    out = console.run_action(ck, "reconcile_commit")
+    assert out["result"] == "OK" and out["answer"]["state"] == "SEALED"
+    # the console's own read model reflects the reconcile immediately
+    assert item(console.status(), ck)["state"] == "SEALED"
+    # a later resume_upload appends on the true head — no duplicate seq,
+    # no broken chain, no fence
+    out = console.run_action("up-obj-9", "resume_upload", data=data)
+    assert out["result"] == "OK" and out["state"] == "COMPLETE"
+    loaded = load_journal(up_dir / "job_journal.jsonl")
+    assert loaded["tail"] == TAIL_CLEAN
+    assert not console.status()["fenced"]
+
+
 # -- verify mismatch: new attempt, never relabel --------------------------------------
 
 def test_verify_mismatch_needs_new_attempt(tmp_path):
@@ -583,6 +667,29 @@ def test_empty_state_dir_reports_empty_queue(tmp_path):
 def test_missing_state_dir_is_a_clean_error(tmp_path):
     with pytest.raises(FilmError, match="No execution state dir"):
         execution_status(tmp_path / "nope")
+
+
+def test_console_never_imports_perf_scheduler_without_perf_roots():
+    """Windows has no `resource` module, so `engine.perf_scheduler` cannot
+    be imported there at all. The desktop app still imports this module to
+    render journal/coordinator items — keep the perf_scheduler import lazy
+    and untouched when no perf roots are configured."""
+    script = (
+        "import sys, tempfile\n"
+        "sys.modules['resource'] = None  # Windows: `import resource` fails\n"
+        "from pathlib import Path\n"
+        "from engine.execution_workers import Coordinator\n"
+        "from engine.execution_console import ExecutionConsole\n"
+        "c = Coordinator(Path(tempfile.mkdtemp()))\n"
+        "report = ExecutionConsole(coordinator=c).status()\n"
+        "assert report['qualification_state'] == 'UNQUALIFIED'\n"
+        "assert 'engine.perf_scheduler' not in sys.modules\n"
+    )
+    env = {**os.environ,
+           "PYTHONPATH": str(Path(__file__).resolve().parents[1])}
+    run = subprocess.run([sys.executable, "-c", script],
+                         capture_output=True, text=True, env=env)
+    assert run.returncode == 0, run.stderr
 
 
 def test_cli_execution_status_and_explain(tmp_path, capsys):

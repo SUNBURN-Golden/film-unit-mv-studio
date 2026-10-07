@@ -5,7 +5,8 @@ tests/test_film_execution_console_ui.py. Environment:
 
 - EXEC_FIXTURE_DIR      writable scratch dir (state/ + commit/ inside)
 - EXEC_FIXTURE_SCENARIO empty | nodir | running | cancel_requested |
-                        race | unknown | fenced | commit
+                        race | unknown | disconnect | verify_fails |
+                        fenced | commit
 
 Everything is built on the local fakes (FakeRemoteWorker /
 FakeDriveBackend) — no network, no credentials, UNQUALIFIED.
@@ -34,7 +35,7 @@ def _build():
     from engine.archive_commit import ArchiveCommitter
     from engine.storage_backends.fake_drive import FakeDriveBackend
     from anim_013_kit import make_members, make_png
-    from anim_014_kit import CONTRACT, remote_plan
+    from anim_014_kit import CONTRACT, receipt_for, remote_plan
 
     class SlowCancel(FakeRemoteWorker):
         def cancel(self, request_id):
@@ -52,7 +53,7 @@ def _build():
     backend = FakeDriveBackend(provider_checksum="sha256")
 
     if scenario in {"running", "cancel_requested", "race", "unknown",
-                    "fenced"}:
+                    "disconnect", "verify_fails", "fenced"}:
         plan = remote_plan()
         key = c.plan_jobs(plan)[0]
         c.reserve(key)
@@ -64,6 +65,18 @@ def _build():
             c.submit(worker, key, frame_contract=dict(CONTRACT))
             c.collect(worker, key)
             c.request_cancel(worker, key)
+        elif scenario == "disconnect":
+            c.submit(worker, key, frame_contract=dict(CONTRACT))
+            worker.dead = True
+            c.reconcile(worker, key)     # dropped status answer -> UNKNOWN
+        elif scenario == "verify_fails":
+            c.submit(worker, key, frame_contract=dict(CONTRACT))
+            job = c.jobs[key]
+            bad = [{"frame_index": i, "sha256": "0" * 64}
+                   for i in range(*job["output_range"])]
+            c.receive_receipt(receipt_for(job, "COMPLETE",
+                                          job["output_range"],
+                                          members=bad), worker)
         elif scenario == "fenced":
             c.submit(worker, key, frame_contract=dict(CONTRACT))
             raw = (state_dir / "job_journal.jsonl").read_bytes()

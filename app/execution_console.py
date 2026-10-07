@@ -85,6 +85,8 @@ def _render_item(console, item):
     verify = ind.get("upload_verify") or {}
     remote_txt = remote.get("last_report") or \
         ("해당 없음" if remote.get("basis") == "inapplicable" else "기록 없음")
+    if remote.get("detail"):
+        remote_txt = f"{remote_txt} — {remote['detail']}"
     verify_txt = verify.get("level") or \
         ", ".join(verify.get("levels") or []) or \
         ("확인됨" if verify.get("verified") else "없음/미완료")
@@ -150,7 +152,8 @@ def _render_explain(console, item):
                 st.error(str(exc))
             else:
                 if out.get("result") == "OK":
-                    st.session_state["exec_toast"] = f"{label} — 완료"
+                    st.session_state["exec_toast"] = \
+                        f"{label} — {out.get('state') or '완료'}"
                     st.rerun()
                 st.warning(f"{label} — 거부: {out.get('reason')}")
         if block:
@@ -224,8 +227,10 @@ def render_execution_console(project=None, *, state_dir=None,
                f"**{report['qualification_state']}**")
     for item in items:
         _render_item(console, item)
-        detail_needed = item["in_flight"] or (
-            item["kind"] == "job" and item["cancel"]["requested"]) \
+        detail_needed = item["in_flight"] or item["closed"] or (
+            item["kind"] == "job" and
+            (item["cancel"]["requested"] or
+             (item["state"] == "VERIFIED" and not item["sealed"]))) \
             or item["kind"] in ("upload", "commit")
         if detail_needed:
             with st.expander("중단 위치 · 재사용 artifact · 복귀",

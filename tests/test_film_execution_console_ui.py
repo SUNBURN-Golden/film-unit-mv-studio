@@ -94,6 +94,35 @@ def test_unknown_reconcile_via_button_never_resubmits(tmp_path, monkeypatch):
     assert any("RUNNING" in m.value for m in at.markdown)
 
 
+def test_disconnect_lights_network_loss_not_last_receipt(
+        tmp_path, monkeypatch):
+    at = run_panel(tmp_path, monkeypatch, "disconnect")
+    assert any("UNKNOWN" in m.value for m in at.markdown)
+    # the dropped status answer lights the network lamp, and the remote
+    # caption carries the undetermined outcome, not just the stale
+    # ACCEPTED receipt
+    assert any("네트워크 **LOST**" in c.value and "STATUS_LOST" in c.value
+               for c in at.caption)
+    assert any("undetermined" in c.value for c in at.caption)
+
+
+def test_failed_verify_offers_new_attempt_not_a_done_toast(
+        tmp_path, monkeypatch):
+    at = run_panel(tmp_path, monkeypatch, "verify_fails")
+    assert any("OUTPUT_PENDING_VERIFY" in m.value for m in at.markdown)
+    verify = next(b for b in at.button if b.label == "출력 검증 실행")
+    assert not verify.disabled
+    verify.click().run()
+    assert not at.exception
+    # the toast reports the real outcome — FAILED_CONFIRMED is not 완료,
+    # and the closed job still opens its stop-point/new-attempt controls
+    assert any("FAILED_CONFIRMED" in s.value for s in at.success)
+    assert any("FAILED_CONFIRMED" in m.value for m in at.markdown)
+    assert any((df.value.astype(str) == "VERIFY_MISMATCH").any().any()
+               for df in at.dataframe)
+    assert "새 attempt (사용자 확인 필요)" in labels(at)
+
+
 # -- empty / error ---------------------------------------------------------------
 
 def test_empty_queue_state(tmp_path, monkeypatch):
