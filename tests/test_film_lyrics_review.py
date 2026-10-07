@@ -280,6 +280,12 @@ def test_malformed_candidate_cues_return_error_report_not_exception(tmp_path):
     partial = evaluate_candidate(p, _candidate(p, cues=[{"id": "A"},
                                                         {"id": "B"}]))
     assert partial["valid"] is False and partial["errors"]
+    # Values no parsed JSON document can carry (a set) also come back as
+    # the documented invalid report — the deep copy must not raise out.
+    unserializable = _candidate(p)
+    unserializable["cues"][0]["text"] = {"impossible": {"a", "set"}}
+    result = evaluate_candidate(p, unserializable)
+    assert result["valid"] is False and result["errors"]
 
 
 # --- invalidation scope -------------------------------------------------------
@@ -411,3 +417,20 @@ def test_stale_stored_review_labelled_stale_with_analysis(tmp_path):
     assert board["review"]["lyrics_review_sha256"]
     assert board["review"]["lyrics_review_sha256"] != \
         board["review"]["current_sha256"]
+
+
+def test_review_record_with_wrong_schema_version_is_never_current(tmp_path):
+    p = fixture_project(tmp_path, seconds=2, shot_count=1, lyric_count=2)
+    _time_all(p)
+    doc = prepare_lyrics(p)
+    # A hand-edited record whose own schema_version no gate reads, with an
+    # intact hash: validate_lyrics treats it as unreviewed, so the board
+    # must not relabel it CURRENT — on either the analysis-present relabel
+    # path or the missing-analysis path that never schema-checks at all.
+    doc["review"]["schema_version"] = 99
+    write(p / "lyrics/lyrics_timed.json", doc)
+    board = workbench(p)
+    assert board["review"]["state"] == "UNREVIEWED"
+    (p / "analysis/audio.json").unlink()
+    board = workbench(p)
+    assert board["review"]["state"] == "UNREVIEWED"

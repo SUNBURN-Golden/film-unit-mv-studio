@@ -40,7 +40,7 @@ from .core import (FilmError, frame_at, production_profile,
                    read, safe_path, timecode)
 from .lyrics import (_check, _effective_rows, _font, _source, prepare_lyrics,
                      lyrics_review_fingerprint, timing_fingerprint,
-                     validate_lyrics, SCHEMA_VERSION)
+                     validate_lyrics, REVIEW_SCHEMA_VERSION, SCHEMA_VERSION)
 
 FACETS = {"qualification_state": "UNQUALIFIED",
           "acceptance_state": "PENDING",
@@ -438,7 +438,14 @@ def evaluate_candidate(project, candidate):
             "candidate is bound to a different lyrics source — re-export "
             "the candidate against the current input/lyrics.txt")
         return result
-    checked = json.loads(json.dumps(candidate))
+    try:
+        checked = json.loads(json.dumps(candidate))
+    except (TypeError, ValueError) as exc:
+        # A candidate holding values no parsed JSON document can carry
+        # (sets, circular refs) gets the documented invalid report — the
+        # engine API never raises out for garbage it exists to judge.
+        result["errors"].append(f"candidate is not a JSON document: {exc}")
+        return result
     if "review" in checked:
         result["candidate_review_ignored"] = True
         checked.pop("review", None)
@@ -503,7 +510,11 @@ def _legacy_lock_state(p):
 
 def _review_state(document):
     review = document.get("review")
-    if review:
+    # The same liveness rule the gates apply (validate_lyrics): a stored
+    # review counts only while it carries the review schema version they
+    # read — a record that does not is the "never reviewed" every gate
+    # enforces, whatever hash it claims.
+    if review and review.get("schema_version") == REVIEW_SCHEMA_VERSION:
         return {"state": "CURRENT", "reviewer": review.get("reviewer"),
                 "reviewed_at": review.get("reviewed_at"),
                 "lyrics_review_sha256": review.get("lyrics_review_sha256")}
