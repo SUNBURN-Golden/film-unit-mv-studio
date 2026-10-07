@@ -5,17 +5,32 @@ app/control_panel.py on synthetic fixture projects. Every record written
 through the UI here is a protocol fixture: SYNTHETIC_FIXTURE reviewers are
 declared as such, and nothing claims real artwork approval, qualification or
 release (facets stay UNQUALIFIED / PENDING / NOT_AUTHORIZED).
+
+The states these tests start from (waves declared, W00 imported, locked and
+adopted; the whole film produced) are the ones test_anim_011_ui drives
+through the panel. Here they are prepared once per module through the
+engine and copied per test, so each test drives only the W00 gate and
+delivery widgets.
 """
+import shutil
+from pathlib import Path
+
 import pytest
 from streamlit.testing.v1 import AppTest
 
+from engine.animation_assets import import_frame_sequence
+from engine.animation_locks import (declare_waves, record_plan_lock,
+                                    record_route_decision, record_wave_lock)
+from engine.animation_migrate import animation_init
+from engine.animation_review import (record_cut_review,
+                                     record_transition_review)
 from engine.builds import list_builds
 from engine.w00_gate import (deliverable_status, gate_status, load_pilots)
-from test_anim_011_ui import (NAME, ROOT, adopted_w00, button, errors,
-                              produced_project, route_decision, sel,
-                              successes, ti, transition_review)
+from test_anim_003 import make_sequence
+from test_anim_011_ui import (APPROVER, FRAMES, LEAD, NAME, REVIEWER, ROOT,
+                              button, errors, route_decision, sel, successes,
+                              ti, transition_review)
 from test_compiler_v03 import fixture_project
-from engine.animation_migrate import animation_init
 
 
 @pytest.fixture
@@ -25,17 +40,91 @@ def box(tmp_path, monkeypatch):
     return tmp_path
 
 
-@pytest.fixture
-def screen(box):
-    projects = box / "projects"
-    projects.mkdir()
-    project = fixture_project(projects, seconds=3, shot_count=3)
-    animation_init(project)
+# --- project templates (engine-side, built once per module) ----------------
+
+_TEMPLATE_ROOT = None
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _template_root(tmp_path_factory):
+    global _TEMPLATE_ROOT
+    _TEMPLATE_ROOT = tmp_path_factory.mktemp("anim022_ui_templates")
+    yield
+    _TEMPLATE_ROOT = None
+
+
+def _import(p, root, shot_id, seed):
+    folder = make_sequence(root / f"seq_{shot_id.lower()}_{seed}",
+                           count=FRAMES, size=(64, 48), seed=seed)
+    import_frame_sequence(p, shot_id, folder=folder)
+
+
+def _adopted_w00(root):
+    """What test_anim_011_ui.adopted_w00 reaches through the panel: waves
+    declared, PLAN_LOCK, W00 imported and locked, both W00 cuts adopted."""
+    (root / "projects").mkdir()
+    p = fixture_project(root / "projects", seconds=3, shot_count=3)
+    animation_init(p)
+    declare_waves(p, [
+        {"wave": "W00", "shots": ["S001", "S002"],
+         "difficulty": [{"type": "FACE_TURN",
+                         "reason": "fixture: the hard cut type W00 verifies"}],
+         "note": "fixture"},
+        {"wave": "W01", "shots": ["S003"], "difficulty": [],
+         "note": "fixture"}])
+    record_plan_lock(p, APPROVER)
+    _import(p, root, "S001", 10)
+    _import(p, root, "S002", 20)
+    record_wave_lock(p, "W00", APPROVER)
+    for instance in ("I001", "I002"):
+        record_cut_review(p, instance, reviewer=REVIEWER,
+                          methods=["CUT_FULL_SPEED_PLAYBACK"])
+    return p
+
+
+def _produced(root):
+    """What test_anim_011_ui.produced_project reaches: the whole film
+    produced — route decided, W01 imported/locked/reviewed, T001/T002 too."""
+    p = _adopted_w00(root)
+    record_route_decision(
+        p, "W00", decision="KEEP", decider=LEAD, approver=APPROVER,
+        checked_types=["FACE_TURN"], unchecked_types=[], apply_scope=["W01"],
+        reviewed_conditions=["fixture: both W00 cuts played"],
+        observations=["fixture: no route limit"])
+    _import(p, root, "S003", 30)
+    record_wave_lock(p, "W01", APPROVER)
+    record_cut_review(p, "I003", reviewer=REVIEWER,
+                      methods=["CUT_FULL_SPEED_PLAYBACK"])
+    for transition in ("T001", "T002"):
+        record_transition_review(p, transition, reviewer=REVIEWER,
+                                 methods=["TRANSITION_FULL_SPEED_PLAYBACK"])
+    return p
+
+
+def _screen(box, kind, build):
+    """Copy the `kind` template project into this test's projects dir and
+    open the control panel on it."""
+    root = _TEMPLATE_ROOT / kind
+    source = root / "projects" / NAME
+    if not source.is_dir():
+        root.mkdir()
+        build(root)
+    project = Path(shutil.copytree(source, box / "projects" / NAME))
     at = AppTest.from_file(str(ROOT / "app/control_panel.py"),
                            default_timeout=180).run()
     at.sidebar.selectbox[0].select(NAME).run()
     assert not at.exception
     return at, project
+
+
+@pytest.fixture
+def adopted_screen(box):
+    return _screen(box, "adopted_w00", _adopted_w00)
+
+
+@pytest.fixture
+def produced_screen(box):
+    return _screen(box, "produced", _produced)
 
 
 def pilot_record(at, target, decision="KEEP", reviewer="UI fixture pilot",
@@ -49,9 +138,8 @@ def pilot_record(at, target, decision="KEEP", reviewer="UI fixture pilot",
     button(at, "an_pilot_record").click().run()
 
 
-def test_w00_gate_lists_pilots_blocks_then_opens(screen):
-    at, project = screen
-    adopted_w00(at)
+def test_w00_gate_lists_pilots_blocks_then_opens(adopted_screen):
+    at, project = adopted_screen
     transition_review(at, "T001")
     # Every W00 target is listed; none has a pilot record — the gate is
     # blocked with explicit reasons, and synthetic evidence is labelled.
@@ -78,9 +166,8 @@ def test_w00_gate_lists_pilots_blocks_then_opens(screen):
                               "release_state": "NOT_AUTHORIZED"}
 
 
-def test_w00_gate_refuses_an_unauthorized_human(screen):
-    at, project = screen
-    adopted_w00(at)
+def test_w00_gate_refuses_an_unauthorized_human(adopted_screen):
+    at, project = adopted_screen
     pilot_record(at, "I001", reviewer="unauthorized person", kind="HUMAN")
     assert not at.exception
     assert any("박준태" in e for e in errors(at))
@@ -91,9 +178,8 @@ def test_w00_gate_refuses_an_unauthorized_human(screen):
     assert record["reviewer_kind"] == "SYNTHETIC_FIXTURE"
 
 
-def test_pilot_issue_disposition_is_recorded_and_listed(screen):
-    at, project = screen
-    adopted_w00(at)
+def test_pilot_issue_disposition_is_recorded_and_listed(adopted_screen):
+    at, project = adopted_screen
     # A limitation disposition without reason/scope is refused, not saved.
     sel(at, "an_pilot_issue").select("ACCEPTED_LIMITATION")
     ti(at, "an_pilot_issue_note").set_value("fixture: soft edge at hold")
@@ -115,9 +201,9 @@ def test_pilot_issue_disposition_is_recorded_and_listed(screen):
                for df in at.dataframe)
 
 
-def test_clean_and_subbed_approve_separately_in_ui(screen):
-    at, project = screen
-    produced_project(at)
+def test_clean_and_subbed_approve_separately_in_ui(produced_screen):
+    at, project = produced_screen
+    ti(at, "an_lock_approver").set_value(APPROVER)
     button(at, "an_lock_final").click().run()
     button(at, "an_final_make").click().run()
     assert any("FINAL_CANDIDATE" in s for s in successes(at))

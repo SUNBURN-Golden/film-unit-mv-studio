@@ -10,6 +10,7 @@ release NOT_AUTHORIZED.
 """
 import hashlib
 import json
+import shutil
 import subprocess
 import sys
 import time
@@ -30,7 +31,7 @@ from engine.animation_review import (_film_binding_current, append_review,
                                      record_transition_review)
 from engine.animation_schema import canon_bytes, read_canon, write_canon
 from engine.autopilot import autopilot
-from engine.builds import verify_build
+from engine.builds import list_builds, verify_build
 from engine.core import FilmError, read, write
 from engine.w00_gate import (PILOTS_PATH, _clean_film_binding_current,
                              approve_delivery, deliverable_status,
@@ -130,17 +131,57 @@ def _verified_job(p, shot_id="S001", start=0, end=BFRAMES):
     return sub["job_id"]
 
 
+# --- shared project templates -------------------------------------------------
+# Every test mutates its project, so each gets its own copy. The expensive
+# states (sine master, imported sequences, the sealed Final candidate) are
+# built once per module and copied per test; a project holds only relative
+# paths, so the copy is a complete, equivalent project.
+
+_TEMPLATE_ROOT = None
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _template_root(tmp_path_factory):
+    global _TEMPLATE_ROOT
+    _TEMPLATE_ROOT = tmp_path_factory.mktemp("anim022_templates")
+    yield
+    _TEMPLATE_ROOT = None
+
+
+def _from_template(kind, tmp_path, build):
+    """A fresh copy of the `kind` template project under `tmp_path`.
+
+    `build(root)` creates the template once per module (its fixture inputs
+    and root/compiler_fixture); later tests only copy the project folder.
+    """
+    root = _TEMPLATE_ROOT / kind
+    source = root / "compiler_fixture"
+    if not source.is_dir():
+        root.mkdir()
+        build(root)
+    return Path(shutil.copytree(source, tmp_path / "compiler_fixture"))
+
+
+def _w00(tmp_path):
+    """test_anim_007.w00_project: W00's two cuts imported, W01 unproduced."""
+    return _from_template("w00", tmp_path, w00_project)
+
+
 def _prepared_w00(tmp_path, with_plan=False, split_plan=False):
     """W00 locked and adopted; T001 reviewed; pilot targets ready."""
-    p = w00_project(tmp_path)
-    if with_plan:
-        _b_plan(p, tmp_path, split=split_plan)
-    record_plan_lock(p, APPROVER)
-    record_wave_lock(p, W00, APPROVER)
-    adopt_w00(p)
-    record_transition_review(p, "T001", reviewer=REVIEWER,
-                             methods=TRANSITION_METHODS)
-    return p
+    def build(root):
+        p = w00_project(root)
+        if with_plan:
+            _b_plan(p, root, split=split_plan)
+        record_plan_lock(p, APPROVER)
+        record_wave_lock(p, W00, APPROVER)
+        adopt_w00(p)
+        record_transition_review(p, "T001", reviewer=REVIEWER,
+                                 methods=TRANSITION_METHODS)
+
+    kind = "prepared_w00" + ("_plan" if with_plan else "") \
+        + ("_split" if split_plan else "")
+    return _from_template(kind, tmp_path, build)
 
 
 def _keep_pilots(p, decision="KEEP"):
@@ -167,12 +208,19 @@ def _decide(p, decision="KEEP", apply_scope=None, changes=None):
         cost_time_impact="fixture: none")
 
 
-def _final_build(p, tmp_path):
-    produced_project(p, tmp_path)
-    review_transitions(p)
-    record_final_lock(p, APPROVER)
-    result = compile_final_candidate(p)
-    return result["build_id"]
+def _final_build(tmp_path):
+    """A fully produced project with its sealed FINAL_CANDIDATE: (p, build_id)."""
+    def build(root):
+        p = w00_project(root)
+        produced_project(p, root)
+        review_transitions(p)
+        record_final_lock(p, APPROVER)
+        compile_final_candidate(p)
+
+    p = _from_template("final_build", tmp_path, build)
+    candidate = next(b for b in list_builds(p)
+                     if b.get("mode") == "FINAL_CANDIDATE")
+    return p, candidate["build_id"]
 
 
 def _tree_hash(folder):
@@ -242,7 +290,7 @@ def test_pilot_record_binds_current_review_and_gates(tmp_path):
 
 
 def test_pilot_needs_a_current_review_and_w00_target(tmp_path):
-    p = w00_project(tmp_path)
+    p = _w00(tmp_path)
     record_plan_lock(p, APPROVER)
     record_wave_lock(p, W00, APPROVER)
     # Unadopted cuts have nothing a pilot record could bind.
@@ -554,8 +602,7 @@ def test_orphaned_pilot_reports_out_of_scope(tmp_path):
 
 
 def test_stale_film_approval_never_carries_to_new_hash(tmp_path):
-    p = w00_project(tmp_path)
-    build_id = _final_build(p, tmp_path)
+    p, build_id = _final_build(tmp_path)
     approve_delivery(p, build_id, "MASTER_CLEAN.mp4",
                      approver=PRIMARY, reviewer_kind="HUMAN")
     status = deliverable_status(p, build_id)
@@ -572,8 +619,7 @@ def test_stale_film_approval_never_carries_to_new_hash(tmp_path):
 # --- sealed clean/subbed delivery approvals -----------------------------------
 
 def test_clean_and_subbed_approve_separately(tmp_path):
-    p = w00_project(tmp_path)
-    build_id = _final_build(p, tmp_path)
+    p, build_id = _final_build(tmp_path)
     folder = p / "builds" / build_id
     status = deliverable_status(p, build_id)
     assert all(row["state"] == "UNREVIEWED"
@@ -610,8 +656,7 @@ def test_clean_and_subbed_approve_separately(tmp_path):
 
 
 def test_clean_approval_ignores_font_and_cue_bindings(tmp_path):
-    p = w00_project(tmp_path)
-    build_id = _final_build(p, tmp_path)
+    p, build_id = _final_build(tmp_path)
     approve_delivery(p, build_id, "MASTER_CLEAN.mp4",
                      approver=PRIMARY, reviewer_kind="HUMAN")
     approve_delivery(p, build_id, "MASTER_SUBBED.mp4",
@@ -654,8 +699,7 @@ def test_clean_approval_ignores_font_and_cue_bindings(tmp_path):
 
 
 def test_clean_approval_survives_on_disk_font_and_cue_change(tmp_path):
-    p = w00_project(tmp_path)
-    build_id = _final_build(p, tmp_path)
+    p, build_id = _final_build(tmp_path)
     clean_out = approve_delivery(p, build_id, "MASTER_CLEAN.mp4",
                                  approver=PRIMARY, reviewer_kind="HUMAN")
     approve_delivery(p, build_id, "MASTER_SUBBED.mp4",
@@ -690,8 +734,7 @@ def test_clean_approval_survives_on_disk_font_and_cue_change(tmp_path):
 
 
 def test_protocol_review_never_hides_the_governed_approval(tmp_path):
-    p = w00_project(tmp_path)
-    build_id = _final_build(p, tmp_path)
+    p, build_id = _final_build(tmp_path)
     governed = approve_delivery(p, build_id, "MASTER_SUBBED.mp4",
                                 approver=PRIMARY, reviewer_kind="HUMAN")
 
@@ -751,8 +794,7 @@ def test_gate_runs_without_unix_only_resource_module(tmp_path, monkeypatch):
 
 
 def test_delivery_approver_rule_and_unknown_deliverable(tmp_path):
-    p = w00_project(tmp_path)
-    build_id = _final_build(p, tmp_path)
+    p, build_id = _final_build(tmp_path)
     with pytest.raises(FilmError, match="박준태"):
         approve_delivery(p, build_id, "MASTER_CLEAN.mp4",
                          approver="random", reviewer_kind="HUMAN")
