@@ -680,7 +680,9 @@ def plan_rebuild(project, changes, *, exposure=None, graph=None):
             if set(updates) - allowed:
                 raise FilmError("TRANSITION updates are limited to "
                                 + ", ".join(sorted(allowed)))
-            target["transition_out"] = {**target["transition_out"], **updates}
+            merged = {**target["transition_out"], **updates}
+            target["transition_out"] = {k: v for k, v in merged.items()
+                                        if v is not None}
             transition_edited.add(tid)
             structure_changed = True
         elif cls in ("FONT", "CUE"):

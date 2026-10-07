@@ -307,7 +307,7 @@ def _wave_binding(p, config, timeline, waves, wave_id):
 
 
 def _final_binding(p, config, timeline):
-    targets = bound_targets(p)
+    targets = bound_targets(p, document=timeline)
     require_current_reviews(p)
     analysis = read(safe_path(p, "analysis/audio.json"), {}) or {}
     duration_ms = analysis.get("duration_ms")
@@ -357,11 +357,17 @@ def _changed_fields(old, new):
     return changed
 
 
-def lock_status(project):
-    """Recompute every lock's validity against current project bytes."""
+def lock_status(project, timeline=None):
+    """Recompute every lock's validity against current project bytes.
+
+    `timeline` may name a candidate `animation_timeline` document (a draft)
+    instead of the file on disk, so callers can project which locks a change
+    that has not landed yet would make stale.
+    """
     p = Path(project)
     config = require_animation_profile(p)
-    timeline = load_animation_timeline(p)
+    if timeline is None:
+        timeline = load_animation_timeline(p)
     bindings, waves = _current_bindings(p, config, timeline)
     records = load_locks(p)["locks"]
 
