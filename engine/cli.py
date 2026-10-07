@@ -280,6 +280,27 @@ def main(argv=None):
     accept.add_argument("--reviewer", required=True)
     verify = sub.add_parser("verify-build")
     verify.add_argument("build_dir")
+    diag = sub.add_parser("diagnose", help="film-quality-diagnostics: technical media diagnostics on a sealed build's MP4s — decode/PTS/duration/audio/black/still/font; never an approval or aesthetic score")
+    diag.add_argument("project")
+    diag.add_argument("--build", required=True)
+    diag.add_argument("--artifact", choices=["MASTER_SUBBED.mp4",
+                                             "MASTER_CLEAN.mp4",
+                                             "DRAFT_PREVIEW.mp4"],
+                      help="limit the diagnosis to one delivery file")
+    diag.add_argument("--intended",
+                      help="declare intended regions beyond the plan/"
+                           "timeline: KIND:STARTMS-ENDMS,... with KIND in "
+                           "BLACK,STILL,SILENCE")
+    diag_cls = sub.add_parser("diagnose-classify", help="Classify one diagnostics finding with a reason — ACCEPTED_INTENDED/DEFECT/NOT_A_DEFECT; the artifact is never changed")
+    diag_cls.add_argument("project")
+    diag_cls.add_argument("--build", required=True)
+    diag_cls.add_argument("--finding", required=True,
+                          help="finding id (F001…) or key from the report")
+    diag_cls.add_argument("--decision", required=True,
+                          choices=["ACCEPTED_INTENDED", "DEFECT",
+                                   "NOT_A_DEFECT"])
+    diag_cls.add_argument("--reason", required=True)
+    diag_cls.add_argument("--reviewer", required=True)
     replay = sub.add_parser("replay-build")
     replay.add_argument("build_dir")
     replay.add_argument("--output", required=True)
@@ -363,6 +384,22 @@ def main(argv=None):
     reb.add_argument("--changes", required=True,
                      help="JSON file with the declared change list, e.g. "
                           "[{\"class\": \"PICTURE\", \"instance_id\": \"I002\", \"member_index\": 7}]")
+    doctor = sub.add_parser("build-doctor", help="film-replay-doctor: diagnose why a saved build cannot be replayed or rebuilt — manifest linkage, missing/corrupt assets, toolchain drift, unsupported profile")
+    doctor.add_argument("build_dir")
+    doctor.add_argument("--deep", action="store_true", help="Recompute the sealed sequence roots from the archived members (slower)")
+    doctor.add_argument("--no-project", action="store_true", help="Skip comparing the live project's current inputs")
+    adoctor = sub.add_parser("archive-doctor", help="film-replay-doctor: diagnose a sealed storage_archive — index pin, member ranges, corrupt pack; a bounded restore never silently becomes a full download")
+    adoctor.add_argument("manifest")
+    adoctor.add_argument("--root", help="Archive object root (default: the manifest's parent 'manifests/..' root)")
+    adoctor.add_argument("--members", help="Comma-separated member ids to plan/verify (default: all)")
+    adoctor.add_argument("--whole-pack-cap", type=int, default=None,
+                         help="Predeclared byte cap enabling the explicit WHOLE_PACK_VERIFIED fallback")
+    rpkt = sub.add_parser("replay-packet", help="film-replay-doctor: write a credential-free CANON replay packet for a sealed build")
+    rpkt.add_argument("build_dir")
+    rpkt.add_argument("--output", required=True)
+    rcheck = sub.add_parser("replay-check", help="film-replay-doctor: compare a produced replay output against the sealed inventory — differing bytes are NEW_ARTIFACTs, never the same build")
+    rcheck.add_argument("build_dir")
+    rcheck.add_argument("produced_dir")
     encode_build = sub.add_parser("encode-build", help="ANIM-015: encode+verify a sealed Build 2 build's delivery frames with a chosen driver")
     encode_build.add_argument("build_dir")
     encode_build.add_argument("--driver", required=True,
@@ -696,6 +733,29 @@ def main(argv=None):
         elif a.command == "verify-build":
             from .builds import verify_build
             result = verify_build(a.build_dir)
+        elif a.command == "diagnose":
+            from .quality_diagnostics import (diagnose_build,
+                                              parse_intended)
+            declared = parse_intended(a.intended) if a.intended else None
+            report = diagnose_build(
+                a.project, a.build, intended=declared,
+                artifacts=[a.artifact] if a.artifact else None)
+            result = {"report": report.get("report_path"),
+                      "build": a.build, "not_an_approval": True,
+                      "summary": report["summary"],
+                      "findings": [
+                          {"id": f["id"], "severity": f["severity"],
+                           "kind": f["kind"], "artifact": f["artifact"],
+                           "location": f["location"],
+                           "detail": f["detail"], "repro": f["repro"]}
+                          for f in report["findings"]]}
+        elif a.command == "diagnose-classify":
+            from .quality_diagnostics import classify_finding
+            report = classify_finding(a.project, a.build, a.finding,
+                                      a.decision, a.reason, a.reviewer)
+            result = {"finding": a.finding, "decision": a.decision,
+                      "summary": report["summary"],
+                      "artifact_unchanged": True}
         elif a.command == "replay-build":
             from .builds import replay_build
             result = replay_build(a.build_dir, a.output)
@@ -862,6 +922,21 @@ def main(argv=None):
             from .render_provenance import rebuild_plan_report
             changes = json.loads(Path(a.changes).read_text(encoding="utf-8"))
             result = rebuild_plan_report(a.project, changes)
+        elif a.command == "build-doctor":
+            from .replay_doctor import build_doctor_command
+            result = build_doctor_command(a.build_dir, deep=a.deep,
+                                          compare_project=not a.no_project)
+        elif a.command == "archive-doctor":
+            from .replay_doctor import archive_doctor_command
+            result = archive_doctor_command(a.manifest, root=a.root,
+                                            members=a.members,
+                                            whole_pack_cap=a.whole_pack_cap)
+        elif a.command == "replay-packet":
+            from .replay_doctor import replay_packet_command
+            result = replay_packet_command(a.build_dir, a.output)
+        elif a.command == "replay-check":
+            from .replay_doctor import replay_check_command
+            result = replay_check_command(a.build_dir, a.produced_dir)
         elif a.command == "encode-build":
             from .animation_compiler import encode_build_delivery
             result = encode_build_delivery(a.build_dir, a.driver, a.output,
