@@ -96,6 +96,8 @@ with web_tab:
     from app.capability_ui import render_capabilities, render_forecast
     render_capabilities(p)
     render_forecast(p)
+    from app.execution_console import render_execution_console
+    render_execution_console(p)
 
 with brief_tab:
     from app.brief_board import render_brief_board
