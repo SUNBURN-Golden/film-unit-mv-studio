@@ -3,7 +3,11 @@
 No test opens a socket to Google. The fixture transport is not
 qualification. A missing client file is WAITING, not a crash.
 """
+import hashlib
 import json
+import os
+import subprocess
+import sys
 import threading
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -103,6 +107,21 @@ def test_loopback_captures_the_redirect_without_logging(capsys):
     assert query == {"code": "abc", "state": "xyz"}
     logged = capsys.readouterr()
     assert "abc" not in logged.err and "abc" not in logged.out
+
+
+def test_loopback_keeps_the_oauth_query_when_favicon_follows():
+    loop = LocalLoopback()
+    loop.__enter__()
+    try:
+        base = loop.redirect_uri()
+        with urlopen(base + "?code=abc&state=xyz", timeout=2) as response:
+            assert b"close this tab" in response.read()
+        with urlopen(base + "favicon.ico", timeout=2) as response:
+            response.read()
+        query = loop.wait(timeout=2)
+    finally:
+        loop.close()
+    assert query == {"code": "abc", "state": "xyz"}
 
 
 def test_authorize_uses_pkce_state_and_drive_file_scope(tmp_path):
@@ -331,7 +350,7 @@ def test_cross_host_upload_location_is_refused():
     transport.next_location = "https://evil.example/upload"
     with pytest.raises(FilmError, match="REDIRECT_REFUSED"):
         backend.create_upload_session("obj-anim018", 4)
-    assert transport.secret_uris if False else backend.secret_material() == []
+    assert backend.secret_material() == []
 
 
 def test_md5_mismatch_is_integrity_failed_not_a_retry():
@@ -430,6 +449,118 @@ def test_target_raster_is_not_silently_downscaled():
     assert TARGET_RASTER_BYTES == TARGET_WIDTH * TARGET_HEIGHT * 4 * TARGET_FRAMES
     fits = target_preflight(TARGET_RASTER_BYTES)
     assert fits["status"] == "OK" and fits["executed_frames"] == TARGET_FRAMES
+
+
+def test_list_objects_follows_the_next_page():
+    backend, transport = _backend()
+    folder = backend._folder_id()
+    for index in range(101):
+        transport.files[f"id-{index}"] = {
+            "id": f"id-{index}", "name": f"p{index:03d}",
+            "parents": [folder], "folder": False, "data": b"x",
+            "md5": "ab", "revision": "rev-1", "size": 1}
+    names = backend.list_objects()
+    assert set(names) == {f"p{index:03d}" for index in range(101)}
+
+
+def test_panel_imports_when_the_unix_resource_module_is_missing():
+    """Windows has no `resource`. The archive panel imports this module."""
+    script = (
+        "import sys\n"
+        "sys.modules['resource'] = None\n"
+        "import app.archive_ui\n"
+        "from engine.remote_qualify import archive_panel_caption, _runtime\n"
+        "assert 'UNQUALIFIED' in archive_panel_caption()\n"
+        "assert _runtime()['process_rss_bytes'] is None\n"
+    )
+    env = {**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1])}
+    env.pop("FILM_GOOGLE_OAUTH_CLIENT_FILE", None)
+    run = subprocess.run([sys.executable, "-c", script],
+                         capture_output=True, text=True, env=env)
+    assert run.returncode == 0, run.stderr
+
+
+def test_runtime_marks_ffmpeg_unavailable_when_the_probe_times_out(monkeypatch):
+    def hung(args, timeout=600):
+        raise subprocess.TimeoutExpired(args, timeout)
+
+    monkeypatch.setattr("engine.core.run", hung)
+    from engine.remote_qualify import _runtime
+    assert _runtime()["ffmpeg"] == "UNAVAILABLE"
+
+
+def test_md5_mismatch_measures_the_sealed_archive_digest():
+    backend, transport = _backend()
+    body = b"sealed-manifest-bytes"
+    backend.put_object("manifest-anim018", body)
+    digest = hashlib.sha256(body).hexdigest()
+    record = transport._by_name("manifest-anim018")
+    record["data"] = b"rewritten-manifest"
+    record["md5"] = hashlib.md5(record["data"]).hexdigest()
+
+    class Session:
+        authorized = backend
+
+    from engine.remote_qualify import _fail_closed
+    changed = _fail_closed(Session(), transport, digest, "manifest-anim018")
+    assert changed["md5_mismatch"]["rejected"] is True
+    assert changed["md5_mismatch"]["sealed_archive_sha_unchanged"] is False
+    assert changed["md5_mismatch"]["archive_sha256"] == hashlib.sha256(
+        b"rewritten-manifest").hexdigest()
+
+
+def test_attended_run_denies_the_real_client_secret(tmp_path, monkeypatch):
+    secret = _client(tmp_path / "client.json", "attended-real-secret")
+    monkeypatch.setenv("FILM_GOOGLE_OAUTH_CLIENT_FILE",
+                       str(tmp_path / "client.json"))
+    seen = {}
+
+    class _Backend:
+        transport = object()
+
+    class _Session:
+        backend = _Backend()
+
+    def connect():
+        return _Session()
+
+    def pipeline(session, transport, scratch, *, width, height, frames,
+                 client_secret, scratch_limit_bytes):
+        seen["client_secret"] = client_secret
+        return {"qualification_state": "UNQUALIFIED"}, [client_secret]
+
+    monkeypatch.setattr("engine.remote_qualify.connect_google", connect)
+    monkeypatch.setattr("engine.remote_qualify.target_preflight",
+                        lambda limit: {"status": "OK"})
+    monkeypatch.setattr("engine.remote_qualify.run_pipeline", pipeline)
+    from engine.remote_qualify import run_attended
+    _report, secrets = run_attended(1)
+    assert seen["client_secret"] == secret
+    assert secret in secrets
+
+
+def test_attended_capacity_block_denies_the_client_secret(tmp_path, monkeypatch):
+    secret = _client(tmp_path / "client.json", "attended-blocked-secret")
+    monkeypatch.setenv("FILM_GOOGLE_OAUTH_CLIENT_FILE",
+                       str(tmp_path / "client.json"))
+
+    class _Store:
+        def load(self, connection_id):
+            return {"access_token": "mem-access-block",
+                    "refresh_token": "mem-refresh-block"}
+
+    class _Session:
+        real_google = True
+        connection_id = "conn-block"
+        token_store = _Store()
+
+    monkeypatch.setattr("engine.remote_qualify.connect_google",
+                        lambda: _Session())
+    from engine.remote_qualify import run_attended
+    report, secrets = run_attended(1)
+    assert report["detail"] == "CAPACITY_BLOCKED"
+    assert secret in secrets
+    assert "mem-access-block" in secrets
 
 
 def test_panel_caption_reports_waiting(monkeypatch):

@@ -148,7 +148,13 @@ class _LoopHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         parsed = urlparse(self.path)
         query = {key: values[0] for key, values in parse_qs(parsed.query).items()}
-        self.server.result = query
+        # Keep the first OAuth redirect. A later request (favicon) must not
+        # replace the code before wait() reads it.
+        if any(query.get(key) for key in ("code", "error", "state")):
+            with self.server.lock:
+                if not self.server.event.is_set():
+                    self.server.result = dict(query)
+                    self.server.event.set()
         body = (b"<!doctype html><meta charset=utf-8>"
                 b"<p>Film Unit received the Google redirect. "
                 b"You can close this tab.</p>")
@@ -157,7 +163,6 @@ class _LoopHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
-        self.server.event.set()
 
     def log_message(self, fmt, *args):
         # The redirect carries the authorization code. Never log it.
@@ -175,6 +180,7 @@ class LocalLoopback:
     def __enter__(self):
         httpd = ThreadingHTTPServer(("127.0.0.1", 0), _LoopHandler)
         httpd.event = threading.Event()
+        httpd.lock = threading.Lock()
         httpd.result = {}
         self._httpd = httpd
         self.port = httpd.server_address[1]

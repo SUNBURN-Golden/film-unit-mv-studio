@@ -14,14 +14,14 @@ import hashlib
 import json
 import os
 import platform
-import resource
 import shutil
 import subprocess
 import time
 
 from .core import FilmError
 from .drive_oauth import (CLIENT_DEPLOY_OWNER, CLIENT_FILE_ENV, AuthError,
-                          assert_no_secrets, connect_google, redact)
+                          assert_no_secrets, client_file_path, connect_google,
+                          load_desktop_client, redact)
 from .google_transport import MemoryDriveTransport, UrllibTransport
 
 REPO = Path(__file__).resolve().parents[1]
@@ -165,16 +165,31 @@ def source_sha():
     return out.decode().strip()
 
 
+def _installed_client_secret():
+    """The Desktop client secret, for the evidence denylist only."""
+    path = client_file_path()
+    if not path:
+        return ""
+    return load_desktop_client(path)["client_secret"]
+
+
 def _runtime():
     ffmpeg_line = None
     try:
         from .core import run
         ffmpeg_line = run(["ffmpeg", "-version"], timeout=20).decode().splitlines()[0]
-    except (FilmError, OSError, IndexError):
+    except (FilmError, OSError, IndexError, subprocess.TimeoutExpired):
         ffmpeg_line = None
-    rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-    # Linux reports ru_maxrss in kilobytes.
-    peak_rss = rss * 1024 if os.name != "nt" else rss
+    # `resource` is Unix-only. The archive panel imports this module, so a
+    # missing module must not crash the desktop app; peak RSS is then unknown.
+    peak_rss = None
+    try:
+        import resource
+        rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        # Linux reports ru_maxrss in kilobytes; Windows reports bytes.
+        peak_rss = rss * 1024 if os.name != "nt" else rss
+    except (ImportError, AttributeError, OSError, ValueError):
+        peak_rss = None
     return {"python": platform.python_version(),
             "implementation": platform.python_implementation(),
             "platform": platform.platform(),
@@ -319,7 +334,7 @@ def _sha(data):
     return hashlib.sha256(data).hexdigest()
 
 
-def _fail_closed(session, transport, archive_sha):
+def _fail_closed(session, transport, archive_sha, manifest_id):
     """Failure fixtures on a side object. The sealed archive digest stays."""
     from .archive_manifest import bounded_read
     from .storage_backends import ArchiveRequestError
@@ -408,9 +423,11 @@ def _fail_closed(session, transport, archive_sha):
     except FilmError as exc:
         tamper = "INTEGRITY_FAILED" in str(exc)
     transport.flip_byte("side-anim018")
+    stored = backend.get_object(manifest_id).body
+    measured = hashlib.sha256(stored).hexdigest()
     report["md5_mismatch"] = {"rejected": bool(tamper),
-                              "sealed_archive_sha_unchanged": True,
-                              "archive_sha256": archive_sha}
+                              "sealed_archive_sha_unchanged": measured == archive_sha,
+                              "archive_sha256": measured}
     return report
 
 
@@ -498,7 +515,8 @@ def run_pipeline(session, transport, scratch, *, width, height, frames,
     project_created = (scratch / "project.json").exists() or (scratch / "project.yaml").exists()
     relay_ok = _relay_denied(worker["worker"], snapshot)
     failures = stage("failure_injection", lambda: _fail_closed(
-        session, transport, archived["archive_sha256"]))
+        session, transport, archived["archive_sha256"],
+        archived["manifest_object_id"]))
     profile_exact = (width, height, frames) == (
         TARGET_WIDTH, TARGET_HEIGHT, TARGET_FRAMES)
     checks = {
@@ -556,7 +574,8 @@ def run_pipeline(session, transport, scratch, *, width, height, frames,
                       "note": "one pair recorded; not a promised speedup"},
         "stage_timeline": stages,
         "peak": {"pc_disk_bytes": disk,
-                 "pc_ram_bytes": max(peak_buffers, runtime["process_rss_bytes"]),
+                 "pc_ram_bytes": peak_buffers if runtime["process_rss_bytes"] is None
+                 else max(peak_buffers, runtime["process_rss_bytes"]),
                  "vram_bytes": None,
                  "worker_scratch_bytes": width * height * 4 * frames,
                  "spool_bytes": len(cold_body)},
@@ -697,13 +716,17 @@ def run_attended(scratch_limit_bytes):
         report["real_run_claimed"] = False
         report["evidence_state"] = "WAITING"
         token = session.token_store.load(session.connection_id) or {}
-        return report, [token.get("access_token"), token.get("refresh_token")]
+        secret = _installed_client_secret()
+        return report, [item for item in (
+            secret, token.get("access_token"), token.get("refresh_token"))
+            if item]
     import tempfile
+    secret = _installed_client_secret()
     with tempfile.TemporaryDirectory(prefix="anim018-") as tmp:
         report, secrets = run_pipeline(
             session, session.backend.transport, Path(tmp),
             width=TARGET_WIDTH, height=TARGET_HEIGHT, frames=TARGET_FRAMES,
-            client_secret="", scratch_limit_bytes=scratch_limit_bytes)
+            client_secret=secret, scratch_limit_bytes=scratch_limit_bytes)
     return report, secrets
 
 

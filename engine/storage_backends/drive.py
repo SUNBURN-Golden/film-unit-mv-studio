@@ -131,11 +131,24 @@ class GoogleDriveBackend:
         return json.loads(response.body.decode())
 
     def _list(self, q):
-        url = (f"{API}/drive/v3/files?q={quote(q)}&pageSize=100&fields="
-               "files(id,name,mimeType,size,md5Checksum,sha256Checksum,"
-               "headRevisionId,parents)")
-        payload = self._json(self._call("GET", url))
-        return list(payload.get("files") or [])
+        files = []
+        page_token = None
+        seen = set()
+        while True:
+            url = (f"{API}/drive/v3/files?q={quote(q)}&pageSize=100&fields="
+                   "nextPageToken,files(id,name,mimeType,size,md5Checksum,"
+                   "sha256Checksum,headRevisionId,parents)")
+            if page_token:
+                if page_token in seen:
+                    break
+                seen.add(page_token)
+                url += "&pageToken=" + quote(page_token)
+            payload = self._json(self._call("GET", url))
+            files.extend(payload.get("files") or [])
+            page_token = payload.get("nextPageToken") or None
+            if not page_token:
+                break
+        return files
 
     def _folder_id(self):
         if self._folder:

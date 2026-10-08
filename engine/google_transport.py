@@ -229,7 +229,7 @@ class MemoryDriveTransport:
         if path == "/drive/v3/files" and method == "POST":
             return self._create_meta(body)
         if path == "/drive/v3/files" and method == "GET":
-            return self._list(query.get("q", [""])[0])
+            return self._list(query)
         if path.startswith("/drive/v3/files/"):
             return self._file(method, path, query, headers)
         return HttpResponse(404, {}, json.dumps(
@@ -331,7 +331,17 @@ class MemoryDriveTransport:
                    "headRevisionId": record["revision"]}
         return HttpResponse(status, {}, json.dumps(payload).encode())
 
-    def _list(self, q):
+    def _list(self, query):
+        q = query.get("q", [""])[0] if isinstance(query, dict) else query
+        page_size = 100
+        start = 0
+        if isinstance(query, dict):
+            raw_size = (query.get("pageSize") or ["100"])[0]
+            if str(raw_size).isdigit() and int(raw_size) > 0:
+                page_size = int(raw_size)
+            token = (query.get("pageToken") or [None])[0]
+            if token and str(token).isdigit():
+                start = int(token)
         matched = []
         for record in self.files.values():
             if record["folder"]:
@@ -348,7 +358,12 @@ class MemoryDriveTransport:
             if parent is not None and parent not in record["parents"]:
                 continue
             matched.append(self._public(record))
-        return HttpResponse(200, {}, json.dumps({"files": matched}).encode())
+        matched.sort(key=lambda item: (item.get("name") or "", item.get("id") or ""))
+        page = matched[start:start + page_size]
+        payload = {"files": page}
+        if start + page_size < len(matched):
+            payload["nextPageToken"] = str(start + page_size)
+        return HttpResponse(200, {}, json.dumps(payload).encode())
 
     def _public(self, record):
         payload = {"id": record["id"], "name": record["name"],
