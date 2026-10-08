@@ -431,7 +431,7 @@ ANIM-001에 storage/execution/encoder 계약을 먼저 넣는다. ANIM-013~015�
 | 병렬 | out-of-order receipt·중복 범위·누락·stale snapshot·동시 seal 차단 |
 | 작업 | UNKNOWN·늦은 완료·cancel 불명·runtime 종료 후 같은 identity reconciliation |
 | encoder | CPU 기준/독립 native/GStreamer/service의 실제 지원 profile·color·PTS·audio |
-| 비-FFmpeg | NO_FFMPEG_ENCODING 경로 실제 성공; 완전한 NO_FFMPEG_RUNTIME은 별도 probe·mux/verify 구현 근거 |
+| 비-FFmpeg | NO_FFMPEG_ENCODING 경로 실제 성공; 완전한 NO_FFMPEG_RUNTIME은 별도 probe·mux/verify 구현 근거. 2026-10-08에 JunTae가 anim-015의 NO_FFMPEG_ENCODING 요구를 면제함([인코딩 경로 결정](ANIM_015_ENCODING_DECISION_KO.md)). |
 | 구독 | 외부 network 없음·파일 한도·GPU 없음·session expiry·사용량 소진의 명시적 처리 |
 | 요금 | 구독/API 분리·견적 변경·예약·추가 과금 거절·대체 provider 무단 제출 차단 |
 | archive | upload 불명·검증 실패·완료 manifest crash·pack restore·Drive 해제 시 미완료 표시 |
