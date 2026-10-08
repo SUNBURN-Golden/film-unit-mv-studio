@@ -384,12 +384,12 @@ class GoogleOAuthFlow:
         finally:
             if owns_loop:
                 loop.close()
-        if returned.get("error"):
-            raise AuthError("AUTH_DENIED",
-                            "The user declined the Google consent screen")
         if returned.get("state") != state:
             raise AuthError("STATE_MISMATCH",
                             "The redirect state did not match this attempt")
+        if returned.get("error"):
+            raise AuthError("AUTH_DENIED",
+                            "The user declined the Google consent screen")
         code = returned.get("code")
         if not code:
             raise AuthError("AUTH_DENIED",

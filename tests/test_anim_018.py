@@ -152,10 +152,9 @@ def test_authorize_uses_pkce_state_and_drive_file_scope(tmp_path):
 def test_user_denial_does_not_call_the_token_endpoint(tmp_path):
     _client(tmp_path / "client.json")
     transport = MemoryDriveTransport()
-    flow, _ = _flow(tmp_path, transport, {"error": "access_denied", "state": ""})
-    # The scripted query forces state to the captured value via the helper
-    # only when state is omitted. Override with an explicit denial.
-    flow._loopback = ScriptedLoopback({"error": "access_denied", "state": "ignored"})
+    flow, captured = _flow(tmp_path, transport, {"error": "access_denied"})
+    flow._loopback = ScriptedLoopback(
+        lambda: {"error": "access_denied", "state": captured["state"]})
     with pytest.raises(AuthError) as exc:
         flow.authorize()
     assert exc.value.code == "AUTH_DENIED"
@@ -167,6 +166,18 @@ def test_state_mismatch_does_not_exchange_the_code(tmp_path):
     transport = MemoryDriveTransport()
     flow, _ = _flow(tmp_path, transport, {})
     flow._loopback = ScriptedLoopback({"code": "leaked-code", "state": "nope"})
+    with pytest.raises(AuthError) as exc:
+        flow.authorize()
+    assert exc.value.code == "STATE_MISMATCH"
+    assert transport.calls == []
+
+
+def test_state_mismatch_is_reported_before_oauth_error_denial(tmp_path):
+    _client(tmp_path / "client.json")
+    transport = MemoryDriveTransport()
+    flow, _ = _flow(tmp_path, transport, {})
+    flow._loopback = ScriptedLoopback(
+        {"error": "access_denied", "state": "nope"})
     with pytest.raises(AuthError) as exc:
         flow.authorize()
     assert exc.value.code == "STATE_MISMATCH"
@@ -487,6 +498,45 @@ def test_runtime_marks_ffmpeg_unavailable_when_the_probe_times_out(monkeypatch):
     monkeypatch.setattr("engine.core.run", hung)
     from engine.remote_qualify import _runtime
     assert _runtime()["ffmpeg"] == "UNAVAILABLE"
+
+
+def test_runtime_ru_maxrss_is_scaled_only_on_linux(monkeypatch):
+    class _Usage:
+        ru_maxrss = 4096
+
+    class _Resource:
+        RUSAGE_SELF = 0
+
+        @staticmethod
+        def getrusage(_who):
+            return _Usage()
+
+    monkeypatch.setitem(sys.modules, "resource", _Resource())
+    from engine.remote_qualify import _runtime
+
+    monkeypatch.setattr("sys.platform", "darwin")
+    assert _runtime()["process_rss_bytes"] == 4096
+    monkeypatch.setattr("sys.platform", "linux")
+    assert _runtime()["process_rss_bytes"] == 4096 * 1024
+
+
+def test_write_evidence_does_not_use_path_write_text(tmp_path, monkeypatch):
+    from engine.remote_qualify import write_evidence, waiting_report
+
+    evidence = tmp_path / "anim018-evidence"
+    direct_writes = []
+    real_write_text = Path.write_text
+
+    def spy_write_text(self, data, *args, **kwargs):
+        if self.name.startswith("anim018-evidence"):
+            direct_writes.append(self.name)
+        return real_write_text(self, data, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", spy_write_text)
+    write_evidence(evidence, waiting_report())
+    assert direct_writes == []
+    assert (evidence / "anim018-evidence.json").read_text(encoding="utf-8").endswith("\n")
+    assert (evidence / "anim018-evidence.md").exists()
 
 
 def test_md5_mismatch_measures_the_sealed_archive_digest():

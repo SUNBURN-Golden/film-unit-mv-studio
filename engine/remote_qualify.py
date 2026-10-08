@@ -14,11 +14,12 @@ import hashlib
 import json
 import os
 import platform
+import sys
 import shutil
 import subprocess
 import time
 
-from .core import FilmError
+from .core import FilmError, atomic_text
 from .drive_oauth import (CLIENT_DEPLOY_OWNER, CLIENT_FILE_ENV, AuthError,
                           assert_no_secrets, client_file_path, connect_google,
                           load_desktop_client, redact)
@@ -186,8 +187,8 @@ def _runtime():
     try:
         import resource
         rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-        # Linux reports ru_maxrss in kilobytes; Windows reports bytes.
-        peak_rss = rss * 1024 if os.name != "nt" else rss
+        # Linux reports ru_maxrss in kilobytes; macOS and Windows use bytes.
+        peak_rss = rss * 1024 if sys.platform == "linux" else rss
     except (ImportError, AttributeError, OSError, ValueError):
         peak_rss = None
     return {"python": platform.python_version(),
@@ -689,8 +690,8 @@ def write_evidence(directory, report, secrets=()):
     text = json.dumps(clean, indent=2, ensure_ascii=False) + "\n"
     markdown = _markdown(clean)
     assert_no_secrets(text + markdown, secrets)
-    (directory / "anim018-evidence.json").write_text(text, encoding="utf-8")
-    (directory / "anim018-evidence.md").write_text(markdown, encoding="utf-8")
+    atomic_text(directory / "anim018-evidence.json", text)
+    atomic_text(directory / "anim018-evidence.md", markdown)
     return clean
 
 
