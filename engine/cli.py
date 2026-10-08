@@ -402,6 +402,15 @@ def main(argv=None):
     rcheck = sub.add_parser("replay-check", help="film-replay-doctor: compare a produced replay output against the sealed inventory — differing bytes are NEW_ARTIFACTs, never the same build")
     rcheck.add_argument("build_dir")
     rcheck.add_argument("produced_dir")
+    dstat = sub.add_parser("delivery-status", help="film-delivery-package: Preview / Final candidate / director adoption / external publication for one sealed build; a file name never changes these")
+    dstat.add_argument("project")
+    dstat.add_argument("build")
+    dbun = sub.add_parser("delivery-bundle", help="film-delivery-package: write a reproducible delivery bundle (masters, thumbnail, subtitles, manifest, QC, review scope) outside the sealed build")
+    dbun.add_argument("project")
+    dbun.add_argument("build")
+    dbun.add_argument("--output", required=True)
+    dver = sub.add_parser("delivery-verify", help="film-delivery-package: re-hash a downloaded bundle and report integrity")
+    dver.add_argument("bundle_dir")
     encode_build = sub.add_parser("encode-build", help="ANIM-015: encode+verify a sealed Build 2 build's delivery frames with a chosen driver")
     encode_build.add_argument("build_dir")
     encode_build.add_argument("--driver", required=True,
@@ -942,6 +951,15 @@ def main(argv=None):
         elif a.command == "replay-check":
             from .replay_doctor import replay_check_command
             result = replay_check_command(a.build_dir, a.produced_dir)
+        elif a.command == "delivery-status":
+            from .delivery_package import delivery_status
+            result = delivery_status(a.project, a.build)
+        elif a.command == "delivery-bundle":
+            from .delivery_package import assemble_bundle
+            result = assemble_bundle(a.project, a.build, a.output)
+        elif a.command == "delivery-verify":
+            from .delivery_package import verify_bundle
+            result = verify_bundle(a.bundle_dir)
         elif a.command == "encode-build":
             from .animation_compiler import encode_build_delivery
             result = encode_build_delivery(a.build_dir, a.driver, a.output,

@@ -25,6 +25,8 @@ python -m streamlit run app/control_panel.py
 
 브라우저에서 `http://localhost:8501`을 엽니다. 기본 바인딩은 127.0.0.1입니다. GitHub는 코드 보관에 사용하며, 이 로컬 제작 흐름에는 Vercel·Supabase·웹서비스 계정이 필요하지 않습니다.
 
+FRAME_ANIMATION_V1에서 봉인된 영상과 그 증명 자료를 넘기는 절차는 [전달 묶음 안내](docs/DELIVERY_PACKAGE.md)에 있습니다. 파일 이름만으로 Final이 되지 않습니다.
+
 ## 비용 없이 전체 Preview 만들기
 
 ```bash

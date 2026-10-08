@@ -757,6 +757,8 @@ def _output(p, entries, locks, route, reviews):
     builds = list_builds(p)
     if not builds:
         st.caption("아직 봉인된 빌드가 없습니다.")
+        from app.delivery_package import render_delivery
+        render_delivery(p, None)
         return
     pick = st.selectbox(
         "빌드", builds, key="an_final_build",
@@ -786,6 +788,9 @@ def _output(p, entries, locks, route, reviews):
     st.divider()
     from app.diagnostics_ui import render_diagnostics
     render_diagnostics(p, pick["build_id"])
+    st.divider()
+    from app.delivery_package import render_delivery
+    render_delivery(p, pick["build_id"])
 
 
 def _b_flash(action, result):
