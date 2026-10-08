@@ -41,6 +41,7 @@ def test_running_job_shows_queue_and_stages(tmp_path, monkeypatch):
     at = run_panel(tmp_path, monkeypatch, "running")
     assert any("실행 작업실" in h.value for h in at.subheader)
     assert any("RUNNING" in m.value for m in at.markdown)
+    assert any("op-a" in m.value for m in at.markdown)
     # the six-stage table is rendered
     assert at.dataframe
     stage_rows = str(at.dataframe[0].value)
@@ -53,6 +54,17 @@ def test_running_job_shows_queue_and_stages(tmp_path, monkeypatch):
     assert any("중단 위치" in e.label for e in at.expander)
     assert "상태 조회 — reconcile" in labels(at)
     assert "취소 요청" in labels(at)
+
+
+def test_reserved_job_offers_cancel_before_submit(tmp_path, monkeypatch):
+    at = run_panel(tmp_path, monkeypatch, "reserved")
+    assert any("RESERVED" in m.value for m in at.markdown)
+    assert any("중단 위치" in e.label for e in at.expander)
+    cancel = next(b for b in at.button if b.label == "취소 요청")
+    assert not cancel.disabled
+    cancel.click().run()
+    assert not at.exception
+    assert any("CANCEL_CONFIRMED" in m.value for m in at.markdown)
 
 
 def test_cancel_requested_never_shown_as_terminal(tmp_path, monkeypatch):

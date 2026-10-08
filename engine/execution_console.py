@@ -12,11 +12,14 @@ it reports comes from the same authorities the rest of the program uses:
 - committed perf state + render provenance (`engine/perf_scheduler.py`,
   `engine/render_provenance.py`)
 
-It adds no new journal records for reads, does not poll, and does not retry
-anything on its own. The only side effects live behind the explicitly
-requested actions in `run_action`, and those just call the existing
-Coordinator / UploadTracker / ArchiveCommitter methods — the console fences
-exactly what those machines fence:
+It adds no console-invented journal records on a read, does not poll, and
+does not retry on its own. Constructing the Coordinator replays that
+machine; when a legacy ``runtime_state.json`` exists and the journal is
+empty, the machine itself appends one ``STATE_SNAPSHOT`` so the next
+restart rebuilds from the chain. Every other side effect is an explicit
+``run_action``, which calls the existing Coordinator / UploadTracker /
+ArchiveCommitter methods — the console fences exactly what those machines
+fence:
 
 - ``UNKNOWN`` and ``CANCEL_REQUESTED`` never mint a new remote job; the only
   offered path is an explicit status query / reconcile on the existing
@@ -106,6 +109,35 @@ def _stage(status, **fields):
     return row
 
 
+def _bindings_for(mapping, dirs):
+    """Point a path-keyed binding at the directory spelling we scan.
+
+    A symlink or a ``..`` spelling of a directory already in ``dirs`` is
+    not scanned again — a second ``DurableJournal`` of one file would
+    stamp a duplicate seq. A backend or tracker bound to that dropped
+    spelling still has to reach the directory that is scanned.
+    """
+    resolved = {}
+    for raw, value in mapping.items():
+        try:
+            ident = Path(raw).resolve()
+        except (OSError, RuntimeError):
+            ident = Path(raw)
+        resolved.setdefault(ident, value)
+    out = {}
+    for d in dirs:
+        try:
+            ident = d.resolve()
+        except (OSError, RuntimeError):
+            ident = d
+        key = str(d)
+        if key in mapping:
+            out[key] = mapping[key]
+        elif ident in resolved:
+            out[key] = resolved[ident]
+    return out
+
+
 def _produce_stage_name(kind):
     """Map an operation kind onto one of the six console stages."""
     k = (kind or "").upper()
@@ -170,13 +202,26 @@ class ExecutionConsole:
         self.state_dir = (Path(state_dir) if state_dir
                           else coordinator.state_dir)
         dirs = []
+        seen = set()
         for d in [self.state_dir, *(journal_dirs or ())]:
             if d is None:
                 continue
             d = Path(d)
-            if d not in dirs:
-                dirs.append(d)
+            # Path equality does not fold a symlink or a `..` spelling
+            # into the same directory. Two scans would be two in-memory
+            # writers of one job_journal.jsonl.
+            try:
+                ident = d.resolve()
+            except (OSError, RuntimeError):
+                ident = d
+            if ident in seen:
+                continue
+            seen.add(ident)
+            dirs.append(d)
         self._dirs = dirs
+        self.backends = _bindings_for(self.backends, dirs)
+        self._injected_trackers = _bindings_for(
+            self._injected_trackers, dirs)
         self.perf_roots = [Path(d) for d in (perf_roots or ())]
         # Per-dir replay of the non-coordinator scopes.
         self._journals = {}       # str(dir) -> DurableJournal|None
@@ -202,11 +247,19 @@ class ExecutionConsole:
         also keep accepting those appends after the coordinator had
         fenced the chain.
         """
+        resolved = Path(path).resolve()
         coord = getattr(self.coordinator, "journal", None)
         coord_path = getattr(coord, "path", None)
         if coord_path is not None \
-                and Path(coord_path).resolve() == Path(path).resolve():
+                and Path(coord_path).resolve() == resolved:
             return coord
+        for journal in self._journals.values():
+            if journal is None:
+                continue
+            existing = getattr(journal, "path", None)
+            if existing is not None \
+                    and Path(existing).resolve() == resolved:
+                return journal
         return DurableJournal(path)
 
     def _scan_dir(self, d):
@@ -397,7 +450,7 @@ class ExecutionConsole:
             "item_id": f"job:{key}",
             "kind": "job",
             "ref": key,
-            "label": job["operation"].get("id") or key[:16],
+            "label": job["operation"].get("operation_id") or key[:16],
             "operation_kind": job["operation"].get("kind"),
             "route": job["route"],
             "worker_id": job["worker_id"],
@@ -895,6 +948,21 @@ class ExecutionConsole:
                           "the artifact declarations must be re-supplied "
                           "(the journal pins bytes by hash, never stores "
                           "them)"})
+        if state == "OBJECTS_VERIFIED":
+            # Crash window between OBJECTS_VERIFIED and MANIFEST_INTENT.
+            # reconcile_commit only answers MANIFEST_INTENT / SEAL_UNKNOWN.
+            # ArchiveCommitter.run re-checks the pins and publishes this
+            # same commit; after a restart the bytes are not in memory,
+            # so the declarations are re-supplied exactly as for a
+            # partial upload.
+            recovery.append({
+                "action": "resume_upload", "allowed": True,
+                "needs": ["backend", "data"],
+                "reason": "objects are verified and the manifest is not "
+                          "journaled yet — re-check the pinned objects "
+                          "and publish this same commit; the artifact "
+                          "declarations must be re-supplied (the journal "
+                          "pins bytes by hash, never stores them)"})
 
         item = dict(item)
         item.update({
@@ -1116,6 +1184,11 @@ class ExecutionConsole:
                 unresolved.append({"item_id": item["item_id"],
                                    "state": "UPLOAD_SESSION_UNKNOWN",
                                    "needs": "reconcile_upload"})
+            elif item["kind"] == "commit" and \
+                    item["state"] == "OBJECTS_VERIFIED":
+                unresolved.append({"item_id": item["item_id"],
+                                   "state": item["state"],
+                                   "needs": "resume_upload"})
             elif item["kind"] == "commit" and item["state"] in (
                     "MANIFEST_INTENT", "SEAL_UNKNOWN"):
                 unresolved.append({"item_id": item["item_id"],
@@ -1321,7 +1394,11 @@ class ExecutionConsole:
                         "result": "REFUSED",
                         "reason": "no archive backend bound for "
                                   f"{item['source']}"}
-            answer = tracker.reconcile(item["object_id"])
+            try:
+                answer = tracker.reconcile(item["object_id"])
+            except FilmError as exc:
+                return {"action": action, "item_id": item["item_id"],
+                        "result": "REFUSED", "reason": str(exc)}
             return {"action": action, "item_id": item["item_id"],
                     "result": "OK", "answer": answer}
         if action == "resume_upload":
@@ -1341,7 +1418,11 @@ class ExecutionConsole:
                         "reason": "UPLOAD_SESSION_UNKNOWN — the lost "
                                   "answer is reconciled first, never "
                                   "resumed on a second session"}
-            record = tracker.put(item["object_id"], data)
+            try:
+                record = tracker.put(item["object_id"], data)
+            except FilmError as exc:
+                return {"action": action, "item_id": item["item_id"],
+                        "result": "REFUSED", "reason": str(exc)}
             intent = tracker.uploads[record["intent_id"]]
             return {"action": action, "item_id": item["item_id"],
                     "result": "OK", "resumed": record["resumed"],
@@ -1375,17 +1456,23 @@ class ExecutionConsole:
         committer.backend = backend
         committer.tracker.backend = backend
         if action == "reconcile_commit":
-            answer = committer.reconcile(item["ref"])
+            try:
+                answer = committer.reconcile(item["ref"])
+            except FilmError as exc:
+                return {"action": action, "item_id": item["item_id"],
+                        "result": "REFUSED", "reason": str(exc)}
         else:
-            if item["state"] != "OBJECTS_PENDING":
+            if item["state"] not in ("OBJECTS_PENDING", "OBJECTS_VERIFIED"):
                 return {"action": action, "item_id": item["item_id"],
                         "result": "REFUSED",
                         "reason": f"resume_upload re-drives an "
-                                  f"OBJECTS_PENDING commit, not "
-                                  f"{item['state']}"}
+                                  f"OBJECTS_PENDING or OBJECTS_VERIFIED "
+                                  f"commit, not {item['state']}"}
             try:
                 # `data` re-supplies the artifact declarations — the
                 # journal pins them by hash and never stores the bytes.
+                # OBJECTS_VERIFIED still re-checks those pins live, then
+                # publishes the manifest that was never journaled.
                 answer = committer.run(item["ref"], artifacts=data)
             except FilmError as exc:
                 return {"action": action, "item_id": item["item_id"],

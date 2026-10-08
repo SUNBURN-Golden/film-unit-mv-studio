@@ -4,10 +4,10 @@ Not a pytest module — `streamlit run` entry point used by
 tests/test_film_execution_console_ui.py. Environment:
 
 - EXEC_FIXTURE_DIR      writable scratch dir (state/ + commit/ inside)
-- EXEC_FIXTURE_SCENARIO empty | nodir | running | cancel_requested |
-                        race | unknown | disconnect | verify_fails |
-                        fenced | commit | pipeline | project_running |
-                        project_nodir
+- EXEC_FIXTURE_SCENARIO empty | nodir | running | reserved |
+                        cancel_requested | race | unknown | disconnect |
+                        verify_fails | fenced | commit | pipeline |
+                        project_running | project_nodir
                         (project_* drives the panel the way the control
                         panel does — project=, no explicit state_dir)
 
@@ -57,9 +57,13 @@ def _build():
               else FakeRemoteWorker())
     backend = FakeDriveBackend(provider_checksum="sha256")
 
-    if scenario in {"running", "cancel_requested", "race", "unknown",
-                    "disconnect", "verify_fails", "fenced",
-                    "project_running"}:
+    if scenario == "reserved":
+        plan = remote_plan()
+        key = c.plan_jobs(plan)[0]
+        c.reserve(key)
+    elif scenario in {"running", "cancel_requested", "race", "unknown",
+                      "disconnect", "verify_fails", "fenced",
+                      "project_running"}:
         plan = remote_plan()
         key = c.plan_jobs(plan)[0]
         c.reserve(key)

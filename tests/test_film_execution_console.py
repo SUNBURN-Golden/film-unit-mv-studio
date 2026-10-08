@@ -125,6 +125,8 @@ def test_job_item_distinguishes_six_stages(tmp_path):
     assert i["indicators"]["remote"]["last_report"] == "ACCEPTED"
     assert i["indicators"]["remote"]["basis"] == "receipt"
     assert i["qualification_state"] == "UNQUALIFIED"
+    # the plan operation is keyed operation_id, not id
+    assert i["label"] == "op-a"
 
 
 def test_pipeline_item_maps_committed_snapshot_to_six_stages(tmp_path):
@@ -758,6 +760,64 @@ def test_commit_resume_upload_redrives_the_same_commit(tmp_path):
         == TAIL_CLEAN
 
 
+def test_objects_verified_commit_resumes_the_same_publish(tmp_path):
+    """A crash after OBJECTS_VERIFIED and before MANIFEST_INTENT used to
+    offer no recovery: reconcile_commit ignores that state and
+    resume_upload refused it. ArchiveCommitter.run re-checks the pins
+    and publishes the same commit once the declarations are re-supplied."""
+    cc, backend, ck = make_commit(tmp_path)
+    _crash_on_nth(cc.journal, "MANIFEST_INTENT", 1)
+    with pytest.raises(RuntimeError, match="MANIFEST_INTENT"):
+        cc.run(ck)
+    sd = tmp_path / "state"
+    sd.mkdir()
+    d = tmp_path / "commit"
+    console = ExecutionConsole(state_dir=sd, journal_dirs=[d],
+                             backends={str(d): backend},
+                             upload=dict(UPLOAD), retry=dict(RETRY))
+    commit = item(console.status(), ck)
+    assert commit["state"] == "OBJECTS_VERIFIED"
+    assert any(u["item_id"] == commit["item_id"]
+               and u["needs"] == "resume_upload"
+               for u in console.status()["unresolved"])
+    rec = {e["action"]: e for e in console.explain(ck)["recovery"]}
+    assert rec["resume_upload"]["allowed"] is True
+    assert "data" in rec["resume_upload"]["needs"]
+    refused = console.run_action(ck, "resume_upload")
+    assert refused["result"] == "REFUSED"
+    assert "COMMIT_BYTES_REQUIRED" in refused["reason"]
+    out = console.run_action(ck, "resume_upload", data=artifacts())
+    assert out["result"] == "OK" and out["answer"]["state"] == "SEALED"
+    assert item(console.status(), ck)["state"] == "SEALED"
+    assert load_journal(d / "job_journal.jsonl")["tail"] == TAIL_CLEAN
+
+
+def test_upload_resume_reports_transport_failure_as_refused(tmp_path):
+    """A mid-resume FilmError is a refused action, not an exception the
+    panel would have to catch separately from the other refusals."""
+    backend = FakeDriveBackend(provider_checksum="sha256")
+    up_dir = tmp_path / "up"
+    journal = DurableJournal(up_dir / "job_journal.jsonl")
+    tracker = UploadTracker(journal, backend, upload=UPLOAD, retry=RETRY)
+    data = b"D" * 1000
+    backend.upload_partial = {2: 40, 4: 0}
+    with pytest.raises(FilmError, match="TRANSPORT_RETRY_EXHAUSTED"):
+        tracker.put("obj-1", data)
+    sd = tmp_path / "state"
+    sd.mkdir()
+    console = ExecutionConsole(state_dir=sd, journal_dirs=[up_dir],
+                             trackers={str(up_dir): tracker},
+                             backends={str(up_dir): backend})
+
+    def still_down(session, offset, payload):
+        raise ConnectionDropped("still down")
+
+    backend.upload_chunk = still_down
+    out = console.run_action("up-obj-1", "resume_upload", data=data)
+    assert out["result"] == "REFUSED"
+    assert "TRANSPORT_RETRY_EXHAUSTED" in out["reason"]
+
+
 def test_reconcile_commit_keeps_every_journal_writer_in_sync(tmp_path):
     """A commit action writes through the journal instance the console's
     tracker shares — a second DurableJournal on the same file stamps a
@@ -918,6 +978,37 @@ def test_coordinator_semantic_fence_blocks_console_appends(tmp_path):
     loaded = load_journal(c.journal.path)
     assert loaded["tail"] == TAIL_CLEAN
     assert not any(r["scope"] == "upload" for r in loaded["records"])
+
+
+def test_aliased_journal_dir_is_one_writer(tmp_path):
+    """The same commit dir via a symlink and a `..` spelling is one
+    scan, one DurableJournal, and one commit row. The backend may be
+    bound to the spelling that is not the one we keep."""
+    _cc, backend, ck = make_commit(tmp_path)
+    d = tmp_path / "commit"
+    link = tmp_path / "commit-link"
+    link.symlink_to(d, target_is_directory=True)
+    spelled = d / ".." / d.name
+    sd = tmp_path / "state"
+    sd.mkdir()
+    console = ExecutionConsole(
+        state_dir=sd, journal_dirs=[d, link, spelled],
+        backends={str(link): backend},
+        upload=dict(UPLOAD), retry=dict(RETRY))
+    commits = [i for i in console.status()["items"] if i["ref"] == ck]
+    assert len(commits) == 1
+    target = (d / "job_journal.jsonl").resolve()
+    journals = [j for j in console._journals.values()
+                if j is not None and Path(j.path).resolve() == target]
+    assert len(journals) == 1
+    assert len(console._committers) == 1
+    assert next(iter(console._committers.values())).journal is journals[0]
+    out = console.run_action(ck, "resume_upload", data=artifacts())
+    assert out["result"] == "OK" and out["answer"]["state"] == "SEALED"
+    loaded = load_journal(target)
+    assert loaded["tail"] == TAIL_CLEAN
+    seqs = [r["seq"] for r in loaded["records"]]
+    assert seqs == list(range(len(seqs)))
 
 
 def test_upload_explain_uses_the_verifying_commit_journal(tmp_path):

@@ -227,10 +227,13 @@ def render_execution_console(project=None, *, state_dir=None,
                f"**{report['qualification_state']}**")
     for item in items:
         _render_item(console, item)
+        # RESERVED is not in flight, but cancel-before-submit is a real
+        # recovery offer — without the expander that button is unreachable.
         detail_needed = item["in_flight"] or item["closed"] or (
             item["kind"] == "job" and
-            (item["cancel"]["requested"] or
-             (item["state"] == "VERIFIED" and not item["sealed"]))) \
+            (item["cancel"]["requested"]
+             or item["state"] == "RESERVED"
+             or (item["state"] == "VERIFIED" and not item["sealed"]))) \
             or item["kind"] in ("upload", "commit")
         if detail_needed:
             with st.expander("중단 위치 · 재사용 artifact · 복귀",
