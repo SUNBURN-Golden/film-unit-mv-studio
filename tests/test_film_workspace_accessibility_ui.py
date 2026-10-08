@@ -10,6 +10,8 @@ import pytest
 from streamlit.testing.v1 import AppTest
 
 from engine.animation_migrate import animation_init
+from engine.animation_schema import read_canon, write_canon
+from engine.core import read
 from engine.workspace_accessibility import NOTE_LIMIT, load_prefs
 from test_compiler_v03 import fixture_project
 
@@ -172,6 +174,8 @@ def test_reduced_motion_and_narrow_layout(box):
     body = texts(at)
     assert "prefers-reduced-motion" in body
     assert "max-width: 880px" in body
+    assert "st-key-wa_stages" in body
+    assert 'id="wa-reduced-app"' not in body
     assert "화면 배치: 넓게" in body
     board = next(t for t in at.tabs if t.label == TAB)
     assert any(m.label == "준비" for m in board.metric)
@@ -181,6 +185,8 @@ def test_reduced_motion_and_narrow_layout(box):
     assert not at.exception
     body = texts(at)
     assert "동작 줄이기 켜짐" in body
+    assert 'id="wa-reduced-app"' in body
+    assert ".stApp, .stApp * { animation: none !important;" in body
     assert "화면 배치: 좁게" in body
     assert "data-layout=\"좁게\"" in body or "data-layout=\"좁게\"" in body
     board = next(t for t in at.tabs if t.label == TAB)
@@ -223,3 +229,27 @@ def test_restart_and_error_keep_the_note(box):
     assert area(at, "wa_note").value == "오류 뒤에도"
     assert number(at, "wa_frame").value == 5
     assert "저장된 선택 프레임: 5" in texts(at)
+
+
+def test_saved_frame_past_the_timeline_opens_on_the_last_frame(box):
+    project, at = open_project(box)
+    number(at, "wa_frame").set_value(4)
+    area(at, "wa_note").set_value("끝으로")
+    button(at, "wa_save").click().run()
+    assert not at.exception
+    path = project / "workspace" / "accessibility.json"
+    document = read_canon(path)
+    document["selected_frame"] = 100_000
+    write_canon(path, document)
+    at = run_panel()
+    at.sidebar.selectbox[0].select(NAME).run()
+    assert not at.exception
+    last = read(project / "project.yaml")["animation"]["output_frames"] - 1
+    assert number(at, "wa_frame").value == last
+    assert load_prefs(project)["selected_frame"] == 100_000
+    assert load_prefs(project)["draft_note"] == "끝으로"
+    assert "저장된 선택 프레임: 100000" in texts(at)
+    button(at, "wa_next").click().run()
+    assert not at.exception
+    assert number(at, "wa_frame").value == last
+    assert load_prefs(project)["selected_frame"] == 100_000

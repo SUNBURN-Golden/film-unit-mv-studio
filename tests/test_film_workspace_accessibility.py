@@ -16,9 +16,9 @@ from engine.durable_journal import DurableJournal
 from engine.motion_plan import save_shot_plan
 from engine.shot_board import board_view
 from engine.workspace_accessibility import (
-    NOTE_LIMIT, commit_workspace, credential_view, decide_stage, journey,
-    keyboard_targets, load_prefs, marker, restart_view, timeline_focus,
-    window_bounds, zoom_step)
+    NOTE_LIMIT, clamp_frame, commit_workspace, credential_view, decide_stage,
+    journey, keyboard_targets, load_prefs, marker, restart_view,
+    timeline_focus, window_bounds, zoom_step)
 from test_anim_003 import make_sequence
 from test_compiler_v03 import fixture_project
 
@@ -168,6 +168,17 @@ def test_decide_stage_revise_then_output_does_not_inherit_approval():
     assert revise["status"]["word"] == "해당 없음"
     empty = decide_stage([], {})
     assert empty["current"] == "prepare" and empty["work_empty"] is True
+    # A finished cut list still waits when a transition is open or stale.
+    open_transition = [{"id": "T001", "review": "UNREVIEWED"}]
+    held = decide_stage(done, {"final": "CURRENT"}, open_transition)
+    assert held["current"] == "review"
+    assert "전환 T001" in held["next_action"]
+    stale_transition = [{"id": "T001", "review": "STALE"}]
+    assert decide_stage(done, transitions=stale_transition)["current"] == "revise"
+    clear = [{"id": "T001", "review": "CURRENT"}]
+    assert decide_stage(done, {"final": "CURRENT"}, clear)["current"] == "output"
+    assert decide_stage(done, {"final": "CURRENT"},
+                        [{"id": "T001", "review": None}])["current"] == "review"
 
 
 def test_failed_commit_preserves_frame_and_note(tmp_path):
@@ -252,6 +263,19 @@ def test_missing_credential_hides_secret_and_stays_unqualified(tmp_path):
     absent = credential_view(tmp_path / "empty-home")
     assert absent["connection_record"] == "없음"
     assert absent["text"] == "⚿ 자격 없음"
+    broken = tmp_path / "broken-home"
+    broken.mkdir()
+    (broken / "drive_connection.json").write_text(
+        '{"access_token": "SECRET-TOKEN-VALUE"', encoding="utf-8")
+    failed = credential_view(broken)
+    dumped = json.dumps(failed, ensure_ascii=False)
+    assert "SECRET-TOKEN-VALUE" not in dumped
+    assert failed["secrets_displayed"] is False
+    assert failed["state"] == "MISSING_CREDENTIAL"
+    assert failed["qualification_state"] == "UNQUALIFIED"
+    assert failed["connection_record"] == "읽지 못함"
+    assert "읽지 못했습니다" in failed["detail"]
+    assert failed["auto_retry"] is False
 
 
 def test_restart_open_journal_does_not_retry_or_drop_the_frame(tmp_path):
@@ -288,6 +312,24 @@ def test_restart_open_journal_does_not_retry_or_drop_the_frame(tmp_path):
     assert journal_path.read_bytes() == b'{"truncated":true'
     assert sealed != journal_path.read_bytes()
     assert not torn.exists()
+
+
+def test_frame_past_the_timeline_clamps_without_rewriting(tmp_path):
+    project = _animate(tmp_path)
+    commit_workspace(project, frame=3, zoom="second", reduced_motion=False,
+                     narrow_layout=False, note="멀리")
+    path = project / "workspace" / "accessibility.json"
+    blob = path.read_bytes()
+    total = read(project / "project.yaml")["animation"]["output_frames"]
+    assert clamp_frame(total, 100_000) == total - 1
+    assert clamp_frame(total, 3) == 3
+    assert clamp_frame(total, -1) == 0
+    with pytest.raises(FilmError):
+        window_bounds(total, 100_000, "second")
+    with pytest.raises(FilmError):
+        keyboard_targets(total, 100_000, "second")
+    assert path.read_bytes() == blob
+    assert load_prefs(project)["selected_frame"] == 3
 
 
 def test_long_timeline_keyboard_zoom_and_reduced_motion_keep_frames():

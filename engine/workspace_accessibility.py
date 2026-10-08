@@ -196,24 +196,54 @@ def commit_workspace(project, *, frame, zoom, reduced_motion, narrow_layout,
     return load_prefs(p)
 
 
+def _label(row):
+    if row.get("shot_id"):
+        return row["shot_id"]
+    if row.get("id"):
+        return f"전환 {row['id']}"
+    return row.get("instance_id") or "?"
+
+
 def _names(rows, limit=4):
-    labels = [row.get("shot_id") or row.get("instance_id") or "?"
-              for row in rows]
+    labels = [_label(row) for row in rows]
     if len(labels) <= limit:
         return ", ".join(labels)
     return ", ".join(labels[:limit]) + f" 외 {len(labels) - limit}컷"
 
 
-def decide_stage(rows, locks=None):
-    """Pick the single next stage from board rows. Does not write."""
+def _subject(rows):
+    shots = any(row.get("shot_id") for row in rows)
+    transitions = any(row.get("id") and not row.get("shot_id") for row in rows)
+    if shots and transitions:
+        return "컷·전환"
+    if transitions:
+        return "전환"
+    return "컷"
+
+
+def _review_state(row):
+    state = row.get("review")
+    return state if state else "UNREVIEWED"
+
+
+def decide_stage(rows, locks=None, transitions=None):
+    """Pick the single next stage from board rows. Does not write.
+
+    Transition reviews count with the cuts. An unreviewed or stale
+    transition does not leave the guide on 출력.
+    """
     rows = list(rows or [])
+    transitions = list(transitions or [])
     locks = locks or {}
     unpinned = [row for row in rows if not (row.get("pin") or {}).get("resolved")]
     unplanned = [row for row in rows
                  if not (isinstance(row.get("plan"), dict)
                          and "error" not in row["plan"])]
-    revising = [row for row in rows if row.get("review") in _REVISE]
-    unreviewed = [row for row in rows if row.get("review") != "CURRENT"]
+    revising = [row for row in rows if _review_state(row) in _REVISE]
+    revising += [row for row in transitions if _review_state(row) in _REVISE]
+    unreviewed = [row for row in rows if _review_state(row) != "CURRENT"]
+    unreviewed += [row for row in transitions
+                   if _review_state(row) != "CURRENT"]
     work_empty = not rows or bool(unpinned)
     if not rows or unpinned:
         current = "prepare"
@@ -227,12 +257,15 @@ def decide_stage(rows, locks=None):
                "애니메이션 화면에서 계획을 저장하세요.")
     elif revising:
         current = "revise"
-        nxt = (f"다음은 수정입니다. 다시 손볼 컷: {_names(revising)}. "
-               "그 컷만 고친 뒤 다시 확인하세요. "
+        fix = "그 컷만" if _subject(revising) == "컷" else "그 대상만"
+        nxt = (f"다음은 수정입니다. 다시 손볼 {_subject(revising)}: "
+               f"{_names(revising)}. "
+               f"{fix} 고친 뒤 다시 확인하세요. "
                "예전 확인은 새 그림에 따라가지 않습니다.")
     elif unreviewed:
         current = "review"
-        nxt = (f"다음은 검토입니다. 아직 확인 전인 컷: {_names(unreviewed)}. "
+        nxt = (f"다음은 검토입니다. 아직 확인 전인 {_subject(unreviewed)}: "
+               f"{_names(unreviewed)}. "
                "검수 화면에서 맞다 또는 고칠 점을 남기세요.")
     else:
         current = "output"
@@ -268,7 +301,8 @@ def journey(project):
     view = board_view(project)
     report = decide_stage(view["entries"], {
         "final": (view.get("locks") or {}).get("final"),
-        "plan": (view.get("locks") or {}).get("plan")})
+        "plan": (view.get("locks") or {}).get("plan")},
+        view.get("transitions"))
     entries = [{
         "instance_id": row["instance_id"], "shot_id": row["shot_id"],
         "output_range": list(row["output_range"]),
@@ -277,6 +311,7 @@ def journey(project):
     transitions = [{
         "output_range": list(item["output_range"]),
         "to_instance": item["to_instance"],
+        "review": item.get("review") or "UNREVIEWED",
     } for item in view["transitions"]]
     fps = view["fps"]
     output_frames = view["output_frames"]
@@ -291,6 +326,19 @@ def journey(project):
         "facets": dict(FACETS),
         "timeline_sha256": view.get("timeline_sha256")})
     return report
+
+
+def clamp_frame(total, frame):
+    """Nearest index the screen can show. Does not write the saved frame."""
+    if type(total) is not int or total < 1:
+        raise FilmError("타임라인 길이가 없습니다.")
+    if type(frame) is not int or isinstance(frame, bool):
+        raise FilmError("프레임 번호는 정수여야 합니다.")
+    if frame < 0:
+        return 0
+    if frame >= total:
+        return total - 1
+    return frame
 
 
 def window_bounds(total, frame, zoom):
@@ -392,8 +440,16 @@ def credential_view(home=None):
     if home is None:
         home = os.environ.get("FILM_UNIT_HOME")
     # Do not create ~/.film_unit. An unset home is simply "no connection".
-    meta = load_connection_metadata(Path(home)) if home else None
-    record = "없음"
+    meta = None
+    unreadable = False
+    if home:
+        try:
+            meta = load_connection_metadata(Path(home))
+        except (OSError, ValueError, FilmError):
+            # JSONDecodeError is a ValueError and may quote the file.
+            # Keep that text out of the screen.
+            unreadable = True
+    record = "읽지 못함" if unreadable else "없음"
     epoch = None
     named_secret = False
     if type(meta) is dict:
@@ -408,6 +464,8 @@ def credential_view(home=None):
         detail += " 저장된 것은 비밀이 아닌 연결 기록뿐이며 토큰 값은 읽지 않습니다."
     if named_secret:
         detail += " 연결 기록에 비밀 필드 이름이 있어 값은 표시하지 않습니다."
+    if unreadable:
+        detail += " 연결 기록을 읽지 못했습니다. 파일 내용은 표시하지 않습니다."
     return {"state": "MISSING_CREDENTIAL", **marker("MISSING_CREDENTIAL"),
             "connection_record": record, "credential_epoch": epoch,
             "detail": detail, "qualification_state": "UNQUALIFIED",

@@ -22,8 +22,9 @@ import streamlit as st
 
 from engine.core import FilmError
 from engine.workspace_accessibility import (
-    ZOOM_ORDER, commit_workspace, credential_view, default_prefs, journey,
-    keyboard_targets, load_prefs, restart_view, timeline_focus, zoom_step)
+    ZOOM_ORDER, clamp_frame, commit_workspace, credential_view, default_prefs,
+    journey, keyboard_targets, load_prefs, restart_view, timeline_focus,
+    zoom_step)
 
 _ZOOM_LABEL = {
     "wide": "넓게 · 480프레임",
@@ -40,10 +41,23 @@ _REDUCED_CSS = """
 }
 @media (max-width: 880px) {
   .wa-help { display: block; width: 100%; }
+  .st-key-wa_stages [data-testid="stHorizontalBlock"] {
+    flex-direction: column !important;
+  }
+  .st-key-wa_stages [data-testid="stColumn"] {
+    width: 100% !important;
+    flex: 1 1 auto !important;
+  }
 }
 .wa-reduced-on, .wa-reduced-on * {
   animation: none !important; transition: none !important;
 }
+</style>
+"""
+
+_REDUCED_ON_CSS = """
+<style id="wa-reduced-app">
+.stApp, .stApp * { animation: none !important; transition: none !important; }
 </style>
 """
 
@@ -56,11 +70,13 @@ def _init(key, value):
 def _nudge(move):
     """on_click: runs before widgets, so the frame field keeps the new index."""
     total = st.session_state.get("wa_total")
-    if not total:
+    if type(total) is not int or total < 1:
         return
-    targets = keyboard_targets(
-        int(total), int(st.session_state["wa_frame"]),
-        st.session_state["wa_zoom"])
+    try:
+        frame = clamp_frame(total, int(st.session_state.get("wa_frame", 0)))
+        targets = keyboard_targets(total, frame, st.session_state["wa_zoom"])
+    except (FilmError, TypeError, ValueError):
+        return
     st.session_state["wa_frame"] = targets[move]
 
 
@@ -94,15 +110,16 @@ def _journey_block(guide, narrow):
     st.markdown(f"**{guide['next_action']}**")
     st.caption(guide["help"])
     st.caption(guide["baseline_note"])
-    if narrow:
-        for stage in guide["stages"]:
-            st.markdown(
-                f"{stage['status']['text']} · {stage['label']} — {stage['help']}")
-    else:
-        cols = st.columns(len(guide["stages"]))
-        for col, stage in zip(cols, guide["stages"]):
-            col.metric(stage["label"], stage["status"]["text"])
-            col.caption(stage["help"])
+    with st.container(key="wa_stages"):
+        if narrow:
+            for stage in guide["stages"]:
+                st.markdown(
+                    f"{stage['status']['text']} · {stage['label']} — {stage['help']}")
+        else:
+            cols = st.columns(len(guide["stages"]))
+            for col, stage in zip(cols, guide["stages"]):
+                col.metric(stage["label"], stage["status"]["text"])
+                col.caption(stage["help"])
     with st.expander("이 단계에서 할 수 있는 일"):
         for action in guide["core_actions"]:
             st.write(f"· {action}")
@@ -175,6 +192,13 @@ def render_workspace(p):
         guide_error = str(exc)
     st.session_state["wa_total"] = (guide["output_frames"]
                                     if guide is not None else None)
+    if guide is not None:
+        try:
+            st.session_state["wa_frame"] = clamp_frame(
+                int(guide["output_frames"]),
+                int(st.session_state["wa_frame"]))
+        except (FilmError, TypeError, ValueError):
+            pass
 
     cred = credential_view()
     restart = restart_view(p)
@@ -186,12 +210,13 @@ def render_workspace(p):
     narrow = st.checkbox(
         "좁은 화면에 맞추기", key="wa_narrow",
         help="단계를 가로 칸 대신 세로 목록으로 보여 줍니다. "
+             "창 너비가 880px 이하면 가로 칸도 세로로 쌓입니다. "
              "넓은 데스크톱과 좁은 창을 같은 글로 읽습니다.")
     reduced = st.checkbox(
         "동작 줄이기", key="wa_reduced",
         help="화면 전환 애니메이션을 끕니다. 프레임이 이동하는 칸 수는 바뀌지 않습니다.")
     if reduced:
-        st.markdown('<div class="wa-reduced-on">동작 줄이기 켜짐</div>',
+        st.markdown(_REDUCED_ON_CSS + '<div class="wa-reduced-on">동작 줄이기 켜짐</div>',
                     unsafe_allow_html=True)
         st.caption("동작 줄이기 켜짐 — 화면 이동 애니메이션 없음. "
                    "프레임 번호는 그대로 이동합니다.")
