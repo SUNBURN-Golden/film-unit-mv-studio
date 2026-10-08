@@ -45,6 +45,8 @@ DOCUMENT_SCHEMAS = {
     "approver_delegation": 1,
     "w00_spend_approval": 1,
     "delivery_approval": 1,
+    "delivery_bundle": 1,
+    "delivery_review_scope": 1,
 }
 
 TIMELINE_FIELDS = {"document_type", "schema_version", "target_frames", "entries"}
