@@ -230,6 +230,8 @@ def main(argv=None):
     route.add_argument("--cost-time-impact", default="")
     route.add_argument("--grounds", default="", help="Recorded grounds; required for an early decision")
     route.add_argument("--early", action="store_true", help="Decide before every wave cut reached adoption")
+    w00 = sub.add_parser("w00-status", help="ANIM-022: W00 pilot records, next-wave gate OPEN/BLOCKED with reasons, quote/usage/UNKNOWN and per-deliverable approval state; evidence facets stay UNQUALIFIED/PENDING/NOT_AUTHORIZED")
+    w00.add_argument("project")
     packets = sub.add_parser("packets", help="Write per-shot prompts and import commands for making media by hand in subscription apps; no provider calls")
     packets.add_argument("project")
     packets.add_argument("--shots", help="Comma-separated shot IDs; default all shots")
@@ -658,6 +660,9 @@ def main(argv=None):
                 observations=_csv(a.observations), changes=_csv(a.changes),
                 cost_time_impact=a.cost_time_impact,
                 early=a.early, grounds=a.grounds)
+        elif a.command == "w00-status":
+            from .w00_gate import w00_status
+            result = w00_status(a.project)
         elif a.command == "builds":
             from .builds import list_builds
             result = list_builds(a.project)
