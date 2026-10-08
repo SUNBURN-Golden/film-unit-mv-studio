@@ -84,8 +84,13 @@ def test_encoding_path_is_existing_ffmpeg_driver():
     assert ffmpeg["state"] == "ENCODING_PATH"
     assert "tests/test_anim_015.py" in ffmpeg["evidence"]
     assert "64x48" in ffmpeg["scope"]
-    assert "1920x1080" in ffmpeg["scope"]
-    assert "5760" in ffmpeg["scope"]
+    # These tokens may appear only inside the denial. A positive
+    # 1920x1080 or 5760-frame delivery claim must fail this check.
+    denial = "No 1920x1080 or 5760-frame delivery claim"
+    assert denial in ffmpeg["scope"]
+    remainder = ffmpeg["scope"].replace(denial, "", 1)
+    assert "1920x1080" not in remainder
+    assert "5760" not in remainder
     driver = get_driver("FFMPEG")
     assert isinstance(driver, FFmpegDriver)
     assert driver.name == "FFMPEG"
