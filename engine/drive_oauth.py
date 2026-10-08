@@ -1,10 +1,14 @@
-"""Browser Google-login contract for the Drive archive (ANIM-013).
+"""Browser Google-login contract for the Drive archive (ANIM-013, ANIM-018).
 
 Execution/storage §3 and schema §17: the user connects through the system
 browser, PKCE and state; the minimum scope is `drive.file` — files the app
-creates or the user explicitly selects, never whole-Drive access. No OAuth
-client is issued for this program, so `GoogleOAuthFlow` is a disabled stub
-and `FakeOAuthFlow` simulates the consent screen for protocol tests.
+creates or the user explicitly selects, never whole-Drive access.
+`FakeOAuthFlow` simulates the consent screen for protocol tests.
+
+`GoogleOAuthFlow` is the opt-in installed-app flow. The Desktop client JSON
+is read only from `FILM_GOOGLE_OAUTH_CLIENT_FILE` (a path outside the repo).
+No client file is `GOOGLE_OAUTH_NOT_CONFIGURED` and the evidence state stays
+WAITING. A completed fake or fixture exchange is not qualification.
 
 Tokens live only in a supported OS credential store or an explicit
 memory-limited session — never in a settings file, project, build, packet
@@ -13,15 +17,28 @@ or log. The only persisted fields are the non-secret `connection_id`,
 permission revocation and account switch raise the epoch and block every
 subsequent read, write and upload resume.
 """
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, urlencode, urlparse
+import base64
 import hashlib
 import json
+import os
+import secrets
+import threading
 import time
 import uuid
+import webbrowser
 
 from pathlib import Path
 
 from .core import FilmError, atomic_text, read
+from .google_transport import (UrllibTransport, check_google_url, form_body)
 from .storage_backends import ArchiveRequestError
+
+CLIENT_FILE_ENV = "FILM_GOOGLE_OAUTH_CLIENT_FILE"
+CLIENT_DEPLOY_OWNER = "JunTae (installed-app secret not trusted as secret)"
+AUTH_HOST = "https://accounts.google.com/o/oauth2/v2/auth"
+TOKEN_HOST = "https://oauth2.googleapis.com/token"
 
 DRIVE_FILE_SCOPE = "https://www.googleapis.com/auth/drive.file"
 SECRET_FIELDS = {"token", "access_token", "refresh_token", "id_token",
@@ -68,21 +85,315 @@ class FakeOAuthFlow:
                 "granted_object_ids": granted}
 
 
-class GoogleOAuthFlow:
-    """Disabled real flow: no issued client means no real OAuth dance."""
+def pkce_challenge(verifier):
+    """S256 code challenge: base64url(SHA256(verifier)) without padding."""
+    digest = hashlib.sha256(verifier.encode("ascii")).digest()
+    return base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
 
-    def __init__(self, client_config=None):
-        if not client_config:
-            raise FilmError(
-                "GOOGLE_OAUTH_NOT_CONFIGURED: no OAuth client id is issued "
-                "for this program; the fake flow covers protocol checks and "
-                "real connectivity stays UNQUALIFIED")
+
+def _pkce_pair():
+    # token_urlsafe(32) is 43 characters, inside the 43..128 PKCE range.
+    verifier = secrets.token_urlsafe(32)
+    return verifier, pkce_challenge(verifier)
+
+
+def load_desktop_client(path):
+    """Read a Google Desktop-app client JSON. The secret stays in memory."""
+    file = Path(path)
+    if not file.is_file():
         raise FilmError(
-            "GOOGLE_OAUTH_UNQUALIFIED: a client id alone does not qualify "
-            "the browser flow; no real Google access is performed")
+            "GOOGLE_OAUTH_NOT_CONFIGURED: FILM_GOOGLE_OAUTH_CLIENT_FILE "
+            "does not point at a Desktop app client JSON. Evidence state "
+            "is WAITING")
+    try:
+        document = json.loads(file.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise FilmError(
+            "GOOGLE_OAUTH_NOT_CONFIGURED: the client file could not be "
+            "read as JSON") from exc
+    if "web" in document and "installed" not in document:
+        raise FilmError(
+            "GOOGLE_OAUTH_NOT_CONFIGURED: a web client is refused; use a "
+            "Desktop app client")
+    installed = document.get("installed")
+    if type(installed) is not dict:
+        raise FilmError(
+            "GOOGLE_OAUTH_NOT_CONFIGURED: the client file has no installed "
+            "Desktop app section")
+    for field in ("client_id", "client_secret", "auth_uri", "token_uri"):
+        if not installed.get(field) or type(installed[field]) is not str:
+            raise FilmError(
+                "GOOGLE_OAUTH_NOT_CONFIGURED: the Desktop client file is "
+                f"missing {field}")
+    check_google_url(installed["auth_uri"])
+    check_google_url(installed["token_uri"])
+    if urlparse(installed["auth_uri"]).hostname != "accounts.google.com":
+        raise FilmError(
+            "REDIRECT_REFUSED: the auth URI must be accounts.google.com")
+    if urlparse(installed["token_uri"]).hostname != "oauth2.googleapis.com":
+        raise FilmError(
+            "REDIRECT_REFUSED: the token URI must be oauth2.googleapis.com")
+    return {"client_id": installed["client_id"],
+            "client_secret": installed["client_secret"],
+            "auth_uri": installed["auth_uri"],
+            "token_uri": installed["token_uri"]}
+
+
+def client_file_path(explicit=None):
+    """The only configuration source: an explicit path or the env file."""
+    return explicit or os.environ.get(CLIENT_FILE_ENV) or None
+
+
+class _LoopHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        parsed = urlparse(self.path)
+        query = {key: values[0] for key, values in parse_qs(parsed.query).items()}
+        self.server.result = query
+        body = (b"<!doctype html><meta charset=utf-8>"
+                b"<p>Film Unit received the Google redirect. "
+                b"You can close this tab.</p>")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+        self.server.event.set()
+
+    def log_message(self, fmt, *args):
+        # The redirect carries the authorization code. Never log it.
+        return
+
+
+class LocalLoopback:
+    """Installed-app redirect listener on 127.0.0.1, one request."""
+
+    def __init__(self):
+        self.port = None
+        self._httpd = None
+        self._thread = None
+
+    def __enter__(self):
+        httpd = ThreadingHTTPServer(("127.0.0.1", 0), _LoopHandler)
+        httpd.event = threading.Event()
+        httpd.result = {}
+        self._httpd = httpd
+        self.port = httpd.server_address[1]
+        self._thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        self._thread.start()
+        return self
+
+    def redirect_uri(self):
+        return f"http://127.0.0.1:{self.port}/"
+
+    def wait(self, timeout=180):
+        if not self._httpd.event.wait(timeout):
+            raise AuthError("AUTH_TIMEOUT",
+                            "The Google redirect did not arrive on the "
+                            "loopback listener")
+        return dict(self._httpd.result)
+
+    def close(self):
+        if self._httpd is not None:
+            self._httpd.shutdown()
+            self._httpd.server_close()
+            self._httpd = None
+
+    def __exit__(self, *exc):
+        self.close()
+
+
+class ScriptedLoopback:
+    """Test double: returns a query without binding a port or a browser."""
+
+    def __init__(self, query, port=9):
+        self._query = query
+        self.port = port
+
+    def redirect_uri(self):
+        return f"http://127.0.0.1:{self.port}/"
+
+    def wait(self, timeout=None):
+        query = self._query() if callable(self._query) else self._query
+        return dict(query)
+
+    def close(self):
+        return None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return None
+
+
+class GoogleOAuthFlow:
+    """Installed-app loopback flow: PKCE S256, state, drive.file only.
+
+    Configuration comes from `FILM_GOOGLE_OAUTH_CLIENT_FILE` or an explicit
+    `client_file` path (tests point this at a temp file). An in-memory
+    client dict is not a configuration source. Nothing here is QUALIFIED
+    until an attended run completes on `UrllibTransport`.
+    """
+
+    def __init__(self, client_config=None, *, client_file=None,
+                 transport=None, browser=None, loopback=None, now_fn=None):
+        if client_config:
+            raise FilmError(
+                "GOOGLE_OAUTH_NOT_CONFIGURED: client configuration is read "
+                "only from FILM_GOOGLE_OAUTH_CLIENT_FILE, a Desktop app "
+                "JSON outside the repo. An in-memory client id is not a "
+                "connection. Evidence state is WAITING")
+        path = client_file_path(client_file)
+        if not path:
+            raise FilmError(
+                "GOOGLE_OAUTH_NOT_CONFIGURED: set "
+                "FILM_GOOGLE_OAUTH_CLIENT_FILE to a Desktop app client "
+                "JSON outside the repo. Evidence state is WAITING; this "
+                "is not a qualified Drive connection")
+        self._client = load_desktop_client(path)
+        self.transport = transport or UrllibTransport()
+        self._browser = browser or webbrowser.open
+        self._loopback = loopback
+        self._now = now_fn or time.time
+        self.completed_on_real_google = False
+
+    def __repr__(self):
+        return "GoogleOAuthFlow(configured=True, scope=drive.file)"
+
+    def _exchange(self, redirect_uri, code, verifier):
+        body = form_body({
+            "grant_type": "authorization_code",
+            "code": code,
+            "code_verifier": verifier,
+            "client_id": self._client["client_id"],
+            "client_secret": self._client["client_secret"],
+            "redirect_uri": redirect_uri})
+        response = self.transport.request(
+            "POST", self._client["token_uri"],
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            body=body)
+        if 300 <= response.status < 400:
+            raise FilmError(
+                "REDIRECT_REFUSED: the token endpoint redirect was not "
+                "followed")
+        if response.status != 200:
+            raise AuthError(
+                "AUTH_DENIED",
+                "The token endpoint refused the authorization code")
+        try:
+            payload = json.loads(response.body.decode())
+        except json.JSONDecodeError as exc:
+            raise AuthError("AUTH_DENIED",
+                            "The token endpoint did not return JSON") from exc
+        scope = payload.get("scope") or ""
+        if DRIVE_FILE_SCOPE not in scope.split():
+            raise AuthError(
+                "SCOPE_MISMATCH",
+                "The granted scope is not drive.file; the token was discarded")
+        access = payload.get("access_token")
+        if not access:
+            raise AuthError("AUTH_DENIED",
+                            "The token endpoint returned no access token")
+        expires_in = int(payload.get("expires_in") or 0)
+        return {"access_token": access,
+                "refresh_token": payload.get("refresh_token"),
+                "expires_at": self._now() + expires_in,
+                "scope": DRIVE_FILE_SCOPE}
+
+    def refresh(self, token):
+        """Exchange a refresh token. One attempt; not an archive retry."""
+        refresh = (token or {}).get("refresh_token")
+        if not refresh:
+            raise AuthError("AUTH_EXPIRED",
+                            "The access token expired and there is no "
+                            "refresh token")
+        body = form_body({
+            "grant_type": "refresh_token",
+            "refresh_token": refresh,
+            "client_id": self._client["client_id"],
+            "client_secret": self._client["client_secret"]})
+        response = self.transport.request(
+            "POST", self._client["token_uri"],
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            body=body)
+        if response.status == 400:
+            raise AuthError("PERMISSION_REVOKED",
+                            "The refresh token was rejected")
+        if response.status != 200:
+            raise AuthError("AUTH_EXPIRED",
+                            "The access token could not be refreshed")
+        payload = json.loads(response.body.decode())
+        access = payload.get("access_token")
+        if not access:
+            raise AuthError("AUTH_EXPIRED",
+                            "The refresh response had no access token")
+        expires_in = int(payload.get("expires_in") or 0)
+        updated = dict(token)
+        updated["access_token"] = access
+        updated["expires_at"] = self._now() + expires_in
+        if payload.get("refresh_token"):
+            updated["refresh_token"] = payload["refresh_token"]
+        updated["scope"] = DRIVE_FILE_SCOPE
+        return updated
+
+    def _account_id(self, access_token):
+        response = self.transport.request(
+            "GET", "https://www.googleapis.com/drive/v3/about"
+                   "?fields=user/permissionId",
+            headers={"Authorization": f"Bearer {access_token}"})
+        if response.status != 200:
+            raise AuthError("AUTH_DENIED",
+                            "Drive did not return an account binding")
+        payload = json.loads(response.body.decode())
+        account = ((payload.get("user") or {}).get("permissionId"))
+        if not account:
+            raise AuthError("AUTH_DENIED",
+                            "Drive did not return a permission id")
+        return str(account)
 
     def authorize(self):
-        raise FilmError("GOOGLE_OAUTH_UNQUALIFIED")
+        verifier, challenge = _pkce_pair()
+        state = secrets.token_urlsafe(24)
+        loop = self._loopback or LocalLoopback()
+        owns_loop = self._loopback is None
+        try:
+            if owns_loop:
+                loop.__enter__()
+            redirect_uri = loop.redirect_uri()
+            query = urlencode({
+                "client_id": self._client["client_id"],
+                "redirect_uri": redirect_uri,
+                "response_type": "code",
+                "scope": DRIVE_FILE_SCOPE,
+                "code_challenge": challenge,
+                "code_challenge_method": "S256",
+                "state": state,
+                "access_type": "offline",
+                "prompt": "consent"})
+            auth_url = f"{self._client['auth_uri']}?{query}"
+            # The browser URL carries the challenge and state, never the
+            # verifier or the client secret.
+            self._browser(auth_url)
+            returned = loop.wait(180)
+        finally:
+            if owns_loop:
+                loop.close()
+        if returned.get("error"):
+            raise AuthError("AUTH_DENIED",
+                            "The user declined the Google consent screen")
+        if returned.get("state") != state:
+            raise AuthError("STATE_MISMATCH",
+                            "The redirect state did not match this attempt")
+        code = returned.get("code")
+        if not code:
+            raise AuthError("AUTH_DENIED",
+                            "The redirect did not include an authorization code")
+        token = self._exchange(redirect_uri, code, verifier)
+        account = self._account_id(token["access_token"])
+        self.completed_on_real_google = isinstance(
+            self.transport, UrllibTransport)
+        return {"account_id": account, "token": token,
+                "granted_object_ids": []}
 
 
 # -- token stores -------------------------------------------------------------
@@ -297,7 +608,15 @@ class DriveSession:
             self._revoked_reason = "AUTH_REVOKED"
             raise AuthError("AUTH_REVOKED", "The connection token is gone")
         if self._now() >= token.get("expires_at", 0):
-            raise AuthError("AUTH_EXPIRED", "The connection token expired")
+            refresher = getattr(self, "refresher", None)
+            if refresher is None:
+                raise AuthError("AUTH_EXPIRED",
+                                "The connection token expired")
+            refresher()
+            token = self.token_store.load(self.connection_id)
+            if token is None or self._now() >= token.get("expires_at", 0):
+                raise AuthError("AUTH_EXPIRED",
+                                "The connection token expired")
 
     def _accessible(self, object_id):
         """drive.file scope: app-created objects + the user's explicit grant.
@@ -379,3 +698,60 @@ def load_connection_metadata(home):
     """Read the persisted non-secret connection record, if any."""
     path = Path(home) / "drive_connection.json"
     return read(path) if path.is_file() else None
+
+
+def redact(value):
+    """Replace secret-keyed fields. Does not echo the removed values."""
+    if type(value) is dict:
+        return {key: ("[REDACTED]" if key in SECRET_FIELDS else redact(item))
+                for key, item in value.items()}
+    if type(value) is list:
+        return [redact(item) for item in value]
+    return value
+
+
+def assert_no_secrets(text, secrets):
+    """Refuse to publish text that still contains a known secret value."""
+    for secret in secrets:
+        if secret and secret in text:
+            raise FilmError(
+                "EVIDENCE_LEAK: redacted evidence still contains a secret")
+    return text
+
+
+def connect_google(token_store=None, *, transport=None, browser=None,
+                   loopback=None, home=None, now_fn=None, client_file=None):
+    """Consent + a Drive backend bound to the same in-memory session.
+
+    The backend is constructed before `connect_drive` mints the connection
+    id; the token cell is filled before any Drive call. `real_google` is
+    true only when the token exchange used `UrllibTransport`.
+    """
+    from .storage_backends.drive import GoogleDriveBackend
+    store = token_store or MemoryTokenStore()
+    flow = GoogleOAuthFlow(client_file=client_file, transport=transport,
+                           browser=browser, loopback=loopback, now_fn=now_fn)
+    cell = {"id": None}
+
+    def provider():
+        if cell["id"] is None:
+            raise FilmError(
+                "GOOGLE_DRIVE_NOT_CONFIGURED: the session has no token yet")
+        return store.load(cell["id"])
+
+    def updater(token):
+        store.store(cell["id"], token)
+
+    backend = GoogleDriveBackend(
+        provider, transport=flow.transport, token_updater=updater,
+        now_fn=now_fn)
+
+    def refresh():
+        current = store.load(cell["id"])
+        updater(flow.refresh(current))
+
+    session = connect_drive(flow, store, backend, now_fn=now_fn, home=home)
+    cell["id"] = session.connection_id
+    session.refresher = refresh
+    session.real_google = bool(flow.completed_on_real_google)
+    return session

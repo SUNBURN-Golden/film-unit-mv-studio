@@ -1,5 +1,6 @@
 """ANIM-013 OAuth fixtures: refusal, expiry, account binding, permission,
-logout/revoke/switch, token-store rules and the disabled real stubs.
+logout/revoke/switch and token-store rules. The real flow needs an
+external client file (ANIM-018) and is not a qualified connection here.
 
 No real OAuth client exists and none is requested; every flow is the fake
 consent screen. Tokens live in the memory-limited store (or the OS
@@ -256,12 +257,15 @@ def test_os_credential_store_roundtrip_when_available():
         store.revoke("c1")
 
 
-def test_real_google_flow_and_backend_are_disabled_stubs():
-    with pytest.raises(FilmError, match="NOT_CONFIGURED"):
+def test_real_google_flow_requires_an_external_client_file(monkeypatch):
+    # ANIM-018 replaced the disabled stubs. A client id dict is not a
+    # Desktop client file and does not open a connection.
+    monkeypatch.delenv("FILM_GOOGLE_OAUTH_CLIENT_FILE", raising=False)
+    with pytest.raises(FilmError, match="GOOGLE_OAUTH_NOT_CONFIGURED"):
         GoogleOAuthFlow()
-    with pytest.raises(FilmError, match="UNQUALIFIED"):
+    with pytest.raises(FilmError, match="GOOGLE_OAUTH_NOT_CONFIGURED"):
         GoogleOAuthFlow({"client_id": "issued-elsewhere"})
-    with pytest.raises(FilmError, match="NOT_CONFIGURED"):
+    with pytest.raises(FilmError, match="GOOGLE_DRIVE_NOT_CONFIGURED"):
         GoogleDriveBackend()
-    with pytest.raises(FilmError, match="UNQUALIFIED"):
+    with pytest.raises(FilmError, match="GOOGLE_DRIVE_NOT_CONFIGURED"):
         GoogleDriveBackend({"client_id": "issued-elsewhere"})
