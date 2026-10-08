@@ -45,6 +45,8 @@ def guarded(fn, success=None):
 
 if chosen == "새 프로젝트":
     st.subheader("PROJECT")
+    st.caption("작업실이 비어 있습니다. 음원과 짧은 설명만 있으면 만들 수 있고, "
+               "JSON 파일을 편집하지 않습니다.")
     with st.form("new_project"):
         name = st.text_input("프로젝트 ID", "project_001")
         audio = st.file_uploader("Suno MP3 / WAV", type=["mp3", "wav"])
@@ -81,6 +83,7 @@ if animated:
     tab_names.append("09 · 자산")
     tab_names.append("10 · 컷 작업대")
     tab_names.append("12 · 검수 대조")
+    tab_names.append("13 · 작업실")
 tab_names.append("11 · 가사 검토")
 models_tab, web_tab, brief_tab, *tabs = st.tabs(tab_names)
 
@@ -492,6 +495,9 @@ if animated:
     with tabs[10]:
         from app.review_diff import render_review_diff
         render_review_diff(p)
+    with tabs[11]:
+        from app.workspace_accessibility import render_workspace
+        render_workspace(p)
 with tabs[-1]:
     from app.lyrics_review import render_lyrics_review
     render_lyrics_review(p)
