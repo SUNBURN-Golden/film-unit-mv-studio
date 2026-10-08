@@ -19,6 +19,7 @@ from pathlib import Path
 import json
 import sys
 import tempfile
+import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import streamlit as st
@@ -49,6 +50,10 @@ from engine.segment_gen import (commit_segment_sequence,
                                 segment_cancel, segment_import, segment_jobs,
                                 segment_quote, segment_reconcile,
                                 segment_submit)
+from engine.w00_gate import (DELIVERABLES, DELEGATION_SCOPES,
+                             approve_delivery, deliverable_status,
+                             gate_status, record_delegation, record_pilot,
+                             record_spend_approval)
 
 CONTROL_ROLES = ["layout", "keypose", "breakdown", "pose", "first_frame",
                  "inbetween"]
@@ -576,10 +581,172 @@ def _approve_film(p, build, reviewer, decision):
             deliverable="MASTER_SUBBED.mp4", decision=decision)
 
 
+def _w00_gate(p):
+    """W00 pilot records + the next-wave gate (ANIM-022; design 10.5).
+
+    Lists the initial wave's pilot targets with their record state, takes a
+    per-target KEEP/CHANGE/MIX pilot decision, and shows the gate with its
+    reasons. Synthetic reviewer records are labelled SYNTHETIC_FIXTURE and
+    imply no real W00 approval — the facets stay PENDING/UNQUALIFIED.
+    """
+    st.markdown("**W00 파일럿 기록 · 다음 wave 게이트**")
+    st.caption("W00의 어려운 본편 컷·연결 컷마다 source/sequence/artifact "
+               "해시와 durable job 결과, 선정 이유, 검토자와 "
+               "KEEP/CHANGE/MIX 판단을 기록합니다. 합성 fixture 검토자는 "
+               "SYNTHETIC_FIXTURE로 표시되고 실제 W00/작품 승인을 만들지 "
+               "않습니다.")
+    gate = _guarded(lambda: gate_status(p))
+    if gate is None:
+        return
+    rows = [{"대상": row["target_id"], "기록": row.get("pilot_id") or "—",
+             "상태": STATE_KO.get(row["state"], row["state"]),
+             "결정": row.get("decision") or "—",
+             "검토자": row.get("reviewer") or "—",
+             "검토자 종류": ("합성 fixture" if row["synthetic"]
+                            else "사람" if row["synthetic"] is False
+                            else "—")}
+            for row in gate["pilots"]]
+    if rows:
+        st.dataframe(rows, hide_index=True)
+    else:
+        st.caption("W00 파일럿 대상이 없습니다 — 먼저 제작 순서를 선언하세요.")
+    if gate["gate"]["state"] == "OPEN":
+        st.success("다음 wave 게이트 OPEN — 열린 범위: "
+                   + ", ".join(gate["open_waves"] or ["—"]))
+    else:
+        st.warning("다음 wave 게이트 BLOCKED")
+        for reason in gate["gate"]["reasons"]:
+            st.caption("· " + reason)
+    if gate["unknown"]:
+        st.warning("미확정(UNKNOWN 등) durable 작업이 게이트를 막습니다: "
+                   + ", ".join(f"{j['job_id']}={j['status']}"
+                               for j in gate["unknown"]))
+    if gate["issues"]:
+        st.dataframe([{"출처": i["source"], "대상": i["target"],
+                       "처리": i["disposition"], "내용": i["note"],
+                       "이유": i.get("reason") or "—",
+                       "범위": str(i["scope"]) if i.get("scope") is not None
+                       else "—"}
+                      for i in gate["issues"]], hide_index=True)
+    if gate["quote"]["totals"]:
+        st.caption("견적 합계: " + ", ".join(
+            f"{v} {k}" for k, v in gate["quote"]["totals"].items()))
+    if gate["usage"]["reserved_totals"]:
+        st.caption("예약(지출) 합계: " + ", ".join(
+            f"{v} {k}" for k, v in gate["usage"]["reserved_totals"].items()))
+
+    targets = gate["pilot_targets"]
+    target_ids = targets["cuts"] + targets["transitions"]
+    if not target_ids:
+        return
+    pick = st.selectbox("파일럿 대상", target_ids, key="an_pilot_target")
+    decision = st.radio("경로 판단", ["KEEP", "CHANGE", "MIX"],
+                        horizontal=True, key="an_pilot_decision")
+    c1, c2 = st.columns(2)
+    reviewer = c1.text_input("파일럿 검토자", key="an_pilot_reviewer")
+    kind = c2.selectbox("검토자 종류", ["SYNTHETIC_FIXTURE", "HUMAN"],
+                        key="an_pilot_kind",
+                        help="HUMAN은 박준태 또는 기록된 위임자만 가능합니다")
+    reason = st.text_input("선정·검토 이유", key="an_pilot_reason")
+    c3, c4 = st.columns(2)
+    cap_ref = c3.text_input("capability 참조 (없으면 비움)", key="an_pilot_cap")
+    job_ref = c4.text_input("durable job 결과 id (없으면 비움)",
+                            key="an_pilot_job")
+    c5, c6 = st.columns(2)
+    issue_kind = c5.selectbox(
+        "발견한 문제 처리", ["없음", "FIX_REQUIRED", "INTENTIONAL",
+                       "ACCEPTED_LIMITATION"], key="an_pilot_issue",
+        help="INTENTIONAL/ACCEPTED_LIMITATION은 이유와 범위가 필요합니다")
+    issue_note = c6.text_input("문제 내용", key="an_pilot_issue_note")
+    issue_reason = c5.text_input("처리 이유", key="an_pilot_issue_reason")
+    issue_scope = c6.text_input("범위 (라벨)", key="an_pilot_issue_scope")
+
+    def pilot_issues():
+        if issue_kind == "없음":
+            return []
+        item = {"disposition": issue_kind, "note": issue_note}
+        if issue_reason.strip():
+            item["reason"] = issue_reason.strip()
+        if issue_scope.strip():
+            item["scope"] = issue_scope.strip()
+        return [item]
+
+    if st.button("파일럿 기록", key="an_pilot_record"):
+        _do(lambda: record_pilot(
+            p, pick, decision=decision, reviewer=reviewer,
+            reviewer_kind=kind, reason=reason,
+            capability_ref=cap_ref.strip() or None,
+            job_result_id=job_ref.strip() or None,
+            issues=pilot_issues()),
+            f"{pick}의 W00 파일럿을 기록했습니다")
+
+    with st.expander("승인자 위임 · 추가 지출 승인", expanded=False):
+        st.caption("HUMAN 승인자는 박준태이거나 아래 위임 기록이 있어야 "
+                   "합니다. CHANGE/MIX 경로의 추가 지출은 결정 revision에 "
+                   "묶인 별도 승인이 필요합니다.")
+        c1, c2 = st.columns(2)
+        dg_delegate = c1.text_input("위임받는 승인자", key="an_dg_delegate")
+        dg_scope = c2.multiselect("위임 범위", list(DELEGATION_SCOPES),
+                                  default=["W00_PILOT"], key="an_dg_scope")
+        dg_days = c1.number_input("위임 유효 일수", min_value=1, value=7,
+                                  key="an_dg_days")
+        if st.button("위임 기록", key="an_dg_record"):
+            _do(lambda: record_delegation(
+                p, delegate=dg_delegate, scope=list(dg_scope),
+                expires_at_ms=int(time.time() * 1000)
+                + int(dg_days) * 86400000),
+                f"{dg_delegate}에게 {dg_scope} 위임을 기록했습니다")
+        sa_approver = st.text_input("지출 승인자", key="an_sa_approver")
+        sa_kind = st.selectbox("지출 승인자 종류",
+                               ["SYNTHETIC_FIXTURE", "HUMAN"],
+                               key="an_sa_kind")
+        sa_jobs = st.multiselect(
+            "승인 대상 작업", [o["job_id"] for o in
+                             gate["spend"]["obligations"]],
+            key="an_sa_jobs")
+        sa_reason = st.text_input("추가 지출 승인 근거", key="an_sa_reason")
+        if st.button("추가 지출 승인 기록", key="an_sa_record"):
+            _do(lambda: record_spend_approval(
+                p, approver=sa_approver, reviewer_kind=sa_kind,
+                reason=sa_reason, jobs=list(sa_jobs)),
+                "추가 지출 승인을 기록했습니다")
+
+
+def _deliveries(p, pick):
+    """Separate sealed clean/subbed delivery approvals (ANIM-022)."""
+    st.markdown("**sealed 전달 파일 별도 승인 — clean / subbed**")
+    st.caption("clean과 subbed는 각자의 파일 해시에 묶여 별도로 승인됩니다 — "
+               "한쪽 승인이 다른 쪽을 대신하지 않고, 승인은 봉인된 build를 "
+               "바꾸지 않습니다. 승인자는 박준태 또는 기록된 위임자이며 "
+               "합성 fixture 승인은 SYNTHETIC_FIXTURE로만 기록됩니다.")
+    delivery = _guarded(lambda: deliverable_status(p, pick["build_id"]))
+    if delivery is None:
+        return
+    st.dataframe([{"파일": name, "상태": STATE_KO.get(row["state"],
+                                                     row["state"]),
+                   "승인": row["approval_id"] or "—",
+                   "승인자": row["approver"] or "—",
+                   "종류": row["reviewer_kind"] or "—"}
+                  for name, row in delivery["deliverables"].items()],
+                 hide_index=True)
+    c1, c2 = st.columns(2)
+    deliverable = c1.selectbox("전달 파일", list(DELIVERABLES),
+                               key="an_del_pick")
+    kind = c2.selectbox("승인자 종류", ["SYNTHETIC_FIXTURE", "HUMAN"],
+                        key="an_del_kind")
+    approver = st.text_input("전달 파일 승인자", key="an_del_approver")
+    if st.button("전달 파일 승인 기록", key="an_del_ok"):
+        _do(lambda: approve_delivery(p, pick["build_id"], deliverable,
+                                     approver=approver,
+                                     reviewer_kind=kind),
+            f"{pick['build_id']}의 {deliverable} 승인을 기록했습니다")
+
+
 def _output(p, entries, locks, route, reviews):
     waves_doc = _waves(p, entries)
     _locks(p, waves_doc)
     _route(p, waves_doc, route)
+    _w00_gate(p)
     st.markdown("**Final 후보와 최종 승인**")
     if st.button("Final 후보 만들기 (compile-final)", key="an_final_make"):
         with st.spinner("Final 후보를 봉인하고 있습니다…"):
@@ -608,9 +775,14 @@ def _output(p, entries, locks, route, reviews):
     if c1.button("최종 승인 기록 (approve-film)", key="an_final_ok"):
         _do(lambda: _approve_film(p, pick, reviewer, "APPROVED"),
             f"{pick['build_id']} 최종 승인을 기록했습니다")
+    c1.caption("protocol 검토 기록 전용 — governed 전달 승인(박준태 또는 "
+               "기록된 위임자)은 아래 전달 파일별 승인에서 진행합니다.")
     if c2.button("최종 수정 필요 기록", key="an_final_fix"):
         _do(lambda: _approve_film(p, pick, reviewer, "FIX_REQUIRED"),
             f"{pick['build_id']} 수정 필요를 기록했습니다")
+    if pick.get("document_type") == "animation_build" \
+            and pick.get("status") == "COMPLETE":
+        _deliveries(p, pick)
     st.divider()
     from app.diagnostics_ui import render_diagnostics
     render_diagnostics(p, pick["build_id"])

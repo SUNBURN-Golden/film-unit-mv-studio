@@ -366,6 +366,10 @@ def test_build2_replays_with_the_live_project_hidden(tmp_path):
 def test_build2_inventory_tampering_is_detected(tmp_path):
     p = approved_project(tmp_path)
     folder, record, _ = make_build(p)
+    # Untouched copies of the same sealed build for the other two cases:
+    # the inventory check and replay read only the build folder itself.
+    folder2 = Path(shutil.copytree(folder, tmp_path / "second"))
+    folder3 = Path(shutil.copytree(folder, tmp_path / "third"))
     # A changed delivery frame.
     frame = folder / "final_frames" / "F_000050.png"
     data = bytearray(frame.read_bytes())
@@ -375,9 +379,6 @@ def test_build2_inventory_tampering_is_detected(tmp_path):
     with pytest.raises(FilmError, match="integrity"):
         replay_build(folder, tmp_path / "out_a")
 
-    (tmp_path / "second").mkdir()
-    p2 = approved_project(tmp_path / "second")
-    folder2, _, _ = make_build(p2)
     # A changed archived member byte.
     snap = folder2 / "snapshot" / "animation" / "assets" / "A0001" / "r1"
     target = snap / "f000003.png"
@@ -388,9 +389,6 @@ def test_build2_inventory_tampering_is_detected(tmp_path):
     with pytest.raises(FilmError, match="integrity"):
         replay_build(folder2, tmp_path / "out_b")
 
-    (tmp_path / "third").mkdir()
-    p3 = approved_project(tmp_path / "third")
-    folder3, _, _ = make_build(p3)
     # A tampered frame_map row (rehashed manifest entry stays consistent? no:
     # build.json's file inventory pins frame_map.jsonl bytes too).
     lines = (folder3 / "frame_map.jsonl").read_bytes().split(b"\n")
