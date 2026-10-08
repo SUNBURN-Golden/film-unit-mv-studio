@@ -75,10 +75,12 @@ if config["audio"].get("synthetic_test_audio"):
 if audio_path.is_file():
     st.sidebar.audio(str(audio_path))
 tab_names = ["00 · AI 모델", "00 · 웹사이트 연결", "01 · 제작 준비", "01 · PROJECT", "02 · DIRECTOR", "03 · STORYBOARD", "04 · LYRICS", "05 · TIMELINE", "06 · COMPILE / BUILDS", "07 · RENDER · 고급"]
-if production_profile(config) == "FRAME_ANIMATION_V1":
+animated = production_profile(config) == "FRAME_ANIMATION_V1"
+if animated:
     tab_names.append("08 · ANIMATION")
     tab_names.append("09 · 자산")
     tab_names.append("10 · 컷 작업대")
+tab_names.append("11 · 가사 검토")
 models_tab, web_tab, brief_tab, *tabs = st.tabs(tab_names)
 
 with models_tab:
@@ -476,15 +478,16 @@ with tabs[5]:
             st.video(str(legacy))
             st.download_button("이전 MP4 내보내기", legacy.read_bytes(), legacy.name, "video/mp4")
 
-if len(tabs) > 7:
+if animated:
     with tabs[7]:
         from app.animation_ui import render_animation
         render_animation(p)
-if len(tabs) > 8:
     with tabs[8]:
         from app.asset_library import render_asset_library
         render_asset_library(p)
-if len(tabs) > 9:
     with tabs[9]:
         from app.shot_board import render_shot_board
         render_shot_board(p)
+with tabs[-1]:
+    from app.lyrics_review import render_lyrics_review
+    render_lyrics_review(p)
