@@ -80,6 +80,7 @@ if animated:
     tab_names.append("08 · ANIMATION")
     tab_names.append("09 · 자산")
     tab_names.append("10 · 컷 작업대")
+    tab_names.append("12 · 검수 대조")
 tab_names.append("11 · 가사 검토")
 models_tab, web_tab, brief_tab, *tabs = st.tabs(tab_names)
 
@@ -488,6 +489,9 @@ if animated:
     with tabs[9]:
         from app.shot_board import render_shot_board
         render_shot_board(p)
+    with tabs[10]:
+        from app.review_diff import render_review_diff
+        render_review_diff(p)
 with tabs[-1]:
     from app.lyrics_review import render_lyrics_review
     render_lyrics_review(p)
