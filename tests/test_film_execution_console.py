@@ -188,27 +188,50 @@ def test_pipeline_partial_encode_does_not_claim_a_muxed_mp4(tmp_path):
     assert pi["in_flight"] is True
 
 
-def test_pipeline_item_links_archive_commit_by_snapshot(tmp_path):
-    cc, backend, ck = make_commit(tmp_path)
-    assert cc.run(ck)["state"] == "SEALED"
-    perf = tmp_path / "perf"
+def _perf_state(perf, *, snapshot, recipe, clean_sha, subbed_sha):
     perf.mkdir()
     (perf / "state.json").write_text(json.dumps({
-        "state_version": 1, "input": {"snapshot_digest": SNAP},
+        "state_version": 1,
+        "input": {"snapshot_digest": snapshot, "recipe_digest": recipe},
         "clean": {"sequence_root": "c" * 64, "frames": []},
         "subbed": {"sequence_root": "s" * 64},
-        "encodes": {"clean": {"artifact_sha256": "a" * 64,
+        "encodes": {"clean": {"artifact_sha256": clean_sha,
                               "verification": {"valid": True}},
-                    "subbed": {"artifact_sha256": "b" * 64,
+                    "subbed": {"artifact_sha256": subbed_sha,
                                "verification": {"valid": True}}},
         "generated_at": "2026-01-01T00:00:00Z"}), encoding="utf-8")
+
+
+def test_pipeline_item_links_commit_by_seal_identity(tmp_path):
+    """The closed shape is the commit whose pins are this pipeline's
+    encode bytes and whose recipe is this pipeline's recipe — the seal
+    key, not the snapshot by itself."""
+    clean, subbed = b"pipeline-clean-mp4", b"pipeline-subbed-mp4"
+    sha_c, sha_s = (hashlib.sha256(clean).hexdigest(),
+                    hashlib.sha256(subbed).hexdigest())
+    backend = FakeDriveBackend(provider_checksum="sha256")
+    cc = ArchiveCommitter(tmp_path / "commit", backend, upload=UPLOAD,
+                          retry=RETRY)
+    ck = cc.begin_commit(
+        "build-1",
+        [{"kind": "mp4_clean", "data": clean},
+         {"kind": "mp4_subbed", "data": subbed}],
+        snapshot_digest=SNAP, recipe_digest=RECIPE,
+        toolchain_digest=TOOLCHAIN,
+        required_kinds=("mp4_clean", "mp4_subbed"))
+    assert cc.run(ck)["state"] == "SEALED"
+    perf = tmp_path / "perf"
+    _perf_state(perf, snapshot=SNAP, recipe=RECIPE,
+                clean_sha=sha_c, subbed_sha=sha_s)
     sd = tmp_path / "state"
     sd.mkdir()
-    console = ExecutionConsole(state_dir=sd, journal_dirs=[tmp_path / "commit"],
+    console = ExecutionConsole(state_dir=sd,
+                             journal_dirs=[tmp_path / "commit"],
                              perf_roots=[perf])
     i = item(console.status(), f"pipeline:{perf.name}")
     assert i["stages"]["upload"]["status"] == "UPLOADED"
     assert i["stages"]["seal"]["status"] == "SEALED"
+    assert ck in i["stages"]["upload"]["detail"]
     # UPLOADED + SEALED is the closed shape — the stop-point expander
     # opens for it, and the caption mirrors the commit's verify levels
     # instead of reading unfinished
@@ -216,6 +239,57 @@ def test_pipeline_item_links_archive_commit_by_snapshot(tmp_path):
     assert i["in_flight"] is False
     assert i["indicators"]["upload_verify"]["verified"] is True
     assert i["indicators"]["upload_verify"]["levels"]
+
+
+def test_pipeline_does_not_adopt_a_foreign_seal_for_the_same_snapshot(
+        tmp_path):
+    """A SEALED commit that only shares the input snapshot is a different
+    build. The pipeline's own commit is still OBJECTS_PENDING; preferring
+    the foreign SEALED row would report this result closed."""
+    clean, subbed = b"pipeline-clean-mp4", b"pipeline-subbed-mp4"
+    sha_c, sha_s = (hashlib.sha256(clean).hexdigest(),
+                    hashlib.sha256(subbed).hexdigest())
+    own = ArchiveCommitter(
+        tmp_path / "own", FakeDriveBackend(provider_checksum="sha256"),
+        upload=UPLOAD, retry=RETRY)
+    own_key = own.begin_commit(
+        "build-this",
+        [{"kind": "mp4_clean", "data": clean},
+         {"kind": "mp4_subbed", "data": subbed}],
+        snapshot_digest=SNAP, recipe_digest=RECIPE,
+        toolchain_digest=TOOLCHAIN,
+        required_kinds=("mp4_clean", "mp4_subbed"))
+    assert own.commits[own_key]["state"] == "OBJECTS_PENDING"
+    foreign = ArchiveCommitter(
+        tmp_path / "foreign", FakeDriveBackend(provider_checksum="sha256"),
+        upload=UPLOAD, retry=RETRY)
+    other = foreign.begin_commit(
+        "build-other",
+        [{"kind": "preview", "data": b"not-this-pipeline"}],
+        snapshot_digest=SNAP,
+        recipe_digest=hashlib.sha256(b"other-recipe").hexdigest(),
+        toolchain_digest=hashlib.sha256(b"other-toolchain").hexdigest(),
+        required_kinds=("preview",))
+    assert foreign.run(other)["state"] == "SEALED"
+    perf = tmp_path / "perf"
+    _perf_state(perf, snapshot=SNAP, recipe=RECIPE,
+                clean_sha=sha_c, subbed_sha=sha_s)
+    sd = tmp_path / "state"
+    sd.mkdir()
+    console = ExecutionConsole(
+        state_dir=sd,
+        journal_dirs=[tmp_path / "own", tmp_path / "foreign"],
+        perf_roots=[perf])
+    i = item(console.status(), f"pipeline:{perf.name}")
+    assert i["stages"]["upload"]["status"] == "PENDING"
+    assert i["stages"]["seal"]["status"] == "PENDING"
+    assert own_key in i["stages"]["upload"]["detail"]
+    assert other not in i["stages"]["upload"]["detail"]
+    assert i["closed"] is False
+    assert i["in_flight"] is True
+    # the bound commit has not verified its objects — the foreign seal's
+    # verified flag must not be copied onto this pipeline
+    assert i["indicators"]["upload_verify"]["verified"] is False
 
 
 # -- 완료 판정 1: CANCEL_REQUESTED is never terminal -------------------------------
@@ -801,6 +875,82 @@ def test_verify_mismatch_needs_new_attempt(tmp_path):
 
 
 # -- journal fencing -----------------------------------------------------------------
+
+def test_console_shares_the_coordinator_journal(tmp_path):
+    """Job appends and upload appends on the coordinator's state dir go
+    through one DurableJournal. A second instance keeps the seq and head
+    from scan time, so the upload stamps a duplicate seq once the
+    coordinator has written."""
+    c, worker, plan, key = running(tmp_path)
+    backend = FakeDriveBackend(provider_checksum="sha256")
+    console = console_for(c, backends={str(c.state_dir): backend},
+                          upload=dict(UPLOAD), retry=dict(RETRY))
+    journal = console._journals[str(c.state_dir)]
+    assert journal is c.journal
+    assert console._trackers[str(c.state_dir)].journal is c.journal
+    c.request_cancel(worker, key)
+    console._trackers[str(c.state_dir)].put("obj-chain", b"xyz" * 40)
+    loaded = load_journal(c.journal.path)
+    assert loaded["tail"] == TAIL_CLEAN
+    seqs = [r["seq"] for r in loaded["records"]]
+    assert seqs == list(range(len(seqs)))
+    assert journal.head == loaded["head"]
+    assert any(r["event"] == "CANCEL_INTENT" for r in loaded["records"])
+    assert any(r["scope"] == "upload" for r in loaded["records"])
+
+
+def test_coordinator_semantic_fence_blocks_console_appends(tmp_path):
+    """A replay fence lives on the coordinator's journal instance, not
+    in the file. Upload appends on that same file must see it."""
+    c, worker, plan, key = running(tmp_path)
+    c.journal.fence("replay inconsistency: semantic")
+    backend = FakeDriveBackend(provider_checksum="sha256")
+    console = console_for(c, backends={str(c.state_dir): backend},
+                          upload=dict(UPLOAD), retry=dict(RETRY))
+    journal = console._journals[str(c.state_dir)]
+    assert journal is c.journal
+    assert journal.fenced
+    row = next(j for j in console.status()["journals"]
+               if j["dir"] == str(c.state_dir))
+    assert row["fenced"] is True
+    with pytest.raises(FilmError, match="JOURNAL_RECONCILIATION_REQUIRED"):
+        console._trackers[str(c.state_dir)].put("obj-fenced", b"abc" * 20)
+    loaded = load_journal(c.journal.path)
+    assert loaded["tail"] == TAIL_CLEAN
+    assert not any(r["scope"] == "upload" for r in loaded["records"])
+
+
+def test_upload_explain_uses_the_verifying_commit_journal(tmp_path):
+    """OBJECT_VERIFIED is recorded on the commit's journal. The upload
+    row may live in another scanned journal; explain must follow the
+    verification's source instead of the upload item's."""
+    data = b"V" * 200
+    oid = f"sha256-{hashlib.sha256(data).hexdigest()}"
+    up, cm = tmp_path / "up", tmp_path / "commit"
+    b_up = FakeDriveBackend(provider_checksum="sha256")
+    b_cm = FakeDriveBackend(provider_checksum="sha256")
+    tracker = UploadTracker(DurableJournal(up / "job_journal.jsonl"),
+                            b_up, upload=UPLOAD, retry=RETRY)
+    tracker.put(oid, data)
+    cc = ArchiveCommitter(cm, b_cm, upload=UPLOAD, retry=RETRY)
+    ck = cc.begin_commit(
+        "build-v", [{"kind": "preview", "data": data}],
+        snapshot_digest=SNAP, recipe_digest=RECIPE,
+        toolchain_digest=TOOLCHAIN, required_kinds=("preview",))
+    assert cc.run(ck)["state"] == "SEALED"
+    sd = tmp_path / "state"
+    sd.mkdir()
+    console = ExecutionConsole(
+        state_dir=sd, journal_dirs=[up, cm],
+        backends={str(up): b_up, str(cm): b_cm},
+        upload=dict(UPLOAD), retry=dict(RETRY))
+    explained = console.explain(f"up-{oid}")
+    reusable = explained["reusable_artifacts"]
+    assert [a["object_id"] for a in reusable] == [oid]
+    assert reusable[0]["sha256"] == hashlib.sha256(data).hexdigest()
+    assert reusable[0]["basis"] == "OBJECT_VERIFIED"
+    assert reusable[0]["level"]
+
 
 def test_fenced_journal_reports_and_refuses(tmp_path):
     c, worker, plan, key = running(tmp_path)

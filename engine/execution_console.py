@@ -188,6 +188,27 @@ class ExecutionConsole:
 
     # -- directory scan ---------------------------------------------------
 
+    def _journal_for(self, path):
+        """One in-memory writer for the coordinator's journal file.
+
+        `DurableJournal.append` stamps `seq` and `prev_digest` from the
+        instance's own records and head. Job actions append through
+        `Coordinator._j`; upload and commit actions append through the
+        journal this scan gives the tracker and the committer. A second
+        instance of the same file therefore writes a duplicate seq and a
+        stale prev_digest as soon as the two interleave. A semantic
+        fence is not stored in the file — `Coordinator._load` calls
+        `fence()` on its own instance — so the second instance would
+        also keep accepting those appends after the coordinator had
+        fenced the chain.
+        """
+        coord = getattr(self.coordinator, "journal", None)
+        coord_path = getattr(coord, "path", None)
+        if coord_path is not None \
+                and Path(coord_path).resolve() == Path(path).resolve():
+            return coord
+        return DurableJournal(path)
+
     def _scan_dir(self, d):
         key = str(d)
         path = d / "job_journal.jsonl"
@@ -197,7 +218,7 @@ class ExecutionConsole:
             if injected is not None:
                 self._trackers[key] = injected
             return
-        journal = DurableJournal(path)
+        journal = self._journal_for(path)
         self._journals[key] = journal
         scopes = {r["scope"] for r in journal.records}
         backend = self.backends.get(key)
@@ -661,10 +682,24 @@ class ExecutionConsole:
         reusable = []
         ver = verified.get(oid)
         if ver:
-            commit = self._committers[item["source"]].commits[
-                ver["commit_key"]]
-            obj = next(o for a in commit["artifacts"] for o in a["objects"]
-                       if o["object_id"] == oid)
+            # Verification is stored under the commit journal that
+            # recorded OBJECT_VERIFIED, which may not be the upload
+            # item's own source. Looking the commit up there raises
+            # KeyError, and the panel only catches FilmError.
+            committer = self._committers.get(ver.get("source"))
+            commit = (committer.commits.get(ver["commit_key"])
+                      if committer is not None else None)
+            if commit is None:
+                raise FilmError(
+                    "upload verification names a commit that is not in "
+                    "the scanned journals")
+            obj = next((o for a in commit["artifacts"]
+                        for o in a["objects"]
+                        if o["object_id"] == oid), None)
+            if obj is None:
+                raise FilmError(
+                    "upload verification names an object the commit "
+                    "does not pin")
             reusable.append({
                 "type": "verified_object", "object_id": oid,
                 "level": ver["level"], "sha256": obj["sha256"],
@@ -880,6 +915,58 @@ class ExecutionConsole:
 
     # -- pipeline (perf state) items -------------------------------------------
 
+    def _pipeline_commit(self, commits, state):
+        """The one archive commit that seals this pipeline's outputs.
+
+        The seal key is the build id, the snapshot, the ordered artifact
+        pins, the recipe, the toolchain and the verification profile.
+        A shared snapshot is not that key: preferring any SEALED commit
+        with the same snapshot marks a different build's archive as this
+        pipeline's result. The pipeline records the snapshot, the recipe
+        and the encode artifact hashes, so a commit is a candidate only
+        when those agree with its pins. Two candidates are two commit
+        identities (they differ in build, pin order, toolchain or
+        profile) and neither is reported as the seal.
+        """
+        snap = (state.get("input") or {}).get("snapshot_digest")
+        recipe = (state.get("input") or {}).get("recipe_digest")
+        encode_shas = []
+        for entry in (state.get("encodes") or {}).values():
+            if type(entry) is dict and entry.get("artifact_sha256"):
+                encode_shas.append(entry["artifact_sha256"])
+        if not snap or not encode_shas:
+            return None
+        matched = []
+        for item in commits:
+            if item.get("snapshot_digest") != snap:
+                continue
+            committer = self._committers.get(item.get("source"))
+            if committer is None:
+                continue
+            raw = committer.commits.get(item.get("ref"))
+            if raw is None:
+                continue
+            if recipe is not None and raw.get("recipe_digest") != recipe:
+                continue
+            pins = [obj["sha256"] for art in raw.get("artifacts") or ()
+                    for obj in art.get("objects") or ()]
+            if any(sha not in pins for sha in encode_shas):
+                continue
+            matched.append(item)
+        if len({item["ref"] for item in matched}) != 1:
+            return None
+        if len({item["state"] for item in matched}) != 1:
+            return None
+        return matched[0]
+
+    def _pipeline_archive_detail(self, commits, snap):
+        shares = [c for c in commits if c.get("snapshot_digest") == snap]
+        if not shares:
+            return "no archive commit recorded for this snapshot"
+        return ("an archive commit shares this snapshot but not this "
+                "pipeline's seal identity — build, ordered artifact "
+                "pins, recipe, toolchain and verification profile")
+
     def _pipeline_items(self, commits):
         # Lazy like every other perf_scheduler caller (capability_ui,
         # animation_ui, cli): perf_scheduler imports `resource`, which does
@@ -936,33 +1023,28 @@ class ExecutionConsole:
                 "PARTIAL" if verified_roles else "PENDING",
                 detail=f"{len(verified_roles)}/{len(_ENCODE_ROLE_SET)} "
                        f"encode roles verified")
-            linked = [c for c in commits
-                      if c["snapshot_digest"] == snap]
-            if linked:
-                adv = sorted(linked, key=lambda c: c["state"] != "SEALED")
+            bound = self._pipeline_commit(commits, state)
+            if bound is not None:
                 stages["upload"] = _stage(
-                    adv[0]["stages"]["upload"]["status"],
-                    detail=f"archive commit(s): "
-                           f"{', '.join(c['ref'] for c in linked)}")
+                    bound["stages"]["upload"]["status"],
+                    detail=f"archive commit: {bound['ref']}")
                 stages["seal"] = _stage(
-                    adv[0]["stages"]["seal"]["status"],
+                    bound["stages"]["seal"]["status"],
                     detail="see linked archive commit")
             else:
-                stages["upload"] = _stage(
-                    "PENDING",
-                    detail="no archive commit recorded for this snapshot")
-                stages["seal"] = _stage(
-                    "PENDING",
-                    detail="no archive commit recorded for this snapshot")
+                detail = self._pipeline_archive_detail(commits, snap)
+                stages["upload"] = _stage("PENDING", detail=detail)
+                stages["seal"] = _stage("PENDING", detail=detail)
             # A sealed archive row reports its transfer as UPLOADED — with
             # the seal SEALED that is the closed shape (the commit row's
-            # own gate is state == "SEALED").
+            # own gate is state == "SEALED"). Only the one commit whose
+            # seal identity is this pipeline reaches that shape.
             closed = all(stages[s]["status"] in
                          ("SEALED", "DONE", "VERIFIED", "UPLOADED",
                           "NOT_APPLICABLE") for s in STAGES)
             commit_verify = (
-                dict(adv[0]["indicators"]["upload_verify"])
-                if linked else
+                dict(bound["indicators"]["upload_verify"])
+                if bound is not None else
                 {"level": None, "state": "NOT_APPLICABLE"})
             items.append({
                 "item_id": f"pipeline:{root.name}",
