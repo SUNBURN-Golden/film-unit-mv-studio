@@ -11,6 +11,8 @@ dependencies = ["numpy>=1.24,<3", "scipy>=1.10,<2", "soundfile>=0.12,<1", "libro
 
 [project.optional-dependencies]
 test = ["pytest>=8,<10"]
+models = ["onnxruntime>=1.17,<2"]
+rife = ["onnxruntime>=1.17,<2"]  # alias of models; CI installs .[test] only
 claude = ["anthropic>=1,<2"]  # optional: Claude as the AI director
 desktop = ["pyinstaller>=6.16,<7", "pyinstaller-hooks-contrib>=2025.8"]
 
@@ -19,6 +21,9 @@ filmunit = "engine.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["engine*", "desktop*"]
+
+[tool.setuptools.package-data]
+engine = ["models.json"]
 
 [tool.setuptools.data-files]
 "share/film-unit/presets/water_please" = ["presets/water_please/style.yaml", "presets/water_please/characters.yaml", "presets/water_please/locations.yaml", "presets/water_please/directing.yaml"]
