@@ -42,11 +42,11 @@ and masks. This module owns the engine side of that contract:
   stage under the shot and `commit_segment_sequence` assembles them into an
   ordinary DRAFT FRAME_SEQUENCE.
 
-The only wired adapter is `fake_segment` (engine/segment_fake.py), a
-deterministic local double labelled FAKE/UNQUALIFIED. Other adapters (e.g.
-`gemini_video`, declared start-only) exist as capability declarations whose
-submit path refuses — this node makes no real provider call, no network
-access and no paid generation.
+Wired adapters live in `engine/segment_fake.py`: `fake_segment` (a
+deterministic local double labelled FAKE/UNQUALIFIED) and `rife_onnx` (a
+local CPU ONNX interpolator, LOCAL_TOOL/UNQUALIFIED, no blend fallback).
+`gemini_video` is a start-only capability declaration whose submit path
+refuses. This module makes no network call and no paid generation.
 """
 import hashlib
 import json
@@ -484,11 +484,30 @@ def build_segment_spec(project, shot_id, start, end, adapter):
               "references": masters, "layout_guide": layouts,
               "pose_guides": poses, "mask": masks}
     plan_sha = digest(safe_path(p, plan_path(shot_id)))
+    output = {"width": canvas["width"], "height": canvas["height"],
+              "fps": out_fps}
+    # Adapters that bind a tool (model pin, runtime version) put those
+    # strings in the recipe. The job key hashes `recipe`, so a different
+    # pin or runtime is a different job. Adapters without the hook — the
+    # fake included — keep the width/height/fps recipe unchanged.
+    binding = getattr(adapter, "recipe_binding", None)
+    if binding is not None:
+        extra = binding()
+        if type(extra) is not dict or not extra:
+            raise FilmError("adapter recipe_binding must return an object")
+        overlap = [key for key in extra if key in output]
+        if overlap:
+            raise FilmError("adapter recipe_binding collides with "
+                            + ", ".join(sorted(overlap)))
+        for key, value in extra.items():
+            if type(key) is not str or type(value) is not str or not value:
+                raise FilmError("recipe binding values must be non-empty "
+                                "strings")
+        output.update(extra)
     spec = {"operation": OPERATION, "shot_id": shot_id,
             "segment": {"start": start, "end": end},
             "capabilities": sorted(declared),
-            "output": {"width": canvas["width"], "height": canvas["height"],
-                       "fps": out_fps},
+            "output": output,
             "inputs": inputs, "plan_sha256": plan_sha,
             "adapter": {"id": adapter.id,
                         "capabilities_sha256": object_hash(caps)}}
@@ -516,10 +535,16 @@ def _open_job(p, spec, job_key):
     path = _job_file(p, spec["shot_id"], job_id)
     if path.exists():
         return read(path)
+    adapter_id = spec["adapter"]["id"]
+    if adapter_id == "fake_segment":
+        provider_class = "FAKE"
+    elif adapter_id == "rife_onnx":
+        provider_class = "LOCAL_TOOL"
+    else:
+        provider_class = "DECLARED"
     job = {"job_id": job_id, "job_key": job_key, "shot_id": spec["shot_id"],
-           "adapter": spec["adapter"]["id"],
-           "provider_class": ("FAKE" if spec["adapter"]["id"] == "fake_segment"
-                              else "DECLARED"),
+           "adapter": adapter_id,
+           "provider_class": provider_class,
            "qualification_state": "UNQUALIFIED", "status": "PLANNED",
            "attempt": 0, "attempt_id": None, "request_id": None,
            "operation_id": None,
@@ -1334,7 +1359,10 @@ def commit_segment_sequence(project, shot_id, *, asset_id=None, note=""):
                                           for j in contributing}),
                       # Only jobs that actually supplied frames are listed.
                       "jobs": [j["job_id"] for j in contributing],
-                      "provider_class": "FAKE",
+                      "provider_class": (
+                          contributing[0]["provider_class"]
+                          if len({j["provider_class"] for j in contributing})
+                          == 1 else "MIXED"),
                       "job_selection": "latest verified attempt of the "
                                        "current job key (highest attempt, "
                                        "then latest import, then job id); "
@@ -1352,8 +1380,8 @@ def commit_segment_sequence(project, shot_id, *, asset_id=None, note=""):
             {"width": fmt["width"], "height": fmt["height"]}, provenance,
             dependencies=dependencies, asset_id=asset_id)
         result["qualification_state"] = "UNQUALIFIED"
-        result["note"] = ("Assembled from fake-provider segment jobs; "
-                          "no artwork approval, review or qualification")
+        result["note"] = ("Assembled from segment-adapter jobs; no artwork "
+                          "approval, review or qualification")
         return result
 
 

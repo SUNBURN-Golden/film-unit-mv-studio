@@ -360,7 +360,14 @@ def status(model_id=None, operation="inspect_pinned_weights"):
                        "version": catalog[item_id]["version"],
                        "verify": verify(item_id),
                        "evidence": evidence(item_id, operation)})
-    return {**_FACETS,
-            "note": ("pinned weight registry only; no inference and "
-                     "no product capability"),
-            "models": models}
+    report = {**_FACETS,
+              "note": ("pinned weight registry only; no inference and "
+                       "no product capability"),
+              "models": models}
+    if "rife49" in ids:
+        # Separate from models[].evidence, which this registry never
+        # qualifies. QUALIFIED_FOR_SCOPE appears only after a real
+        # two-frame CPU fixture on this host; product facets stay above.
+        from .interpolation.rife_onnx import build_capability_evidence
+        report["rife_onnx"] = build_capability_evidence(write=True)
+    return report

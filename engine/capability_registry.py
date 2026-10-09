@@ -66,6 +66,7 @@ _AXIS_BY_OPERATION = {
     "compose_frame_range": "COMPOSE",
     "render_frame_range": "COMPOSE",
     "decode_frame_range": "COMPOSE",
+    "interpolate_frame_range": "COMPOSE",
     "transfer_object_range": "TRANSFER",
     "relay_packet": "TRANSFER",
     "network_reachability": "NETWORK",
