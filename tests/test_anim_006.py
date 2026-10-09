@@ -28,6 +28,7 @@ from test_compiler_v03 import (assert_master, fixture_project, newest_build)
 
 SIZE = (64, 48)
 REVIEWER = "Synthetic fixture reviewer"
+FILM_APPROVER = "박준태"
 CUT_METHODS = ["CUT_FULL_SPEED_PLAYBACK"]
 TRANSITION_METHODS = ["TRANSITION_FULL_SPEED_PLAYBACK"]
 FILM_METHODS = ["FULL_SPEED_WHOLE_FILM", "TECHNICAL_VALIDATION"]
@@ -49,12 +50,12 @@ def approve_all(p):
     ids = {"cuts": {}, "transitions": {}}
     for entry in timeline["entries"]:
         ids["cuts"][entry["instance_id"]] = record_cut_review(
-            p, entry["instance_id"], reviewer=REVIEWER,
+            p, entry["instance_id"], reviewer=FILM_APPROVER,
             methods=CUT_METHODS)["review_id"]
         transition = entry.get("transition_out")
         if transition is not None:
             ids["transitions"][transition["id"]] = record_transition_review(
-                p, transition["id"], reviewer=REVIEWER,
+                p, transition["id"], reviewer=FILM_APPROVER,
                 methods=TRANSITION_METHODS)["review_id"]
     return ids
 
@@ -120,7 +121,7 @@ def test_missing_transition_review_blocks(tmp_path):
     p = approved_project(tmp_path)
     timeline = read_canon(p / "timeline/edit.json")
     for entry in timeline["entries"]:
-        record_cut_review(p, entry["instance_id"], reviewer=REVIEWER,
+        record_cut_review(p, entry["instance_id"], reviewer=FILM_APPROVER,
                           methods=CUT_METHODS)
     with pytest.raises(FilmError, match="TRANSITION T001: UNREVIEWED"):
         compile_final(p)
@@ -130,12 +131,12 @@ def test_missing_transition_review_blocks(tmp_path):
 def test_fix_required_decision_blocks(tmp_path):
     p = approved_project(tmp_path)
     record_cut_review(
-        p, "I001", reviewer=REVIEWER, methods=CUT_METHODS,
+        p, "I001", reviewer=FILM_APPROVER, methods=CUT_METHODS,
         decision="FIX_REQUIRED",
         unresolved_major_issues=[{"disposition": "FIX_REQUIRED",
                                   "note": "exposure slips at the tail"}])
-    record_cut_review(p, "I002", reviewer=REVIEWER, methods=CUT_METHODS)
-    record_transition_review(p, "T001", reviewer=REVIEWER,
+    record_cut_review(p, "I002", reviewer=FILM_APPROVER, methods=CUT_METHODS)
+    record_transition_review(p, "T001", reviewer=FILM_APPROVER,
                              methods=TRANSITION_METHODS)
     status = review_status(p)
     assert status["targets"]["I001"]["state"] == "CHANGES_REQUIRED"
@@ -161,8 +162,8 @@ def test_stale_cut_review_blocks(tmp_path):
     assert not list(p.glob("builds/B*"))
     # Fresh reviews of the current content restore the gate; the transition
     # binds both sequence digests, so it needs a new binding too.
-    record_cut_review(p, "I001", reviewer=REVIEWER, methods=CUT_METHODS)
-    record_transition_review(p, "T001", reviewer=REVIEWER,
+    record_cut_review(p, "I001", reviewer=FILM_APPROVER, methods=CUT_METHODS)
+    record_transition_review(p, "T001", reviewer=FILM_APPROVER,
                              methods=TRANSITION_METHODS)
     assert all(row["state"] == "CURRENT"
                for row in review_status(p)["targets"].values())
@@ -203,18 +204,18 @@ def test_missing_member_blocks_before_reviews(tmp_path):
 def test_review_record_validation(tmp_path):
     p = approved_project(tmp_path)
     with pytest.raises(FilmError, match="required methods"):
-        record_cut_review(p, "I001", reviewer=REVIEWER,
+        record_cut_review(p, "I001", reviewer=FILM_APPROVER,
                           methods=["SLOW_SPAN_REVIEW"])
     with pytest.raises(FilmError, match="named reviewer"):
         record_cut_review(p, "I001", reviewer="  ", methods=CUT_METHODS)
     with pytest.raises(FilmError, match="Unknown review methods"):
-        record_cut_review(p, "I001", reviewer=REVIEWER,
+        record_cut_review(p, "I001", reviewer=FILM_APPROVER,
                           methods=["I_JUST_LOOKED"])
     with pytest.raises(FilmError, match="No timeline entry"):
-        record_cut_review(p, "I999", reviewer=REVIEWER, methods=CUT_METHODS)
+        record_cut_review(p, "I999", reviewer=FILM_APPROVER, methods=CUT_METHODS)
     # An accepted limitation needs an explicit reason and scope.
     record_cut_review(
-        p, "I001", reviewer=REVIEWER, methods=CUT_METHODS,
+        p, "I001", reviewer=FILM_APPROVER, methods=CUT_METHODS,
         accepted_limitations=[{"disposition": "INTENTIONAL",
                                "note": "fixture note",
                                "reason": "fixture reason",
@@ -405,7 +406,7 @@ def test_film_review_binds_the_sealed_manifest(tmp_path):
     manifest_sha = digest(folder / "build.json")
     sealed_files = sorted(f.relative_to(folder)
                           for f in folder.rglob("*") if f.is_file())
-    review = record_film_review(p, record["build_id"], reviewer=REVIEWER,
+    review = record_film_review(p, record["build_id"], reviewer=FILM_APPROVER,
                                 methods=FILM_METHODS)
     assert review["scope"] == "FINAL_FILM"
     assert review["build_manifest_sha256"] == manifest_sha
@@ -434,7 +435,7 @@ def test_film_review_binds_the_sealed_manifest(tmp_path):
     compile_preview(p2)
     draft_id = newest_build(p2)[1]["build_id"]
     with pytest.raises(FilmError, match="Build 2"):
-        record_film_review(p2, draft_id, reviewer=REVIEWER,
+        record_film_review(p2, draft_id, reviewer=FILM_APPROVER,
                            methods=FILM_METHODS)
 
 
@@ -498,7 +499,7 @@ def test_cli_review_commands(tmp_path):
                      "--methods", "CUT_FULL_SPEED_PLAYBACK"]) == 0
     folder, record, _ = make_build(p)
     assert cli.main(["approve-film", str(p), "--build", record["build_id"],
-                     "--reviewer", REVIEWER,
+                     "--reviewer", FILM_APPROVER,
                      "--methods",
                      "FULL_SPEED_WHOLE_FILM,TECHNICAL_VALIDATION"]) == 0
     assert film_review_status(p, record["build_id"])["state"] == "CURRENT"
@@ -515,7 +516,7 @@ def test_cli_review_commands(tmp_path):
 def test_film_review_stale_when_delivery_pixels_change(tmp_path):
     p = approved_project(tmp_path)
     folder, record, _ = make_build(p)
-    record_film_review(p, record["build_id"], reviewer=REVIEWER,
+    record_film_review(p, record["build_id"], reviewer=FILM_APPROVER,
                        methods=FILM_METHODS)
     assert film_review_status(p, record["build_id"])["state"] == "CURRENT"
     # Same file name, different pixels: the recomputed frame-sequence root
@@ -525,14 +526,14 @@ def test_film_review_stale_when_delivery_pixels_change(tmp_path):
     assert film_review_status(p, record["build_id"])["state"] == "STALE"
     # A build that fails inventory cannot be bound to a new review either.
     with pytest.raises(FilmError, match="inventory"):
-        record_film_review(p, record["build_id"], reviewer=REVIEWER,
+        record_film_review(p, record["build_id"], reviewer=FILM_APPROVER,
                            methods=FILM_METHODS)
 
 
 def test_film_review_stale_when_archived_font_changes(tmp_path):
     p = approved_project(tmp_path)
     folder, record, _ = make_build(p)
-    record_film_review(p, record["build_id"], reviewer=REVIEWER,
+    record_film_review(p, record["build_id"], reviewer=FILM_APPROVER,
                        methods=FILM_METHODS)
     assert film_review_status(p, record["build_id"])["state"] == "CURRENT"
     exported = Path(record["subtitles"]["font"]["exported_path"]).name
@@ -545,7 +546,7 @@ def test_film_review_stale_when_archived_font_changes(tmp_path):
 def test_film_review_stale_when_archived_lyrics_change(tmp_path):
     p = approved_project(tmp_path)
     folder, record, _ = make_build(p)
-    record_film_review(p, record["build_id"], reviewer=REVIEWER,
+    record_film_review(p, record["build_id"], reviewer=FILM_APPROVER,
                        methods=FILM_METHODS)
     assert film_review_status(p, record["build_id"])["state"] == "CURRENT"
     ass = folder / "lyrics.ass"
@@ -596,41 +597,41 @@ def test_film_review_refuses_escaping_identifiers(tmp_path):
     build_id = record["build_id"]
     for deliverable in ("../x", "snapshot/../build.json", "/etc/passwd"):
         with pytest.raises(FilmError, match="deliverable"):
-            record_film_review(p, build_id, reviewer=REVIEWER,
+            record_film_review(p, build_id, reviewer=FILM_APPROVER,
                                methods=FILM_METHODS, deliverable=deliverable)
     for bad_id in ("../outside", "B0001/x", "draft"):
         with pytest.raises(FilmError, match="build id"):
-            record_film_review(p, bad_id, reviewer=REVIEWER,
+            record_film_review(p, bad_id, reviewer=FILM_APPROVER,
                                methods=FILM_METHODS)
     with pytest.raises(FilmError, match="No build"):
-        record_film_review(p, "B9999", reviewer=REVIEWER,
+        record_film_review(p, "B9999", reviewer=FILM_APPROVER,
                            methods=FILM_METHODS)
     # The sealed build is untouched and still reviewable.
-    record_film_review(p, build_id, reviewer=REVIEWER, methods=FILM_METHODS)
+    record_film_review(p, build_id, reviewer=FILM_APPROVER, methods=FILM_METHODS)
     assert film_review_status(p, build_id)["state"] == "CURRENT"
 
 
 def test_later_fix_required_supersedes_earlier_approval(tmp_path):
     """Latest decision on identical digests wins — for cuts and the film."""
     p = approved_project(tmp_path)
-    record_cut_review(p, "I001", reviewer=REVIEWER, methods=CUT_METHODS)
+    record_cut_review(p, "I001", reviewer=FILM_APPROVER, methods=CUT_METHODS)
     assert review_status(p)["targets"]["I001"]["state"] == "CURRENT"
     record_cut_review(
-        p, "I001", reviewer=REVIEWER, methods=CUT_METHODS,
+        p, "I001", reviewer=FILM_APPROVER, methods=CUT_METHODS,
         decision="FIX_REQUIRED",
         unresolved_major_issues=[{"disposition": "FIX_REQUIRED",
                                   "note": "edge flicker at the cut point"}])
     assert review_status(p)["targets"]["I001"]["state"] == "CHANGES_REQUIRED"
     # A still-later approval on the same digests restores the gate.
-    record_cut_review(p, "I001", reviewer=REVIEWER, methods=CUT_METHODS)
+    record_cut_review(p, "I001", reviewer=FILM_APPROVER, methods=CUT_METHODS)
     assert review_status(p)["targets"]["I001"]["state"] == "CURRENT"
 
     folder, record, _ = make_build(p)
-    record_film_review(p, record["build_id"], reviewer=REVIEWER,
+    record_film_review(p, record["build_id"], reviewer=FILM_APPROVER,
                        methods=FILM_METHODS)
     assert film_review_status(p, record["build_id"])["state"] == "CURRENT"
     record_film_review(
-        p, record["build_id"], reviewer=REVIEWER, methods=FILM_METHODS,
+        p, record["build_id"], reviewer=FILM_APPROVER, methods=FILM_METHODS,
         decision="FIX_REQUIRED",
         unresolved_major_issues=[{"disposition": "FIX_REQUIRED",
                                   "note": "audio pop near the join"}])

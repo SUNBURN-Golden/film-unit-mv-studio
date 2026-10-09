@@ -222,6 +222,9 @@ def main(argv=None):
     approve_film.add_argument("--build", required=True)
     approve_film.add_argument("--deliverable", default="MASTER_SUBBED.mp4")
     approve_film.add_argument("--reviewer", required=True)
+    approve_film.add_argument("--reviewer-kind", choices=["HUMAN", "SYNTHETIC_FIXTURE"],
+                              default="HUMAN",
+                              help="HUMAN requires 박준태 or an unexpired delegate")
     approve_film.add_argument("--methods", required=True, help="Comma-separated review methods")
     approve_film.add_argument("--decision", choices=["APPROVED", "FIX_REQUIRED"], default="APPROVED")
     review_list = sub.add_parser("animation-reviews", help="Show per-cut/per-transition review state (CURRENT/STALE/UNREVIEWED)")
@@ -665,11 +668,11 @@ def main(argv=None):
                 result = record_transition_review(a.project, a.target, reviewer=a.reviewer,
                                                   methods=a.methods.split(","), decision=a.decision)
         elif a.command == "approve-film":
-            from .animation_review import record_film_review
-            with project_mutex(a.project):
-                result = record_film_review(a.project, a.build, reviewer=a.reviewer,
-                                            methods=a.methods.split(","),
-                                            deliverable=a.deliverable, decision=a.decision)
+            from .w00_gate import approve_delivery
+            result = approve_delivery(
+                a.project, a.build, a.deliverable, approver=a.reviewer,
+                reviewer_kind=a.reviewer_kind, methods=a.methods.split(","),
+                decision=a.decision)
         elif a.command == "animation-reviews":
             from .animation_review import review_status
             result = review_status(a.project)

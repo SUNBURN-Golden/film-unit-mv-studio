@@ -4,6 +4,11 @@ New-mode JSON documents carry `document_type` and `schema_version`, are stored
 as CANON_JSON_V1 bytes plus one trailing LF, and reject unknown or future
 versions. This module owns the canonical encoding and the animation_timeline
 validator; it creates no assets, approvals or runtime state.
+
+`PROVISIONAL_DOCUMENT_TYPES` are implemented and readable at schema_version 1,
+and their fields are recorded in docs/adr/0002-provisional-document-types.md.
+That amendment is not an A3 (non-author) review and not a release: its review
+state stays PENDING. ADR 0001's prohibitions still win if the two disagree.
 """
 from pathlib import Path
 import json
@@ -48,6 +53,26 @@ DOCUMENT_SCHEMAS = {
     "delivery_bundle": 1,
     "delivery_review_scope": 1,
 }
+
+# Implemented types absent from ADR 0001. Field contracts live in ADR 0002,
+# which is provisional until a non-author review (review state PENDING).
+PROVISIONAL_DOCUMENT_TYPES = frozenset({
+    "animation_waves",
+    "composite_recipe",
+    "animation_work_packet",
+    "animation_draft_frames",
+    "subscription_entitlement",
+    "subscription_packet",
+    "subscription_result",
+    "capability_measurement",
+    "replay_packet",
+    "w00_pilot",
+    "approver_delegation",
+    "w00_spend_approval",
+    "delivery_approval",
+    "delivery_bundle",
+    "delivery_review_scope",
+})
 
 TIMELINE_FIELDS = {"document_type", "schema_version", "target_frames", "entries"}
 ENTRY_FIELDS = {"instance_id", "shot_id", "sequence_revision", "used_source_range",

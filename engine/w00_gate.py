@@ -37,9 +37,10 @@ work; the records are protocol evidence. Synthetic reviewers are declared
 reported facets stay qualification UNQUALIFIED, acceptance PENDING,
 release NOT_AUTHORIZED.
 
-Schema note: the `w00_pilot`, `approver_delegation`, `w00_spend_approval`
-and `delivery_approval` record types are ANIM-022 additions pending an
-ADR amendment in docs/adr.
+Schema note: `w00_pilot`, `approver_delegation`, `w00_spend_approval` and
+`delivery_approval` are provisional types in
+docs/adr/0002-provisional-document-types.md. Non-author review of that
+amendment is PENDING. They are not an ADR 0001 ratification or a release.
 """
 import hashlib
 import json
@@ -720,7 +721,8 @@ def approve_delivery(project, build_id, deliverable, *, approver,
             methods=list(methods or FILM_METHODS), deliverable=deliverable,
             decision=decision,
             unresolved_major_issues=unresolved_major_issues,
-            accepted_limitations=accepted_limitations)
+            accepted_limitations=accepted_limitations,
+            allow_ungoverned=(reviewer_kind != "HUMAN"), now_ms=now_ms)
         audit = {"document_type": DELIVERY_TYPE, "schema_version": 1,
                  "approval_id": "", "build_id": build_id,
                  "deliverable": deliverable,

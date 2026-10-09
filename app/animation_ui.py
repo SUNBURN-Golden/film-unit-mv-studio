@@ -35,7 +35,6 @@ from engine.animation_locks import (WAVES_PATH, declare_waves, load_waves,
                                     record_wave_lock, route_status)
 from engine.animation_preview import compile_draft_preview
 from engine.animation_review import (film_review_status, record_cut_review,
-                                     record_film_review,
                                      record_transition_review, review_status)
 from engine.animation_schema import load_animation_timeline
 from engine.builds import list_builds
@@ -59,7 +58,7 @@ CONTROL_ROLES = ["layout", "keypose", "breakdown", "pose", "first_frame",
                  "inbetween"]
 STATE_KO = {"CURRENT": "현재", "STALE": "낡음", "UNREVIEWED": "미검수",
             "UNRESOLVED": "미해결", "CHANGES_REQUIRED": "수정 필요",
-            "UNLOCKED": "미잠금"}
+            "UNGOVERNED": "승인 권한 없음", "UNLOCKED": "미잠금"}
 
 
 def _jsonable(value):
@@ -552,10 +551,14 @@ def _route(p, waves_doc, route):
         _do(run, f"{initial['wave']} 경로 결정을 기록했습니다")
 
 
-def _approve_film(p, build, reviewer, decision):
+def _approve_film(p, build, reviewer, decision, reviewer_kind="HUMAN"):
     """UI gate for approve-film: exact FINAL_CANDIDATE build + current
-    (non-stale) cut/transition reviews; the engine binding is recorded by
-    record_film_review itself."""
+    (non-stale) cut/transition reviews, then the governed delivery path.
+
+    `approve_delivery` records the FINAL_FILM review and the delivery
+    audit. A HUMAN name other than 박준태 or an unexpired delegate is
+    refused and cannot become CURRENT.
+    """
     build_id = build["build_id"]
     if (build.get("document_type") != "animation_build"
             or build.get("schema_version") != 2
@@ -574,11 +577,11 @@ def _approve_film(p, build, reviewer, decision):
     if pending:
         raise FilmError("현재 검수가 아닌 대상이 있어 최종 승인을 기록할 수 "
                         "없습니다: " + "; ".join(pending))
-    with project_mutex(p):
-        return record_film_review(
-            p, build_id, reviewer=reviewer,
-            methods=["FULL_SPEED_WHOLE_FILM", "TECHNICAL_VALIDATION"],
-            deliverable="MASTER_SUBBED.mp4", decision=decision)
+    return approve_delivery(
+        p, build_id, "MASTER_SUBBED.mp4", approver=reviewer,
+        reviewer_kind=reviewer_kind,
+        methods=["FULL_SPEED_WHOLE_FILM", "TECHNICAL_VALIDATION"],
+        decision=decision)
 
 
 def _w00_gate(p):
@@ -770,17 +773,23 @@ def _output(p, entries, locks, route, reviews):
         st.caption(f"{pick['build_id']}의 FINAL_FILM 검수: "
                    f"{STATE_KO.get(film['state'], film['state'])}")
     reviewer = st.text_input("최종 검토자", key="an_film_reviewer")
-    st.caption("최종 승인은 정확한 빌드와 현재 검수에 묶이는 protocol 기록"
-               "입니다 — 실제 작품 승인·qualification·release를 대신하지 "
+    reviewer_kind = st.selectbox(
+        "검토자 종류", ["HUMAN", "SYNTHETIC_FIXTURE"], key="an_film_kind")
+    st.caption("최종 승인은 정확한 빌드와 현재 검수에 묶이며, HUMAN은 "
+               "박준태 또는 만료되지 않은 위임자만 CURRENT가 됩니다. "
+               "그 밖의 이름은 거절됩니다. 합성 fixture 기록은 CURRENT가 "
+               "아니며, 실제 작품 승인·qualification·release를 대신하지 "
                "않습니다.")
     c1, c2 = st.columns(2)
     if c1.button("최종 승인 기록 (approve-film)", key="an_final_ok"):
-        _do(lambda: _approve_film(p, pick, reviewer, "APPROVED"),
+        _do(lambda: _approve_film(p, pick, reviewer, "APPROVED",
+                                  reviewer_kind),
             f"{pick['build_id']} 최종 승인을 기록했습니다")
-    c1.caption("protocol 검토 기록 전용 — governed 전달 승인(박준태 또는 "
-               "기록된 위임자)은 아래 전달 파일별 승인에서 진행합니다.")
+    c1.caption("approve-film은 전달 승인 경로로 기록합니다. 임의 검토자 "
+               "이름은 CURRENT가 되지 않습니다.")
     if c2.button("최종 수정 필요 기록", key="an_final_fix"):
-        _do(lambda: _approve_film(p, pick, reviewer, "FIX_REQUIRED"),
+        _do(lambda: _approve_film(p, pick, reviewer, "FIX_REQUIRED",
+                                  reviewer_kind),
             f"{pick['build_id']} 수정 필요를 기록했습니다")
     if pick.get("document_type") == "animation_build" \
             and pick.get("status") == "COMPLETE":

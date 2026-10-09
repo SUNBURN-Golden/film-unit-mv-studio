@@ -539,7 +539,7 @@ def test_final_chain_lock_candidate_review(tmp_path):
     assert stage["stage"] == "NEEDS_FINAL_REVIEW"
     assert stage["build_id"] == build_id
     assert len(list(p.glob("builds/B*"))) == 1
-    review = record_film_review(p, build_id, reviewer=REVIEWER,
+    review = record_film_review(p, build_id, reviewer="박준태",
                                 methods=FILM_METHODS)
     stage = autopilot(p)
     assert stage["stage"] == "FINAL_APPROVED"
