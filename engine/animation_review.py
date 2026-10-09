@@ -522,16 +522,30 @@ def record_transition_review(project, transition_id, *, reviewer, methods,
     return append_review(p, record)
 
 
+def _final_film_governor(project, reviewer, now_ms=None):
+    """ADR 0001 §7: a FINAL_FILM approval is current only for 박준태 or an
+    unexpired delegate covering DELIVERY_APPROVAL."""
+    from .w00_gate import _approver_verdict
+    return _approver_verdict(project, reviewer, "DELIVERY_APPROVAL", now_ms)
+
+
 def record_film_review(project, build_id, *, reviewer, methods,
                        deliverable="MASTER_SUBBED.mp4", decision="APPROVED",
                        unresolved_major_issues=None,
-                       accepted_limitations=None):
+                       accepted_limitations=None, allow_ungoverned=False,
+                       now_ms=None):
     """Append a FINAL_FILM review bound to a sealed Build 2 manifest.
 
     Reads the immutable build inputs — it never writes into the sealed
     build directory. Binding the deliverable sha256, frame-sequence root,
     manifest digest, edit digest and the audio/lyrics/font digests makes
     this record stale the moment any of them is replaced.
+
+    An APPROVED record is a current final approval only when the reviewer
+    is the primary approver or an unexpired delegate. Any other name is
+    refused here. `allow_ungoverned` writes the protocol record anyway
+    (the synthetic delivery path); `film_review_status` still reports
+    that record as UNGOVERNED, never CURRENT.
     """
     p = Path(project)
     require_animation_profile(p)
@@ -549,6 +563,10 @@ def record_film_review(project, build_id, *, reviewer, methods,
     target = _deliverable_path(folder, deliverable)
     if not target.is_file():
         raise FilmError(f"Build {build_id} has no deliverable {deliverable}")
+    reviewer = str(reviewer or "").strip()
+    governed, why, _delegation = _final_film_governor(p, reviewer, now_ms)
+    if not governed and not allow_ungoverned:
+        raise FilmError(why)
     fields = {
         "build_id": build_id,
         "build_manifest_sha256": digest(record_path),
@@ -618,12 +636,14 @@ def _film_binding_current(folder, record):
         return False
 
 
-def film_review_status(project, build_id):
+def film_review_status(project, build_id, now_ms=None):
     """The current FINAL_FILM approval for a build, if one exists.
 
     A record authorizes only while every bound digest still verifies on
     disk; among the records that still bind, the latest decision wins — a
     later FIX_REQUIRED on the same digests supersedes an earlier APPROVED.
+    An approving record whose reviewer is neither the primary approver nor
+    an unexpired delegate is UNGOVERNED, never CURRENT.
     """
     p = Path(project)
     folder = _build_folder(p, build_id)
@@ -640,6 +660,13 @@ def film_review_status(project, build_id):
                  and _film_binding_current(folder, r)]
     latest = bound[-1] if bound else None
     approved = latest is not None and _approves(latest)
+    if approved:
+        governed, why, _delegation = _final_film_governor(
+            p, latest["reviewer"], now_ms)
+        if not governed:
+            return {"state": "UNGOVERNED", "review_id": None,
+                    "reviewer": latest["reviewer"], "reason": why,
+                    "records": len(records)}
     return {"state": ("CURRENT" if approved
                       else "CHANGES_REQUIRED" if bound else "STALE"),
             "review_id": latest["review_id"] if approved else None,

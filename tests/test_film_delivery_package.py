@@ -117,7 +117,7 @@ def _seal(project, build_id="B0001", *, mode="FINAL_CANDIDATE", draft=False,
 
 def _approve(project, build_id="B0001"):
     return record_film_review(
-        project, build_id, reviewer="Fixture Reviewer",
+        project, build_id, reviewer="박준태",
         methods=["FULL_SPEED_WHOLE_FILM", "TECHNICAL_VALIDATION"])
 
 

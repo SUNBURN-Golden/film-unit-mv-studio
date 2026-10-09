@@ -37,9 +37,10 @@ work; the records are protocol evidence. Synthetic reviewers are declared
 reported facets stay qualification UNQUALIFIED, acceptance PENDING,
 release NOT_AUTHORIZED.
 
-Schema note: the `w00_pilot`, `approver_delegation`, `w00_spend_approval`
-and `delivery_approval` record types are ANIM-022 additions pending an
-ADR amendment in docs/adr.
+Schema note: `w00_pilot`, `approver_delegation`, `w00_spend_approval` and
+`delivery_approval` are provisional types in
+docs/adr/0002-provisional-document-types.md. Non-author review of that
+amendment is PENDING. They are not an ADR 0001 ratification or a release.
 """
 import hashlib
 import json
@@ -703,6 +704,11 @@ def approve_delivery(project, build_id, deliverable, *, approver,
     record naming the approver. Approving MASTER_CLEAN.mp4 never approves
     MASTER_SUBBED.mp4: each binds its own artifact hash. Nothing is written
     into the sealed build directory.
+
+    `film_review_status` judges the review by reviewer name alone. A
+    SYNTHETIC_FIXTURE record under the primary approver or an unexpired
+    delegate would therefore be reported CURRENT, so that name is refused
+    here. The audit still stores `reviewer_kind`.
     """
     p = Path(project)
     if deliverable not in DELIVERABLES:
@@ -715,12 +721,21 @@ def approve_delivery(project, build_id, deliverable, *, approver,
         reviewer_kind, delegation_ref = _check_reviewer(
             p, approver, reviewer_kind, "DELIVERY_APPROVAL", delegation_id,
             now_ms)
+        if reviewer_kind != "HUMAN":
+            governed, _why, _ref = _approver_verdict(
+                p, approver, "DELIVERY_APPROVAL", now_ms)
+            if governed:
+                raise FilmError(
+                    "SYNTHETIC_FIXTURE cannot use the primary approver or "
+                    "an unexpired delegate; that name would make the "
+                    "FINAL_FILM review CURRENT")
         review = record_film_review(
             p, build_id, reviewer=approver,
             methods=list(methods or FILM_METHODS), deliverable=deliverable,
             decision=decision,
             unresolved_major_issues=unresolved_major_issues,
-            accepted_limitations=accepted_limitations)
+            accepted_limitations=accepted_limitations,
+            allow_ungoverned=(reviewer_kind != "HUMAN"), now_ms=now_ms)
         audit = {"document_type": DELIVERY_TYPE, "schema_version": 1,
                  "approval_id": "", "build_id": build_id,
                  "deliverable": deliverable,

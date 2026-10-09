@@ -743,13 +743,15 @@ def test_protocol_review_never_hides_the_governed_approval(tmp_path):
             "MASTER_SUBBED.mp4"]
 
     def protocol(decision, **kw):
-        # The approve-film path: a FINAL_FILM review under any name.
+        # A non-governing protocol record. An arbitrary name is not CURRENT.
         return record_film_review(p, build_id, reviewer="anyone",
                                   methods=["FULL_SPEED_WHOLE_FILM",
                                            "TECHNICAL_VALIDATION"],
-                                  decision=decision, **kw)
+                                  decision=decision, allow_ungoverned=True,
+                                  **kw)
 
     later = protocol("APPROVED")
+    assert film_review_status(p, build_id)["state"] == "UNGOVERNED"
     row = subbed()
     # A later re-approval without the audit keeps the governed approval.
     assert row["state"] == "CURRENT" and row["review_id"] \

@@ -33,8 +33,12 @@ CI(`.github/workflows/ci.yml`)는 Python 3.11과 3.12 잡에서 이미 `ffmpeg`�
 | NVIDIA_NATIVE | UNQUALIFIED | 하드웨어 미검증. 드라이버는 변경하지 않는다 |
 | VIDEOTOOLBOX_NATIVE | UNQUALIFIED | 하드웨어·호스트 미검증. 드라이버는 변경하지 않는다 |
 | SERVICE | UNQUALIFIED | 서비스 호스트 미검증. 드라이버는 변경하지 않는다 |
-| NO_FFMPEG_ENCODING | WAIVED | 소유자 면제. 비-FFmpeg 인코드 성공은 NOT_DEMONSTRATED |
+| NO_FFMPEG_ENCODING | WAIVED (채팅 기록) | 소유자 채팅 메모. 비-FFmpeg 인코드 성공은 NOT_DEMONSTRATED. 이 메모는 pinned plan의 수용 항목을 닫지 않는다 |
 | NO_FFMPEG_RUNTIME | NOT_DEMONSTRATED | mux/verify를 포함한 비-FFmpeg 런타임 프로브는 없다. 위 면제가 이 항목을 보여 주지는 않는다 |
+
+## 수용 항목은 열려 있다
+
+채팅 지시 "FFmpeg 넣어"는 증거 JSON에 `requirement_state: WAIVED`로 남아 있다. 그 기록은 `.aiops/program.json`의 anim-015 완료 기준(`NO_FFMPEG_ENCODING 경로 실제 성공`)과 ADR 0001 §10/§11을 개정하지 않았고, `docs/decisions/`에 그 면제를 비준하는 사용자 결정도 없다. anim-015는 따라서 개발 병합과 열린 수용(`MERGED_WITH_OPEN_ACCEPTANCE`)이다. 시연은 `NOT_DEMONSTRATED`이고, 채팅 면제를 노드 종료나 자격 완료로 세지 않는다. 엔진 보고는 `engine.anim015_status.anim015_acceptance_status`다. qualification은 UNQUALIFIED, release는 NOT_AUTHORIZED다.
 
 ## 라이선스
 

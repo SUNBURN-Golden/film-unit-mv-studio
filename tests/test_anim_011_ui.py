@@ -217,7 +217,7 @@ def test_one_cut_flow_to_final_approval(screen):
     candidate = next(b for b in list_builds(project)
                      if b.get("mode") == "FINAL_CANDIDATE")
     sel(at, "an_final_build").select(candidate)
-    ti(at, "an_film_reviewer").set_value(FILM_REVIEWER)
+    ti(at, "an_film_reviewer").set_value("박준태")
     button(at, "an_final_ok").click().run()
     assert not at.exception
     assert any("최종 승인" in s for s in successes(at))
