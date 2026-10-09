@@ -444,6 +444,16 @@ def main(argv=None):
             p.add_argument("--notes", required=True)
         if name == "claim-job":
             p.add_argument("job")
+    model = sub.add_parser("model", help="Pinned ONNX weights: fetch, verify, status. No weights in git or CI; never qualifies a capability")
+    model_sub = model.add_subparsers(dest="model_action", required=True)
+    model_fetch = model_sub.add_parser("fetch", help="Download one pinned model over https; a hash or size mismatch is removed and not cached")
+    model_fetch.add_argument("model_id")
+    model_fetch.add_argument("--dest", help="Cache root (default: $FILMUNIT_MODEL_DIR or ~/.cache/filmunit/models)")
+    model_verify = model_sub.add_parser("verify", help="PRESENT, MISSING or MISMATCH; never deletes")
+    model_verify.add_argument("model_id")
+    model_status = model_sub.add_parser("status", help="Verify state and capability evidence; qualification stays UNQUALIFIED")
+    model_status.add_argument("model_id", nargs="?")
+    model_status.add_argument("--operation", default="inspect_pinned_weights")
     a = parser.parse_args(argv)
     try:
         if a.command in {"compile-preview", "compile-final"}:
@@ -964,6 +974,18 @@ def main(argv=None):
             from .animation_compiler import encode_build_delivery
             result = encode_build_delivery(a.build_dir, a.driver, a.output,
                                            import_path=a.import_path)
+        elif a.command == "model":
+            from .model_registry import fetch as fetch_model
+            from .model_registry import status as model_status
+            from .model_registry import verify as verify_model
+            if a.model_action == "fetch":
+                result = fetch_model(a.model_id, a.dest)
+            elif a.model_action == "verify":
+                result = verify_model(a.model_id)
+            elif a.model_action == "status":
+                result = model_status(a.model_id, operation=a.operation)
+            else:
+                raise FilmError(f"Unknown model action: {a.model_action}")
         elif a.command == "import-asset":
             from .compiler import import_asset
             result = import_asset(a.project, a.shot, a.source, kind=a.kind,
