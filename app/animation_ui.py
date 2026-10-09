@@ -777,9 +777,9 @@ def _output(p, entries, locks, route, reviews):
         "검토자 종류", ["HUMAN", "SYNTHETIC_FIXTURE"], key="an_film_kind")
     st.caption("최종 승인은 정확한 빌드와 현재 검수에 묶이며, HUMAN은 "
                "박준태 또는 만료되지 않은 위임자만 CURRENT가 됩니다. "
-               "그 밖의 이름은 거절됩니다. 합성 fixture 기록은 CURRENT가 "
-               "아니며, 실제 작품 승인·qualification·release를 대신하지 "
-               "않습니다.")
+               "그 밖의 HUMAN 이름은 거절됩니다. 합성 fixture는 그 이름을 "
+               "쓸 수 없어 CURRENT가 되지 않으며, 실제 작품 승인·"
+               "qualification·release를 대신하지 않습니다.")
     c1, c2 = st.columns(2)
     if c1.button("최종 승인 기록 (approve-film)", key="an_final_ok"):
         _do(lambda: _approve_film(p, pick, reviewer, "APPROVED",

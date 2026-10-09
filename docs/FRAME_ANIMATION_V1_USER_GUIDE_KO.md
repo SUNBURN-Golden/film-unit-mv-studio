@@ -101,7 +101,7 @@ DRAFT이며, 이 모드를 실행하는 것만으로 실제 작품 승인·출�
 
 ADR 0001 스키마에 없는 문서 15종(`animation_waves`, `composite_recipe`, `animation_work_packet`, `animation_draft_frames`, `subscription_entitlement`, `subscription_packet`, `subscription_result`, `capability_measurement`, `replay_packet`, `w00_pilot`, `approver_delegation`, `w00_spend_approval`, `delivery_approval`, `delivery_bundle`, `delivery_review_scope`)은 [ADR 0002](adr/0002-provisional-document-types.md)에 필드가 적혀 있다. 비작성자 검토는 PENDING이다. 이 기록을 자격이나 출시로 읽지 않는다.
 
-FINAL_FILM이 CURRENT가 되려면 검토자가 박준태이거나, 그 사람이 기록하고 아직 만료되지 않은 위임자여야 한다. 그 밖의 이름은 `UNGOVERNED`이며 CURRENT가 아니다. 화면과 CLI의 approve-film은 이 규칙을 적용하는 전달 승인 경로를 탄다.
+FINAL_FILM이 CURRENT가 되려면 검토자가 박준태이거나, 그 사람이 기록하고 아직 만료되지 않은 위임자여야 한다. 그 밖의 이름은 `UNGOVERNED`이며 CURRENT가 아니다. 화면과 CLI의 approve-film은 이 규칙을 적용하는 전달 승인 경로를 탄다. 합성 fixture는 그 이름을 쓸 수 없다.
 
 anim-015의 `NO_FFMPEG_ENCODING` 수용 항목은 열려 있다. 2026-10-08 채팅 메모는 그 항목을 닫지 않으며, 비-FFmpeg 인코드 시연은 NOT_DEMONSTRATED다.
 

@@ -258,7 +258,7 @@ def animation_autopilot(project, progress=None):
                       "build_id": result["build_id"],
                       "build_dir": result["build_dir"],
                       "next": "the sealed candidate still needs an explicit "
-                              "final-film review (review-film)"})
+                              "final-film review (approve-film)"})
     film = film_review_status(p, candidate["build_id"])
     if film["state"] == "CURRENT":
         return _gate({"stage": "FINAL_APPROVED", "build_id": candidate["build_id"],
@@ -267,6 +267,8 @@ def animation_autopilot(project, progress=None):
                               "qualification and release stay PENDING/UNQUALIFIED"})
     return _gate({"stage": "NEEDS_FINAL_REVIEW",
                   "build_id": candidate["build_id"], "film": film,
-                  "next": f"python -m engine.cli review-film {target} "
-                          f"{candidate['build_id']} --reviewer <name>"})
+                  "next": f"python -m engine.cli approve-film {target} "
+                          f"--build {candidate['build_id']} "
+                          "--reviewer <name> --methods "
+                          "FULL_SPEED_WHOLE_FILM,TECHNICAL_VALIDATION"})
 

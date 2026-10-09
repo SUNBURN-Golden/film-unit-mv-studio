@@ -15,7 +15,7 @@ from engine.animation_review import film_review_status, record_film_review
 from engine.animation_schema import (PROVISIONAL_DOCUMENT_TYPES,
                                      check_document)
 from engine.core import FilmError
-from engine.w00_gate import record_delegation
+from engine.w00_gate import approve_delivery, record_delegation
 from test_anim_006 import FILM_METHODS, approved_project, make_build
 from test_compiler_v03 import fixture_project
 
@@ -84,6 +84,27 @@ def test_arbitrary_reviewer_never_yields_current_film_approval(tmp_path):
     assert ungoverned["state"] == "UNGOVERNED"
     assert ungoverned["state"] != "CURRENT"
     assert ungoverned["review_id"] is None
+    # A synthetic delivery stored under the primary name would be
+    # indistinguishable from a human approval: film_review_status reads
+    # only the reviewer name. That combination is refused.
+    with pytest.raises(FilmError, match="SYNTHETIC_FIXTURE"):
+        approve_delivery(p, build_id, "MASTER_SUBBED.mp4",
+                         approver="박준태",
+                         reviewer_kind="SYNTHETIC_FIXTURE")
+    assert film_review_status(p, build_id)["state"] == "UNGOVERNED"
+    synthetic = approve_delivery(
+        p, build_id, "MASTER_SUBBED.mp4",
+        approver="synthetic fixture reviewer",
+        reviewer_kind="SYNTHETIC_FIXTURE")
+    assert synthetic["approval"]["reviewer_kind"] == "SYNTHETIC_FIXTURE"
+    assert synthetic["review"]["reviewer"] != "박준태"
+    assert film_review_status(p, build_id)["state"] == "UNGOVERNED"
+    assert cli.main(["approve-film", str(p), "--build", build_id,
+                     "--reviewer", "박준태",
+                     "--reviewer-kind", "SYNTHETIC_FIXTURE",
+                     "--methods",
+                     "FULL_SPEED_WHOLE_FILM,TECHNICAL_VALIDATION"]) == 1
+    assert film_review_status(p, build_id)["state"] == "UNGOVERNED"
 
     primary = record_film_review(p, build_id, reviewer="박준태",
                                  methods=FILM_METHODS)
