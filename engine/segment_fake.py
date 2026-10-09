@@ -28,6 +28,11 @@ its `behaviors` switches let a test drive every protocol branch:
 
 Nothing in this file is a real provider qualification: outputs are FAKE and
 UNQUALIFIED regardless of how convincingly the protocol ran.
+
+``rife_onnx`` is also registered here. It is a local CPU ONNX interpolator
+(LOCAL_TOOL, UNQUALIFIED), not a blend and not a stand-in for this fake.
+A missing runtime or missing weights refuse; they never fall through to
+``FakeSegmentAdapter``.
 """
 import hashlib
 from fractions import Fraction
@@ -363,7 +368,7 @@ GEMINI_VIDEO_CAPABILITIES = {
     "cost_unit": "USD",
 }
 
-SEGMENT_ADAPTERS = {"fake_segment", "gemini_video"}
+SEGMENT_ADAPTERS = {"fake_segment", "gemini_video", "rife_onnx"}
 
 
 def make_adapter(project, adapter_id):
@@ -372,5 +377,8 @@ def make_adapter(project, adapter_id):
         return FakeSegmentAdapter(project)
     if adapter_id == "gemini_video":
         return DeclaredAdapter(GEMINI_VIDEO_CAPABILITIES)
+    if adapter_id == "rife_onnx":
+        from .interpolation.rife_onnx import RifeSegmentAdapter
+        return RifeSegmentAdapter(project)
     raise FilmError(f"Unknown segment adapter {adapter_id!r}; v1 declares "
                     f"{sorted(SEGMENT_ADAPTERS)}")
