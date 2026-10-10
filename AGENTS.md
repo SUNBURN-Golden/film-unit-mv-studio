@@ -40,6 +40,28 @@ approval, build-history/reproducibility and Preview/Final rules remain
 authoritative. Paid generation or production approval is never inferred from
 this control-plane policy.
 
+## Cloud Agent environment
+
+The saved environment installs this repository editable with the `test` extra
+into `~/.local/film-unit-venv`. `python` and `python3` on `PATH` are wrappers
+that exec that interpreter. Do not replace them with a symlink: Python would
+resolve the link to `/usr/bin/python3` and ignore the virtualenv.
+
+System packages match CI: `ffmpeg` (libass), `fonts-dejavu-core`, and
+`fonts-noto-cjk`. On boot, Streamlit serves `app/control_panel.py` at
+`http://127.0.0.1:8501` (`curl -sf http://127.0.0.1:8501/_stcore/health`).
+
+If `ffmpeg` warns that `/exec-daemon/tmux-root/lib/libncursesw.so.6` has no
+version information, run ffmpeg and pytest with `LD_LIBRARY_PATH` unset. That
+library makes a clean clip report `DECODE_ERROR`.
+
+```bash
+python -m compileall -q engine app tests
+python -m pytest -q
+python -m engine.cli demo --name preview_demo --seconds 20
+python -m engine.cli compile-preview projects/preview_demo
+```
+
 
 
 
