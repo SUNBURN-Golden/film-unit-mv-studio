@@ -1,0 +1,43 @@
+name: concrete_glide
+title: Gunjo City — The Way Home
+draft: true
+characters:
+  - CHAR_MIRA
+  - CHAR_TOV
+locations:
+  - LOC_WATER_TOWER_ROOF
+composition: Layered near-middle-far city depth; small readable figures on a continuous route, never a default split screen
+camera:
+  type: spatial
+  movement: Glide from rooftop toward street level or track through alleys, chosen per shot; preserve travel direction and readable depth
+motion:
+  complexity: low
+  instruction: Intentional storyboard hold for the draft. Review the route and action against the music; later animate foot placement, passing cables, cloth and gestures in selected shots.
+  local_effect: hold
+render_mode: STATIC
+identity_priority: high
+story_seed: Mira guides Tov down a layered city route in search of a way home. At the quiet foundry yard Tov notices the path onward, and leads them through a warm-lit passage.
+sequence_intents:
+  - location: LOC_WATER_TOWER_ROOF
+    beat: Departure; establish the tower and the scale of the city
+    camera: A roof-level lateral glide followed by a readable descent
+  - location: LOC_SWITCHBACK_ALLEY
+    beat: Learn the route; the guardian waits at a blind corner
+    camera: Tracking with brief wall occlusions and alternating depth planes
+  - location: LOC_UNDER_VIADUCT
+    beat: Traverse the repeated piers; the city briefly dwarfs the pair
+    camera: Lateral travel through foreground piers, then a low view under the beams
+  - location: LOC_MARKET_SKYLINE
+    beat: Reveal the inhabited city and the starting tower in the distance
+    camera: Rise above the awnings into a spacious panorama
+  - location: LOC_EMPTY_FOUNDRY
+    beat: Pause; Tov notices the onward route and chooses to lead
+    camera: Intentional still or restrained lateral move; let the gesture carry the emotion
+  - location: LOC_LANTERN_PASSAGE
+    beat: Warm windows mark the return route; the apprentice leads them home
+    camera: Track beside the figures and release into the middle distance
+later_motion_budget:
+  target_shots: 8-20
+  priority: Rooftop descents and glides, short pursuit or route-traversal actions, and hand or expression beats at emotional peaks
+  assignment: Use LIMITED_MOTION for contained gestures and environmental action; use FULL_GENERATIVE only where spatial travel needs it. Quote selected shots separately after storyboard review.
+review_note: Preview proves timing, blocking and directing intent, not completed animation. Default STATIC shots are explicit draft storyboard holds. Local pan, zoom or schematic layered parallax are timing tools and do not prove finished flight, walking or character acting. Glide and track camera paths are allowed and should be specified per shot; do not inherit a locked-camera rule from another preset. Reference art required (레퍼런스 아트 필요) for both original characters and every location before character/location LOCK. Review the complete route and select only 8-20 glide, traversal or emotional-peak shots for later LIMITED_MOTION or FULL_GENERATIVE work. This preset and its local demo request no paid provider generation and grant no production or Final approval.

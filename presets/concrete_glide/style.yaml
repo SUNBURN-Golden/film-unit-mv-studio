@@ -1,0 +1,36 @@
+name: concrete_glide
+draft: true
+format:
+  aspect_ratio: '4:3'
+  resolution: 1440x1080
+  fps: 24
+inspiration:
+  reference: Tekkonkinkreet (Studio 4°C), atmosphere and spatial camera language only
+  intent: An original concrete maze city, cast and story; no copied characters, place names, frame assets or traced compositions.
+visual_style:
+  medium: 2D character animation with painterly urban backgrounds; non-photoreal
+  background: Dense concrete terraces, patchwork roofs, service stairs and layered alleys; visible dry-brush grain and worn paint
+  line: Uneven charcoal contours with selective fine architectural linework
+  shading: Two or three broad character tones against textured backgrounds; retain a readable silhouette in deep blue shadow
+  camera: Spatial gliding, rooftop-to-street descents and tracking through alleys; foreground occlusion and parallax establish depth
+  lighting: Night indigo atmosphere, amber inhabited windows and small coral sign accents; avoid glossy live-action lighting
+palette:
+  night_indigo: '#17244D'
+  gunjo_blue: '#304E8A'
+  concrete: '#7D8794'
+  concrete_light: '#B1B6BE'
+  ink: '#101728'
+  window_amber: '#F2B66D'
+  signal_coral: '#DD6F64'
+  mist: '#BBC8D7'
+rules:
+  - No photoreal live-action or stop-motion aesthetic.
+  - Use original people, architecture and scene staging; never import or trace source-film frames, character designs or named locations.
+  - Treat the city as inhabited space; wires, signage, water towers, rooftops and service routes express its daily life.
+  - Use near, middle and far depth layers with foreground occlusion to make gliding camera paths legible.
+  - Keep character proportions, hair silhouettes, garment colors and distinctive accessories locked across shots.
+  - Use only director-approved readable sign text or simple geometric sign shapes; no random glyph decoration spam.
+  - Reserve amber for inhabited windows and human connection; use coral accents sparingly so the indigo city remains dominant.
+  - Finished LIMITED_MOTION and FULL_GENERATIVE shots require subject or environmental action; camera-only zoom on a still is not completed animation.
+  - STATIC is an intentional storyboard hold in the animatic; local hold, pan, zoom and schematic parallax are timing tools until motion is separately reviewed.
+  - Keep the lower subtitle safe area quiet when lyrics are added; do not place story-critical details behind captions.
