@@ -15,6 +15,8 @@ already-verified members in `verified` so a resume does not re-fetch them.
 `VERIFIED_MEMBERS` (each fetched member hash-matched) and
 `VERIFIED_FULL_PACK` (the whole object hash-matched) stay distinct.
 """
+import hashlib
+
 from .core import FilmError
 from .fav_pack import sha256_bytes, validate_index
 from .archive_manifest import bounded_read
@@ -155,8 +157,15 @@ class PackReader:
             self.read_member(member["member_id"])
         return dict(self.verified)
 
-    def verify_full_pack(self):
-        """Fetch the whole object and hash it: VERIFIED_FULL_PACK only."""
+    def verify_full_pack(self, stream_chunk_bytes=None):
+        """Fetch the whole object and hash it: VERIFIED_FULL_PACK only.
+
+        With `stream_chunk_bytes` the hash runs over bounded ranged reads
+        instead — the pack body is never held whole, `_whole` stays None
+        and members are still fetched by range afterwards. Streamed mode
+        returns the verified pack SHA-256; whole-body mode returns the
+        body bytes as before.
+        """
         if self.state == VERIFIED_FULL_PACK:
             return self._whole
         pack_length = self.index["pack_byte_length"]
@@ -164,6 +173,23 @@ class PackReader:
                 and pack_length > self.whole_pack_cap:
             raise FilmError("pack_byte_length exceeds the declared "
                             "whole-pack cap; refusing the fetch")
+        if stream_chunk_bytes is not None:
+            hasher = hashlib.sha256()
+            offset = 0
+            while offset < pack_length:
+                body = self._range(
+                    offset, min(stream_chunk_bytes, pack_length - offset))
+                if body is None:
+                    # A 200 whole-body answer inside the declared cap was
+                    # adopted wholesale — the pack is already verified.
+                    return self.index["pack_sha256"]
+                hasher.update(body)
+                offset += len(body)
+            if hasher.hexdigest() != self.index["pack_sha256"]:
+                raise FilmError("Streamed whole-pack readback hash does "
+                                "not match pack_sha256")
+            self.state = VERIFIED_FULL_PACK
+            return self.index["pack_sha256"]
         result = self._fetch(lambda: self.backend.get_object(
             self.pack_object_id))
         if result.status != 200:

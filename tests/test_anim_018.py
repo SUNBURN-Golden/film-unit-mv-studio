@@ -9,11 +9,14 @@ import os
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 from urllib.request import urlopen
 
 import pytest
+
+from anim_013_kit import fake_backend
 
 from engine.archive_manifest import bounded_read
 from engine.core import FilmError, init_project, production_profile, read
@@ -26,7 +29,8 @@ from engine.remote_qualify import (DEFAULT_SCRATCH_LIMIT, TARGET_FRAMES,
                                    TARGET_WIDTH, archive_panel_caption,
                                    draft_qualification, qualification_for,
                                    target_preflight)
-from engine.storage_backends import ArchiveRequestError, ConnectionDropped
+from engine.storage_backends import (ArchiveRequestError, ConnectionDropped,
+                                     RangeResult)
 from engine.storage_backends.drive import GoogleDriveBackend
 
 
@@ -665,6 +669,311 @@ def test_legacy_project_is_not_migrated(tmp_path, monkeypatch):
 
 def TARGET_PROFILE_NOT_DEFAULT(text):
     return "1920" not in text and "DRIVE_BOUNDED" not in text
+
+
+def _noise_png(seed, width, height):
+    """Incompressible PNG: byte size tracks the raw raster, unlike _png."""
+    import io
+    import os
+    from PIL import Image
+    buffer = io.BytesIO()
+    Image.frombytes("RGBA", (width, height),
+                    os.urandom(width * height * 4)).save(buffer, "PNG")
+    return buffer.getvalue()
+
+
+def _file_members(tmp_path, count, seed=0, width=64, height=64):
+    """PNG member dicts backed by files on disk, not in-memory bytes."""
+    folder = tmp_path / "frames"
+    folder.mkdir(exist_ok=True)
+    members = []
+    for index in range(count):
+        path = folder / f"F_{index + 1:06d}.png"
+        path.write_bytes(make_png_018(seed + index, width, height))
+        members.append({"member_id": f"F{index:03d}", "frame_index": index,
+                        "path": path})
+    return members
+
+
+def make_png_018(seed, width, height):
+    from engine.remote_qualify import _png
+    return _png(seed, width, height)
+
+
+class _SliceBackend:
+    """Archive backend double that never stores an object: uploads are
+    only counted, reads are served straight off the built pack file."""
+
+    range_supported = True
+
+    def __init__(self, pack_path):
+        self.pack_path = Path(pack_path)
+        self.chunks = []
+        self.ranges = []
+        self.received = 0
+        self.expected = 0
+
+    def create_upload_session(self, object_id, expected_length):
+        self.expected = expected_length
+        return "up-slice"
+
+    def upload_chunk(self, session, offset, data):
+        self.chunks.append((offset, len(data)))
+        self.received = offset + len(data)
+        return {"received": self.received}
+
+    def upload_status(self, session):
+        return {"offset": self.received, "expected_length": self.expected}
+
+    def complete_upload(self, session):
+        return {"object_id": "pack-obj"}
+
+    def get_range(self, object_id, offset, length):
+        self.ranges.append((offset, length))
+        with open(self.pack_path, "rb") as stream:
+            stream.seek(offset)
+            body = stream.read(length)
+        return RangeResult(206, body, range_start=offset,
+                           total_length=self.pack_path.stat().st_size)
+
+    def get_object(self, object_id):
+        raise AssertionError("the whole pack body was requested")
+
+
+def test_streamed_pack_pipeline_never_holds_the_whole_object(tmp_path):
+    """Build + resumable upload + streamed readback of a multi-MiB pack
+    stay under a fraction of the pack size — the pack is never held."""
+    import tracemalloc
+
+    from engine.archive_manifest import (object_sha256_stream,
+                                         resumable_put_file)
+    from engine.fav_pack import build_pack_file, sha256_file
+
+    folder = tmp_path / "frames"
+    folder.mkdir()
+    members = []
+    for index in range(6):
+        path = folder / f"F_{index + 1:06d}.png"
+        path.write_bytes(_noise_png(index, 512, 512))
+        members.append({"member_id": f"F{index:03d}", "frame_index": index,
+                        "path": path})
+    pack_path = tmp_path / "pack.fav1"
+    backend = _SliceBackend(pack_path)
+
+    tracemalloc.start()
+    try:
+        info, entries = build_pack_file(members, pack_path,
+                                        chunk_bytes=256 * 1024)
+        resumable_put_file(backend, "pack-obj", pack_path,
+                           {"chunk_bytes": 256 * 1024, "resumable": True},
+                           None, lambda ms: None)
+        digest = object_sha256_stream(backend, "pack-obj",
+                                      info["byte_length"],
+                                      chunk_bytes=256 * 1024)
+        pack_len = pack_path.stat().st_size
+        _current, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert pack_len > 5 * 1024 * 1024      # noise PNGs span many chunks
+    assert peak < pack_len // 4            # bounded, not the whole pack
+    assert digest == info["sha256"] == sha256_file(pack_path)
+    assert [e["byte_offset"] for e in entries] == [
+        e["byte_offset"] for e in sorted(entries, key=lambda e: e["frame_index"])]
+    assert all(offset == sum(n for _, n in backend.chunks[:i])
+               for i, (offset, _n) in enumerate(backend.chunks))
+    assert max(length for _o, length in backend.chunks) <= 256 * 1024
+    assert all(length <= 256 * 1024 for _o, length in backend.ranges)
+
+
+def test_streamed_archive_roundtrip_stays_on_ranges(tmp_path):
+    """archive_frames(pack_path=...) + streamed offline restore verify a
+    real pack without ever issuing a whole-body read for it."""
+    from engine.drive_archive import archive_frames, restore_archive
+    from engine.fav_pack import sha256_file
+    from engine.workspace import Workspace
+
+    backend = fake_backend(provider_checksum=None)  # forces FULL_READBACK
+    members = _file_members(tmp_path, 6, seed=40, width=64, height=64)
+    pack_path = tmp_path / "pack.fav1"
+    result = archive_frames(
+        backend, members, profile="DRIVE_BOUNDED", min_level="FULL_READBACK",
+        pack_path=pack_path, readback_chunk_bytes=64 * 1024,
+        readback_cap=1 << 30, sleep_fn=lambda ms: None)
+    pack_id = result["pack_object_id"]
+    assert result["achieved_level"] == "FULL_READBACK"
+    # The stored object is byte-identical to the on-disk pack build.
+    assert backend._objects[pack_id] == pack_path.read_bytes()
+    whole_reads = [r for r in backend.requests
+                   if r["op"] == "get_object" and r["object_id"] == pack_id]
+    assert whole_reads == []                    # readback was ranged
+    pack_ranges = [r for r in backend.requests
+                   if r["op"] == "get_range" and r["object_id"] == pack_id]
+    assert pack_ranges
+
+    workspace = Workspace(tmp_path / "cache", 32 << 20)
+    out = tmp_path / "restored"
+    report = restore_archive(
+        backend, result["archive"], workspace, out, offline=True,
+        whole_pack_cap=result["archive"]["pack"]["byte_length"],
+        stream_chunk_bytes=64 * 1024, sleep_fn=lambda ms: None)
+    assert report["offline_capable"] is True
+    assert report["verification"] == "VERIFIED_FULL_PACK"
+    for index, name in enumerate(report["restored"]):
+        assert (out / name).read_bytes() == \
+            members[index]["path"].read_bytes()
+    whole_reads = [r for r in backend.requests
+                   if r["op"] == "get_object" and r["object_id"] == pack_id]
+    assert whole_reads == []
+    big = [r for r in backend.requests
+           if r["op"] == "get_range" and r["object_id"] == pack_id
+           and r["length"] > 64 * 1024]
+    # Member reads stay member-sized; the pack verify stayed chunked.
+    assert all(r["length"] <= max(m["path"].stat().st_size
+                                  for m in members) for r in big)
+    assert sha256_file(pack_path) == result["archive"]["pack"]["sha256"]
+
+
+def test_resumable_put_file_resumes_from_the_confirmed_offset(tmp_path):
+    """resumable_put_file re-reads chunks from disk at the server offset."""
+    from engine.archive_manifest import resumable_put_file
+
+    backend = fake_backend()
+    data = bytes((i * 31) % 256 for i in range(4096))
+    path = tmp_path / "blob.bin"
+    path.write_bytes(data)
+    chunk_calls = {"n": 0}
+    original = backend.upload_chunk
+
+    def flaky(session, offset, data_chunk):
+        chunk_calls["n"] += 1
+        if chunk_calls["n"] == 3:
+            backend._sessions[session]["buffer"].extend(data_chunk[:17])
+            raise ConnectionDropped("mid-chunk drop")
+        return original(session, offset, data_chunk)
+
+    backend.upload_chunk = flaky
+    result = resumable_put_file(backend, "obj-file", path,
+                                {"chunk_bytes": 1024, "resumable": True},
+                                RETRY, lambda ms: None)
+    assert backend.get_object("obj-file").body == data
+    assert result["bytes_confirmed"] == len(data)
+    offsets = [r["offset"] for r in backend.requests
+               if r["op"] == "upload_chunk"]
+    assert offsets == sorted(offsets)
+    assert any(0 < o < len(data) for o in offsets)
+
+
+def test_streamed_readback_refuses_a_whole_body_answer(tmp_path):
+    """A backend that cannot serve 206 ranges is refused — the body is
+    never adopted wholesale just because it answered."""
+    from engine.archive_manifest import object_sha256_stream
+
+    backend = fake_backend()
+    backend.put_object("obj-1", b"whole-answer")
+    backend.range_supported = False
+    with pytest.raises(FilmError, match="RANGE_FALLBACK_DENIED"):
+        object_sha256_stream(backend, "obj-1", len(b"whole-answer"),
+                             chunk_bytes=4, sleep_fn=lambda ms: None)
+
+
+def test_drive_archive_default_transport_is_bounded():
+    """The no-policy Drive archive default: bounded §11 retry + 8 MiB
+    chunks (a 256 KiB multiple), declared in full."""
+    from engine.archive_manifest import make_archive
+    from engine.remote_qualify import DRIVE_ARCHIVE_TRANSPORT
+
+    retry = DRIVE_ARCHIVE_TRANSPORT["retry"]
+    assert retry["max_retries"] == 3
+    assert retry["backoff_base_ms"] == 2000
+    assert retry["max_backoff_ms"] == 60000
+    for cap in ("max_elapsed_ms", "max_requests", "max_transferred_bytes"):
+        assert retry[cap] >= 1
+    upload = DRIVE_ARCHIVE_TRANSPORT["upload"]
+    assert upload["chunk_bytes"] == 8 * 1024 * 1024
+    assert upload["chunk_bytes"] % (256 * 1024) == 0
+    doc = make_archive(
+        "arc-t", "DRIVE_BOUNDED",
+        [{"object_id": "o", "kind": "pack", "byte_length": 1,
+          "sha256": "0" * 64, "revision": None}],
+        transport=DRIVE_ARCHIVE_TRANSPORT)
+    assert doc["transport"]["retry"]["max_retries"] == 3
+
+
+def test_fixture_archive_uses_bounded_retry_and_real_sleep(tmp_path, monkeypatch):
+    monkeypatch.delenv("FILM_GOOGLE_OAUTH_CLIENT_FILE", raising=False)
+    import engine.drive_archive as drive_archive
+    import engine.remote_qualify as rq
+
+    captured = {}
+    real = drive_archive.archive_frames
+
+    def spy(backend, members, **kwargs):
+        captured.update(kwargs)
+        captured["result"] = real(backend, members, **kwargs)
+        return captured["result"]
+
+    monkeypatch.setattr(drive_archive, "archive_frames", spy)
+    (tmp_path / "run").mkdir()
+    report, _secrets = rq.run_fixture(tmp_path / "run")
+    assert report["problems"] == []
+    assert captured["transport"] == rq.DRIVE_ARCHIVE_TRANSPORT
+    assert captured["sleep_fn"] is rq._real_sleep_ms
+    assert captured["pack_path"].name == "pack.fav1"
+    assert captured["readback_chunk_bytes"] == rq.DRIVE_STREAM_CHUNK
+    # The sealed manifest records the bounded policy.
+    sealed_transport = captured["result"]["archive"]["transport"]
+    assert sealed_transport["retry"]["max_retries"] == 3
+    assert sealed_transport["upload"]["chunk_bytes"] == 8 * 1024 * 1024
+    slept = []
+    monkeypatch.setattr(time, "sleep", lambda s: slept.append(s))
+    rq._real_sleep_ms(25)
+    rq._real_sleep_ms(0)
+    assert slept == [0.025]
+
+
+def test_qualify_cache_reuses_encode_and_worker(tmp_path, monkeypatch, capsys):
+    monkeypatch.delenv("FILM_GOOGLE_OAUTH_CLIENT_FILE", raising=False)
+    monkeypatch.setenv("FILM_QUALIFY_CACHE_DIR", str(tmp_path / "qcache"))
+    import engine.remote_qualify as rq
+
+    (tmp_path / "run1").mkdir()
+    first, _ = rq.run_fixture(tmp_path / "run1")
+    assert first["problems"] == []
+    assert first["qualify_cache"]["reused"] == []
+
+    (tmp_path / "run2").mkdir()
+    second, _ = rq.run_fixture(tmp_path / "run2")
+    assert second["problems"] == []
+    assert sorted(second["qualify_cache"]["reused"]) == \
+        ["encode_mp4", "worker"]
+    assert second["worker"]["state"] == "VERIFIED"
+    assert "FILM_QUALIFY_CACHE_DIR" in capsys.readouterr().err
+
+    cache_text = ""
+    for path in (tmp_path / "qcache").rglob("*.json"):
+        cache_text += path.read_text(encoding="utf-8")
+    for forbidden in ("anim018-client-secret-value", "mem-access-",
+                      "mem-refresh-", "anim018-code",
+                      "anim018-test.apps.googleusercontent.com"):
+        assert forbidden not in cache_text
+
+
+def test_qualify_cache_rejects_a_tampered_mp4(tmp_path, monkeypatch):
+    """A matching key with corrupted bytes is a miss, not a hit."""
+    monkeypatch.delenv("FILM_GOOGLE_OAUTH_CLIENT_FILE", raising=False)
+    monkeypatch.setenv("FILM_QUALIFY_CACHE_DIR", str(tmp_path / "qcache"))
+    import engine.remote_qualify as rq
+
+    (tmp_path / "run1").mkdir()
+    first, _ = rq.run_fixture(tmp_path / "run1")
+    key_dir = tmp_path / "qcache" / first["qualify_cache"]["key"]
+    blob = (key_dir / "out.mp4").read_bytes()
+    (key_dir / "out.mp4").write_bytes(bytes([blob[0] ^ 1]) + blob[1:])
+
+    (tmp_path / "run2").mkdir()
+    second, _ = rq.run_fixture(tmp_path / "run2")
+    assert second["qualify_cache"]["reused"] == ["worker"]
+    assert second["problems"] == []
 
 
 def test_fixture_runs_the_route_and_stays_unqualified(tmp_path, monkeypatch):

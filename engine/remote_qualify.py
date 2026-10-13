@@ -10,6 +10,7 @@ No client file is `GOOGLE_OAUTH_NOT_CONFIGURED` with evidence state
 WAITING. This module does not write host records or claim a real run.
 """
 from pathlib import Path
+import filecmp
 import hashlib
 import json
 import os
@@ -65,6 +66,26 @@ MISSING = (
 RETRY = {"max_retries": 2, "backoff_base_ms": 0, "max_backoff_ms": 1,
          "max_elapsed_ms": 5000, "max_requests": 8,
          "max_transferred_bytes": 50_000_000}
+# The Drive archive's default transport when the caller declares none:
+# schema §11 fully-declared bounded retry — 3 retries, 2s..60s backoff —
+# plus an 8 MiB (32 × 256 KiB) resumable upload chunk.
+DRIVE_ARCHIVE_TRANSPORT = {
+    "retry": {"max_retries": 3, "backoff_base_ms": 2000,
+              "max_backoff_ms": 60000, "max_elapsed_ms": 900000,
+              "max_requests": 32,
+              "max_transferred_bytes": 268435456},
+    "upload": {"chunk_bytes": 8 * 1024 * 1024, "resumable": True}}
+# Ranged readback/upload chunk for packs too large to hold in memory.
+DRIVE_STREAM_CHUNK = 8 * 1024 * 1024
+# Declared bound on total readback bytes for the archive seal; streamed
+# ranged reads keep memory inside one chunk at any pack size.
+DRIVE_READBACK_CAP = 8 * 1024 ** 3
+QUALIFY_CACHE_ENV = "FILM_QUALIFY_CACHE_DIR"
+
+
+def _real_sleep_ms(ms):
+    if ms:
+        time.sleep(ms / 1000)
 
 
 def draft_qualification():
@@ -328,11 +349,101 @@ def _encode(folder, mp4, frames):
             "-i", str(folder / "F_%06d.png"),
             "-frames:v", str(frames), "-c:v", "libx264",
             "-pix_fmt", "yuv420p", "-an", str(mp4)])
-    return mp4.read_bytes()
+    return mp4
 
 
 def _sha(data):
     return hashlib.sha256(data).hexdigest()
+
+
+class _QualifyCache:
+    """Resumable disk cache for the encode and worker stages.
+
+    The key binds the input snapshot digest, recipe digest, frame count
+    and geometry — a rerun with identical inputs reuses the encode output
+    and the verified worker record after each stored file's SHA-256 is
+    re-checked against the record. Only non-secret artifacts are stored:
+    out.mp4, per-frame digests and the worker job/verify outcome. Tokens
+    and client secrets never enter the cache directory.
+    """
+
+    def __init__(self, root, *, snapshot, recipe, frames, width, height):
+        self.root = Path(root)
+        material = json.dumps(
+            {"snapshot": snapshot, "recipe": recipe, "frames": frames,
+             "width": width, "height": height},
+            sort_keys=True).encode("utf-8")
+        self.key = hashlib.sha256(material).hexdigest()
+        self.dir = self.root / self.key
+
+    @property
+    def _manifest(self):
+        return self.dir / "cache.json"
+
+    def _load(self):
+        try:
+            doc = json.loads(self._manifest.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        return doc if doc.get("key") == self.key else None
+
+    def _write(self, doc):
+        from .core import atomic_text
+        self.dir.mkdir(parents=True, exist_ok=True)
+        doc = dict(doc or {}, key=self.key)
+        atomic_text(self._manifest, json.dumps(doc, indent=2,
+                                               ensure_ascii=False) + "\n")
+
+    def _file(self, record):
+        if not record:
+            return None
+        from .fav_pack import sha256_file
+        path = self.dir / record["file"]
+        if not path.is_file() or sha256_file(path) != record["sha256"]:
+            return None
+        return path
+
+    def restore_mp4(self, dest):
+        """Copy the cached encode output to `dest`; returns its sha."""
+        source = self._file((self._load() or {}).get("mp4"))
+        if source is None:
+            return None
+        from .fav_pack import sha256_file
+        shutil.copyfile(source, dest)
+        return sha256_file(dest)
+
+    def store_mp4(self, path, sha256):
+        self.dir.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(path, self.dir / "out.mp4")
+        doc = self._load() or {}
+        doc["mp4"] = {"file": "out.mp4", "sha256": sha256}
+        self._write(doc)
+
+    def load_worker(self):
+        source = self._file((self._load() or {}).get("worker"))
+        if source is None:
+            return None
+        try:
+            return json.loads(source.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+
+    def store_worker(self, worker, frame_digests):
+        from .core import atomic_text
+        from .fav_pack import sha256_file
+        self.dir.mkdir(parents=True, exist_ok=True)
+        payload = {"state": worker["state"],
+                   "qualification_state": worker["qualification_state"],
+                   "route": worker["route"],
+                   "job": json.loads(json.dumps(worker["job"], default=str)),
+                   "direct_drive": worker["direct_drive"],
+                   "frame_digests": list(frame_digests)}
+        atomic_text(self.dir / "worker.json",
+                    json.dumps(payload, ensure_ascii=False) + "\n")
+        doc = self._load() or {}
+        doc["worker"] = {"file": "worker.json",
+                         "sha256": sha256_file(self.dir / "worker.json")}
+        self._write(doc)
 
 
 def _fail_closed(session, transport, archive_sha, manifest_id):
@@ -342,7 +453,7 @@ def _fail_closed(session, transport, archive_sha, manifest_id):
     backend = session.authorized
     side = b"side-bytes-anim018"
     backend.put_object("side-anim018", side)
-    sleep = lambda ms: None
+    sleep = _real_sleep_ms
     report = {}
 
     def _window(fn):
@@ -438,81 +549,163 @@ def run_pipeline(session, transport, scratch, *, width, height, frames,
 
     `profile_exact` is true only at 1920×1080×5760. Callers that pass a
     fixture size cannot be QUALIFIED.
+
+    Every byte stage is streamed: frames land on disk as they render, the
+    pack is built on disk and uploaded/read back in bounded chunks, and
+    the restores hash ranged reads — the whole pack is never held in
+    memory on a 240s/1080p run.
     """
+    from .archive_manifest import (object_sha256_stream,
+                                   resumable_put_file)
     from .drive_archive import archive_frames, restore_archive
-    from .fav_pack import sha256_bytes
+    from .fav_pack import sha256_file
     from .workspace import Workspace
     scratch.mkdir(parents=True, exist_ok=True)
     stages = []
-    peak_buffers = 0
+    folder = scratch / "frames"
 
     def stage(name, fn):
-        nonlocal peak_buffers
         started = time.perf_counter()
         value = fn()
         stages.append({"stage": name,
                        "ms": round((time.perf_counter() - started) * 1000, 3)})
         return value
 
-    pngs = stage("input_png", lambda: [_png(i, width, height) for i in range(frames)])
-    peak_buffers = sum(map(len, pngs))
-    folder = scratch / "frames"
-    folder.mkdir()
-    for index, data in enumerate(pngs):
-        (folder / f"F_{index + 1:06d}.png").write_bytes(data)
-    mp4_bytes = stage("encode_mp4", lambda: _encode(folder, scratch / "out.mp4", frames))
-    peak_buffers = max(peak_buffers, len(mp4_bytes))
-    snapshot = _sha(b"".join(pngs))
+    def _frames():
+        hasher, digests = hashlib.sha256(), []
+        folder.mkdir()
+        total = largest = 0
+        for index in range(frames):
+            data = _png(index, width, height)
+            (folder / f"F_{index + 1:06d}.png").write_bytes(data)
+            hasher.update(data)
+            digests.append(hashlib.sha256(data).hexdigest())
+            total += len(data)
+            largest = max(largest, len(data))
+        return {"snapshot": hasher.hexdigest(), "digests": digests,
+                "bytes": total, "largest": largest}
+
+    inputs = stage("input_png", _frames)
+    # One frame buffer plus one transfer chunk — never the whole sequence.
+    peak_buffers = max(inputs["largest"], DRIVE_STREAM_CHUNK)
+    snapshot = inputs["snapshot"]
+    frame_digests = inputs["digests"]
     recipe = hashlib.sha256(b"anim-018-recipe").hexdigest()
-    worker = stage("worker", lambda: _worker(
-        scratch, snapshot, recipe, frames, width, height))
+
+    cache = None
+    cache_root = os.environ.get(QUALIFY_CACHE_ENV)
+    if cache_root:
+        cache = _QualifyCache(cache_root, snapshot=snapshot, recipe=recipe,
+                              frames=frames, width=width, height=height)
+    reused = []
+    mp4_path = scratch / "out.mp4"
+
+    def _encode_stage():
+        cached = cache.restore_mp4(mp4_path) if cache else None
+        if cached is not None:
+            reused.append("encode_mp4")
+            return cached
+        _encode(folder, mp4_path, frames)
+        digest = sha256_file(mp4_path)
+        if cache is not None:
+            cache.store_mp4(mp4_path, digest)
+        return digest
+
+    mp4_sha = stage("encode_mp4", _encode_stage)
+    mp4_len = mp4_path.stat().st_size
+
+    def _worker_stage():
+        cached = cache.load_worker() if cache else None
+        if cached is not None:
+            from .execution_workers.local import LocalWorker
+            worker = dict(cached)
+            # A fresh worker instance stands in for the relay grant check;
+            # the verified job record itself comes from the cache.
+            worker["worker"] = LocalWorker("local-anim018")
+            reused.append("worker")
+            return worker
+        result = _worker(scratch, snapshot, recipe, frames, width, height)
+        if cache is not None:
+            cache.store_worker(result, frame_digests)
+        return result
+
+    worker = stage("worker", _worker_stage)
+    if reused:
+        print(f"remote-qualify: reused {', '.join(reused)} from "
+              f"{QUALIFY_CACHE_ENV} (key {cache.key[:16]})",
+              file=sys.stderr)
     access = (session.token_store.load(session.connection_id) or {}).get("access_token")
     job_blob = json.dumps(worker["job"], default=str)
     token_in_worker = bool(access and access in job_blob)
 
     def _archive():
-        members = [{"member_id": f"F{index:03d}", "frame_index": index, "data": data}
-                   for index, data in enumerate(pngs)]
+        members = [{"member_id": f"F{index:03d}", "frame_index": index,
+                    "path": folder / f"F_{index + 1:06d}.png"}
+                   for index in range(frames)]
         meta = session.metadata()
         connection = {key: meta[key] for key in (
             "connection_id", "account_binding_digest", "credential_epoch")}
         return archive_frames(
             session.authorized, members, profile="DRIVE_BOUNDED",
             connection=connection, min_level="FULL_READBACK",
-            sleep_fn=lambda ms: None)
+            transport={"retry": dict(DRIVE_ARCHIVE_TRANSPORT["retry"]),
+                       "upload": dict(DRIVE_ARCHIVE_TRANSPORT["upload"])},
+            readback_cap=DRIVE_READBACK_CAP,
+            pack_path=scratch / "pack.fav1",
+            readback_chunk_bytes=DRIVE_STREAM_CHUNK,
+            snapshot_digest=snapshot, recipe_digest=recipe,
+            sleep_fn=_real_sleep_ms)
 
     archived = stage("archive", _archive)
-    mp4_id = f"sha256-{sha256_bytes(mp4_bytes)}"
+    pack = archived["archive"]["pack"]
+    pack_id = archived["pack_object_id"]
+    pack_len = pack["byte_length"]
+    mp4_id = f"sha256-{mp4_sha}"
 
     def _mp4():
-        session.authorized.put_object(mp4_id, mp4_bytes)
-        return session.authorized.get_object(mp4_id).body
+        resumable_put_file(
+            session.authorized, mp4_id, mp4_path,
+            DRIVE_ARCHIVE_TRANSPORT["upload"],
+            DRIVE_ARCHIVE_TRANSPORT["retry"], _real_sleep_ms)
+        return object_sha256_stream(
+            session.authorized, mp4_id, mp4_len,
+            chunk_bytes=DRIVE_STREAM_CHUNK,
+            retry=DRIVE_ARCHIVE_TRANSPORT["retry"],
+            sleep_fn=_real_sleep_ms)
 
-    mp4_back = stage("archive_mp4", _mp4)
-    pack_id = archived["pack_object_id"]
+    mp4_back_sha = stage("archive_mp4", _mp4)
 
     def _timed_read():
         started = time.perf_counter()
-        body = session.authorized.get_object(pack_id).body
-        return body, (time.perf_counter() - started) * 1000
+        digest = object_sha256_stream(
+            session.authorized, pack_id, pack_len,
+            chunk_bytes=DRIVE_STREAM_CHUNK,
+            retry=DRIVE_ARCHIVE_TRANSPORT["retry"],
+            sleep_fn=_real_sleep_ms)
+        return digest, (time.perf_counter() - started) * 1000
 
-    cold_body, cold_ms = stage("cold_read", _timed_read)
-    warm_body, warm_ms = stage("warm_read", _timed_read)
-    workspace = Workspace(scratch / "cache", 32 << 20)
+    cold_sha, cold_ms = stage("cold_read", _timed_read)
+    warm_sha, warm_ms = stage("warm_read", _timed_read)
+    # The staged generation must fit inside the workspace cap; verified
+    # members beyond it are evicted, never the stage itself.
+    workspace = Workspace(scratch / "cache", 2 * pack_len + (32 << 20))
     dest = scratch / "restore"
     replay = scratch / "replay"
 
     def _restore(target):
         return restore_archive(
             session.authorized, archived["archive"], workspace, target,
-            allowed_root=scratch, offline=True, whole_pack_cap=32 << 20,
-            sleep_fn=lambda ms: None)
+            allowed_root=scratch, offline=True, whole_pack_cap=pack_len,
+            sleep_fn=_real_sleep_ms,
+            stream_chunk_bytes=DRIVE_STREAM_CHUNK)
 
     restored = stage("offline_restore", lambda: _restore(dest))
     replayed = stage("replay", lambda: _restore(replay))
     names = [f"F_{index + 1:06d}.png" for index in range(frames)]
-    restore_ok = [ (dest / name).read_bytes() == pngs[index] for index, name in enumerate(names)]
-    replay_ok = [(replay / name).read_bytes() == pngs[index] for index, name in enumerate(names)]
+    restore_ok = [filecmp.cmp(dest / name, folder / name, shallow=False)
+                  for name in names]
+    replay_ok = [filecmp.cmp(replay / name, folder / name, shallow=False)
+                 for name in names]
     project_created = (scratch / "project.json").exists() or (scratch / "project.yaml").exists()
     relay_ok = _relay_denied(worker["worker"], snapshot)
     failures = stage("failure_injection", lambda: _fail_closed(
@@ -524,8 +717,8 @@ def run_pipeline(session, transport, scratch, *, width, height, frames,
         "worker_verified": worker["state"] == "VERIFIED",
         "token_absent": not token_in_worker,
         "relay_auth": relay_ok,
-        "mp4_readback": mp4_back == mp4_bytes,
-        "cold_warm_bytes": cold_body == warm_body,
+        "mp4_readback": mp4_back_sha == mp4_sha,
+        "cold_warm_bytes": cold_sha == warm_sha == pack["sha256"],
         "restore": all(restore_ok),
         "replay": all(replay_ok),
         "offline": bool(restored["offline_capable"] and replayed["offline_capable"]),
@@ -579,20 +772,20 @@ def run_pipeline(session, transport, scratch, *, width, height, frames,
                  else max(peak_buffers, runtime["process_rss_bytes"]),
                  "vram_bytes": None,
                  "worker_scratch_bytes": width * height * 4 * frames,
-                 "spool_bytes": len(cold_body)},
+                 "spool_bytes": pack_len},
         "transfer": {"requests": len(calls),
                      "sent_bytes": sum(call["request_bytes"] for call in calls),
                      "received_bytes": sum(call["response_bytes"] for call in calls),
-                     "archive_write_bytes": sum(map(len, pngs)) + len(mp4_bytes),
-                     "archive_read_bytes": len(cold_body) + len(warm_body) + len(mp4_back),
+                     "archive_write_bytes": inputs["bytes"] + mp4_len,
+                     "archive_read_bytes": 2 * pack_len + mp4_len,
                      "duplicate_bytes": failures["upload_resume"]["duplicate_bytes"]},
         "usage": {"additional_charges": False, "paid_calls": 0,
                   "drive_api_calls": len(calls)},
         "recovery_scope": failures,
         "credential_epoch": session.credential_epoch,
-        "artifact_hashes": {"png": [_sha(data) for data in pngs],
-                            "mp4": _sha(mp4_bytes),
-                            "pack": archived["archive"]["pack"]["sha256"],
+        "artifact_hashes": {"png": frame_digests,
+                            "mp4": mp4_sha,
+                            "pack": pack["sha256"],
                             "archive": archived["archive_sha256"]},
         "worker": {"state": worker["state"], "route": worker["route"],
                    "qualification_state": worker["qualification_state"],
@@ -606,6 +799,10 @@ def run_pipeline(session, transport, scratch, *, width, height, frames,
         "paid_calls": 0,
         "changes_existing_project_defaults": False,
     })
+    if cache is not None:
+        report["qualify_cache"] = {"env": QUALIFY_CACHE_ENV,
+                                   "key": cache.key,
+                                   "reused": list(reused)}
     # A fixture pass must not flip the in-repo draft's meaning: the
     # returned report is the run record, still WAITING unless QUALIFIED.
     if qualification != "QUALIFIED":

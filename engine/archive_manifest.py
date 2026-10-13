@@ -16,6 +16,8 @@ object SHA-256; when the provider cannot produce one, a bounded
 required. Seal is only evaluated when the achieved level meets the
 manifest's `min_required`.
 """
+from pathlib import Path
+import hashlib
 import time
 
 from .animation_schema import canon_bytes, check_document
@@ -281,13 +283,46 @@ def resumable_put(backend, object_id, data, upload, retry,
                      sleep_fn)
         return {"object_id": object_id, "resumed": False,
                 "bytes_confirmed": expected}
+    return _resumable_send(
+        backend, object_id, expected,
+        lambda offset, count: data[offset:offset + count],
+        upload, retry, sleep_fn)
+
+
+def resumable_put_file(backend, object_id, path, upload, retry,
+                       sleep_fn=_sleep_ms):
+    """resumable_put with chunk reads from a file instead of held bytes.
+
+    The upload loop only ever materializes one `chunk_bytes` piece; the
+    confirmed offset is re-read from the file on resume, identical to the
+    in-memory path's byte semantics.
+    """
+    path = Path(path)
+    expected = path.stat().st_size
+    if not upload.get("resumable", True) \
+            or not hasattr(backend, "create_upload_session"):
+        data = path.read_bytes()
+        bounded_read(lambda: backend.put_object(object_id, data), retry,
+                     sleep_fn)
+        return {"object_id": object_id, "resumed": False,
+                "bytes_confirmed": expected}
+    with open(path, "rb") as stream:
+        def piece(offset, count):
+            stream.seek(offset)
+            return stream.read(count)
+        return _resumable_send(backend, object_id, expected, piece,
+                               upload, retry, sleep_fn)
+
+
+def _resumable_send(backend, object_id, expected, read_chunk, upload, retry,
+                    sleep_fn):
     session = backend.create_upload_session(object_id, expected)
     confirmed = backend.upload_status(session)["offset"]
     chunk = upload.get("chunk_bytes", DEFAULT_UPLOAD["chunk_bytes"])
     max_retries = (retry or {}).get("max_retries", 0)
     failures = 0
     while confirmed < expected:
-        piece = data[confirmed:confirmed + chunk]
+        piece = read_chunk(confirmed, min(chunk, expected - confirmed))
         try:
             backend.upload_chunk(session, confirmed, piece)
             new_confirmed = backend.upload_status(session)["offset"]
@@ -314,17 +349,56 @@ def resumable_put(backend, object_id, data, upload, retry,
             "bytes_confirmed": confirmed}
 
 
+def object_sha256_stream(backend, object_id, expected_length, *, chunk_bytes,
+                         retry=None, sleep_fn=_sleep_ms):
+    """SHA-256 of a stored object through bounded ranged reads.
+
+    The body is never held whole: every answer must be an exact 206 whose
+    confirmed start, body length and declared total match the expected
+    object — a whole-body 200 answer is refused rather than adopted.
+    """
+    if type(expected_length) is not int or expected_length < 1 \
+            or type(chunk_bytes) is not int or chunk_bytes < 1:
+        raise FilmError("streamed readback needs positive lengths")
+    hasher = hashlib.sha256()
+    offset = 0
+    while offset < expected_length:
+        want = min(chunk_bytes, expected_length - offset)
+        result = bounded_read(
+            lambda o=offset, n=want: backend.get_range(object_id, o, n),
+            retry, sleep_fn)
+        if result.status != 206:
+            raise FilmError(
+                "RANGE_FALLBACK_DENIED: a streamed readback only accepts "
+                "exact 206 range answers; a whole-body answer is never "
+                "adopted")
+        if result.range_start != offset:
+            raise FilmError("INPUT_MISMATCH: range response starts at "
+                            "the wrong offset")
+        if len(result.body) != want:
+            raise FilmError("INPUT_MISMATCH: range response is shorter "
+                            "than the requested chunk")
+        if result.total_length != expected_length:
+            raise FilmError("INPUT_MISMATCH: range response total length "
+                            "does not match the expected object length")
+        hasher.update(result.body)
+        offset += len(result.body)
+    return hasher.hexdigest()
+
+
 # -- artifact verification levels ----------------------------------------------
 
 def verify_object(backend, object_id, expected_sha256, expected_length,
                   readback_cap=DEFAULT_READBACK_CAP, retry=None,
-                  sleep_fn=_sleep_ms):
+                  sleep_fn=_sleep_ms, readback_chunk_bytes=None):
     """Classify the strongest evidence available for one stored object.
 
     A provider-fixed SHA-256 yields UPLOAD_HASH_MATCHED without re-reading.
     Without one, the whole object is re-read inside `readback_cap` and
     hashed for FULL_READBACK; an object beyond the cap cannot be verified
     that way and raises READBACK_CAP_EXCEEDED rather than being spooled.
+    With `readback_chunk_bytes` the readback streams ranged reads of that
+    size through the same hash check — the body is never held whole.
     """
     info = bounded_read(lambda: backend.object_info(object_id), retry,
                         sleep_fn)
@@ -343,6 +417,15 @@ def verify_object(backend, object_id, expected_sha256, expected_length,
             f"READBACK_CAP_EXCEEDED: object {object_id} needs "
             f"{expected_length} readback bytes > cap {readback_cap}; "
             "no provider SHA-256 evidence exists")
+    if readback_chunk_bytes is not None \
+            and getattr(backend, "range_supported", True):
+        if object_sha256_stream(backend, object_id, expected_length,
+                                chunk_bytes=readback_chunk_bytes,
+                                retry=retry, sleep_fn=sleep_fn) \
+                != expected_sha256:
+            raise FilmError(f"Archive object {object_id} readback hash "
+                            "mismatch")
+        return "FULL_READBACK"
     result = bounded_read(lambda: backend.get_object(object_id), retry,
                           sleep_fn)
     if result.status != 200 or len(result.body) != expected_length:
@@ -352,7 +435,8 @@ def verify_object(backend, object_id, expected_sha256, expected_length,
     return "FULL_READBACK"
 
 
-def verify_archive(backend, document, readback_cap=None, sleep_fn=_sleep_ms):
+def verify_archive(backend, document, readback_cap=None, sleep_fn=_sleep_ms,
+                   readback_chunk_bytes=None):
     """Verify every manifest object; report the weakest achieved level."""
     transport = document["transport"]
     cap = readback_cap if readback_cap is not None \
@@ -361,7 +445,8 @@ def verify_archive(backend, document, readback_cap=None, sleep_fn=_sleep_ms):
     for obj in document["objects"]:
         level = verify_object(backend, obj["object_id"], obj["sha256"],
                               obj["byte_length"], readback_cap=cap,
-                              retry=transport["retry"], sleep_fn=sleep_fn)
+                              retry=transport["retry"], sleep_fn=sleep_fn,
+                              readback_chunk_bytes=readback_chunk_bytes)
         weakest = min(weakest, LEVELS[level])
     return next(name for name, rank in LEVELS.items() if rank == weakest)
 
