@@ -1,10 +1,10 @@
-"""Drive archive · bounded cache · restore section (ANIM-013).
+"""Drive archive · bounded cache · restore section (ANIM-013, ANIM-018).
 
-A real Google OAuth client does not exist for this program, so the connect
-button runs the fake consent flow against an on-disk fake Drive; every
-surface says the real connection stays UNQUALIFIED. Tokens live in the
-in-memory session only — nothing in this panel writes a token, code or
-client secret to disk, logs or the project.
+The connect button runs the fake consent flow against an on-disk fake
+Drive. A real client file is opt-in and still leaves qualification
+UNQUALIFIED until `remote-qualify` completes on Google. Tokens live in
+the in-memory session only — nothing in this panel writes a token, code
+or client secret to disk, logs or the project.
 """
 from pathlib import Path
 import sys
@@ -18,6 +18,7 @@ from engine.drive_archive import (archive_frames, archive_status,
                                   restore_archive)
 from engine.drive_oauth import (FakeOAuthFlow, MemoryTokenStore,
                                 connect_drive, load_connection_metadata)
+from engine.remote_qualify import archive_panel_caption
 from engine.storage_backends.fake_drive import FakeDriveBackend
 from engine.workspace import Workspace
 
@@ -190,6 +191,7 @@ def render_archive(project):
     """The Drive archive section for the connection tab."""
     st.divider()
     st.subheader("Drive 아카이브 · 복원 (fake backend)")
+    st.caption(archive_panel_caption())
     st.caption("pack/member 해시·범위 읽기·bounded cache·staging 복원만 검사합니다. "
                "fake 성공은 실제 Drive qualification이 아닙니다.")
     session = _connect()

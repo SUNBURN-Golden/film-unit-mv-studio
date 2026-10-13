@@ -58,6 +58,18 @@ def sha256_bytes(data):
     return hashlib.sha256(data).hexdigest()
 
 
+def sha256_file(path, *, chunk_bytes=1 << 20):
+    """SHA-256 of a file, read in bounded chunks."""
+    hasher = hashlib.sha256()
+    with open(path, "rb") as stream:
+        while True:
+            chunk = stream.read(chunk_bytes)
+            if not chunk:
+                break
+            hasher.update(chunk)
+    return hasher.hexdigest()
+
+
 def png_header(data, name="member"):
     """PNG signature + IHDR dimensions, read before any decode allocation."""
     if len(data) < 33 or data[:8] != PNG_SIGNATURE:
@@ -83,6 +95,43 @@ def decoded_bytes_estimate(header):
     return header["width"] * header["height"] * channels * (header["bit_depth"] // 8)
 
 
+def _member_head(member, count):
+    """First `count` bytes of a member carrying `data` or `path`."""
+    data = member.get("data")
+    if data is not None:
+        return data[:count]
+    path = member.get("path")
+    if path is None:
+        raise FilmError("A pack member needs data bytes or a file path")
+    with open(path, "rb") as stream:
+        return stream.read(count)
+
+
+def _member_size(member):
+    data = member.get("data")
+    if data is not None:
+        return len(data)
+    path = member.get("path")
+    if path is None:
+        raise FilmError("A pack member needs data bytes or a file path")
+    return Path(path).stat().st_size
+
+
+def _image_contract(heads, sizes, name):
+    header = png_header(heads[0], name)
+    for position, head in enumerate(heads[1:], 1):
+        other = png_header(head, f"{name}[{position}]")
+        if (other["width"], other["height"], other["pixel_format"]) \
+                != (header["width"], header["height"], header["pixel_format"]):
+            raise FilmError("Pack members must share one canvas and pixel format")
+    return {"width": header["width"], "height": header["height"],
+            "pixel_format": header["pixel_format"],
+            "alpha": header["color_type"] in {4, 6},
+            "color": "sRGB",
+            "max_encoded_bytes": max(sizes),
+            "max_decoded_bytes": decoded_bytes_estimate(header)}
+
+
 def image_contract_for(png_bodies, name="sequence"):
     """Derive one image_contract from a set of member PNG bytes.
 
@@ -92,18 +141,17 @@ def image_contract_for(png_bodies, name="sequence"):
     """
     if not png_bodies:
         raise FilmError("image_contract needs at least one member")
-    header = png_header(png_bodies[0], name)
-    for position, body in enumerate(png_bodies[1:], 1):
-        other = png_header(body, f"{name}[{position}]")
-        if (other["width"], other["height"], other["pixel_format"]) \
-                != (header["width"], header["height"], header["pixel_format"]):
-            raise FilmError("Pack members must share one canvas and pixel format")
-    return {"width": header["width"], "height": header["height"],
-            "pixel_format": header["pixel_format"],
-            "alpha": header["color_type"] in {4, 6},
-            "color": "sRGB",
-            "max_encoded_bytes": max(len(b) for b in png_bodies),
-            "max_decoded_bytes": decoded_bytes_estimate(header)}
+    return _image_contract([body[:33] for body in png_bodies],
+                           [len(body) for body in png_bodies], name)
+
+
+def image_contract_for_members(members, name="sequence"):
+    """image_contract_for over member dicts; file-backed members are
+    header-read, never loaded whole."""
+    if not members:
+        raise FilmError("image_contract needs at least one member")
+    return _image_contract([_member_head(m, 33) for m in members],
+                           [_member_size(m) for m in members], name)
 
 
 def check_member_png(data, image_contract, member_id):
@@ -164,13 +212,82 @@ def build_pack(members):
     return header + b"".join(bodies), entries
 
 
-def make_index(pack_bytes, member_entries, *, image_contract, frame_coverage,
-               snapshot_digest, recipe_digest, sequence_digest, retention_refs):
-    """The sidecar pack_index document pinning the built pack."""
+def _member_entry(member, offset, length, sha256, seen_ids, seen_frames):
+    member_id = member["member_id"]
+    if member_id in seen_ids:
+        raise FilmError(f"Duplicate member id: {member_id}")
+    seen_ids.add(member_id)
+    frame_index = member.get("frame_index")
+    if frame_index is not None:
+        if frame_index in seen_frames:
+            raise FilmError(f"Duplicate frame_index: {frame_index}")
+        seen_frames.add(frame_index)
+    return {"member_id": member_id,
+            "frame_index": frame_index,
+            "source_role": member.get("source_role"),
+            "byte_offset": offset, "byte_length": length,
+            "sha256": sha256}
+
+
+def build_pack_file(members, out_path, *, chunk_bytes=1 << 20):
+    """File-backed build_pack: identical bytes, streamed member bodies.
+
+    Each member dict carries `data` (bytes) or `path` (a file read in
+    `chunk_bytes` pieces — the member is never held whole). Returns
+    `(pack_info, member_entries)` where `pack_info` holds the pack's
+    `byte_length` and `sha256`, computed incrementally.
+    """
+    members = list(members)
+    if not members:
+        raise FilmError("A pack needs at least one member")
+    header = PACK_MAGIC + struct.pack("<II", PACK_FORMAT_VERSION,
+                                      HEADER_BYTE_LENGTH)
+    offset = HEADER_BYTE_LENGTH
+    entries = []
+    seen_ids, seen_frames = set(), set()
+    whole = hashlib.sha256()
+    whole.update(header)
+    with open(out_path, "wb") as out:
+        out.write(header)
+        for member in members:
+            hasher = hashlib.sha256()
+            length = 0
+            data = member.get("data")
+            if data is not None:
+                hasher.update(data)
+                whole.update(data)
+                out.write(data)
+                length = len(data)
+            else:
+                path = member.get("path")
+                if path is None:
+                    raise FilmError("A pack member needs data bytes or a "
+                                    "file path")
+                with open(path, "rb") as source:
+                    while True:
+                        chunk = source.read(chunk_bytes)
+                        if not chunk:
+                            break
+                        hasher.update(chunk)
+                        whole.update(chunk)
+                        out.write(chunk)
+                        length += len(chunk)
+            entries.append(_member_entry(member, offset, length,
+                                         hasher.hexdigest(), seen_ids,
+                                         seen_frames))
+            offset += length
+    return {"byte_length": offset, "sha256": whole.hexdigest()}, entries
+
+
+def make_index_for(pack_sha256, pack_byte_length, member_entries, *,
+                   image_contract, frame_coverage, snapshot_digest,
+                   recipe_digest, sequence_digest, retention_refs):
+    """The sidecar pack_index document pinning a pack described by its
+    already-computed whole-byte hash and length."""
     doc = {"document_type": INDEX_TYPE, "schema_version": 1,
            "pack_format_version": PACK_FORMAT_VERSION,
-           "pack_sha256": sha256_bytes(pack_bytes),
-           "pack_byte_length": len(pack_bytes),
+           "pack_sha256": pack_sha256,
+           "pack_byte_length": pack_byte_length,
            "header_byte_length": HEADER_BYTE_LENGTH,
            "snapshot_digest": snapshot_digest,
            "recipe_digest": recipe_digest,
@@ -181,6 +298,16 @@ def make_index(pack_bytes, member_entries, *, image_contract, frame_coverage,
            "frame_coverage": list(frame_coverage),
            "retention_refs": list(retention_refs)}
     return validate_index(doc)
+
+
+def make_index(pack_bytes, member_entries, *, image_contract, frame_coverage,
+               snapshot_digest, recipe_digest, sequence_digest, retention_refs):
+    """The sidecar pack_index document pinning the built pack."""
+    return make_index_for(
+        sha256_bytes(pack_bytes), len(pack_bytes), member_entries,
+        image_contract=image_contract, frame_coverage=frame_coverage,
+        snapshot_digest=snapshot_digest, recipe_digest=recipe_digest,
+        sequence_digest=sequence_digest, retention_refs=retention_refs)
 
 
 def _int(value, what, minimum=0):

@@ -186,6 +186,22 @@ def main(argv=None):
     ast = sub.add_parser("archive-status", help="ANIM-013: object inventory and seal state of an archive manifest")
     ast.add_argument("manifest")
     ast.add_argument("--root")
+    qualify = sub.add_parser(
+        "remote-qualify",
+        help="ANIM-018: Drive→local worker→archive qualification evidence. "
+             "No client file writes WAITING and does not call Google. "
+             "--fixture is an offline protocol double and cannot qualify")
+    qualify.add_argument(
+        "--evidence-dir", default=None,
+        help="Directory outside the repo for redacted evidence "
+             "(default: ~/.film-unit/anim-018-evidence)")
+    qualify.add_argument(
+        "--fixture", action="store_true",
+        help="Run the offline protocol double. Never marks QUALIFIED")
+    qualify.add_argument(
+        "--scratch-limit", type=int, default=256 * 1024 * 1024,
+        help="Worker scratch cap for the 240s/1080p profile. "
+             "A shortfall stops the run; it does not downscale")
     jstat = sub.add_parser("journal-status", help="ANIM-021: durable journal chain health and the rebuilt job picture for a coordinator state dir")
     jstat.add_argument("state_dir")
     jrec = sub.add_parser("journal-reconcile", help="ANIM-021: rebuild the runtime snapshot from the durable journal and list jobs still needing explicit reconcile")
@@ -638,6 +654,11 @@ def main(argv=None):
         elif a.command == "archive-status":
             from .archive_cli import archive_status_cli
             result = archive_status_cli(a.manifest, root=a.root)
+        elif a.command == "remote-qualify":
+            from .remote_qualify import run_remote_qualify
+            result = run_remote_qualify(
+                a.evidence_dir, fixture=a.fixture,
+                scratch_limit_bytes=a.scratch_limit)
         elif a.command == "journal-status":
             from .journal_cli import journal_status
             result = journal_status(a.state_dir)

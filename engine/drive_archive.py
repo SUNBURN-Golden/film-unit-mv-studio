@@ -23,11 +23,13 @@ import uuid
 from .animation_schema import canon_bytes
 from .archive_manifest import (DEFAULT_READBACK_CAP, DEFAULT_RETRY,
                                DEFAULT_UPLOAD, LEVELS, archive_sha,
-                               make_archive, resumable_put, seal_archive,
+                               make_archive, resumable_put,
+                               resumable_put_file, seal_archive,
                                validate_archive, verify_archive)
 from .core import FilmError
-from .fav_pack import (build_pack, image_contract_for, index_bytes,
-                       make_index, sha256_bytes)
+from .fav_pack import (build_pack, build_pack_file,
+                       image_contract_for_members, index_bytes,
+                       make_index_for, sha256_bytes)
 from .pack_reader import PackReader, fetch_index
 
 
@@ -40,17 +42,29 @@ def archive_frames(backend, members, *, profile, image_contract=None,
                    recipe_digest=None, sequence_digest=None,
                    retention_refs=(), connection=None, archive_id=None,
                    transport=None, min_level="UPLOAD_HASH_MATCHED",
-                   readback_cap=DEFAULT_READBACK_CAP, sleep_fn=None):
+                   readback_cap=DEFAULT_READBACK_CAP, sleep_fn=None,
+                   pack_path=None, readback_chunk_bytes=None):
     """Pack members, upload, verify and seal an archive manifest.
 
     `backend` may be a raw backend or a DriveSession's `authorized`
     wrapper; every call still passes its grant boundary.
+
+    Members carry `data` (bytes) or, when `pack_path` is given, `path`
+    (a member file). With `pack_path` the pack is built on disk and
+    uploaded by chunked reads — the whole pack is never held in memory —
+    and `readback_chunk_bytes` makes the verification readback stream
+    ranged reads of that size through the same hash check.
     """
     transport = transport or {"retry": DEFAULT_RETRY,
                               "upload": dict(DEFAULT_UPLOAD)}
-    pack_bytes, entries = build_pack(members)
-    contract = image_contract or image_contract_for(
-        [m["data"] for m in members])
+    sleep_fn = sleep_fn or (lambda ms: None)
+    if pack_path is not None:
+        pack_info, entries = build_pack_file(members, pack_path)
+        pack_sha, pack_len = pack_info["sha256"], pack_info["byte_length"]
+    else:
+        pack_bytes, entries = build_pack(members)
+        pack_sha, pack_len = sha256_bytes(pack_bytes), len(pack_bytes)
+    contract = image_contract or image_contract_for_members(members)
     if frame_coverage is None:
         frame_indices = sorted(m["frame_index"] for m in entries
                                if m["frame_index"] is not None)
@@ -58,8 +72,8 @@ def archive_frames(backend, members, *, profile, image_contract=None,
             raise FilmError("frame_coverage is required when no member "
                             "carries a frame_index")
         frame_coverage = [frame_indices[0], frame_indices[-1] + 1]
-    index_doc = make_index(
-        pack_bytes, entries, image_contract=contract,
+    index_doc = make_index_for(
+        pack_sha, pack_len, entries, image_contract=contract,
         frame_coverage=frame_coverage, snapshot_digest=snapshot_digest,
         recipe_digest=recipe_digest, sequence_digest=sequence_digest,
         retention_refs=list(retention_refs))
@@ -67,15 +81,19 @@ def archive_frames(backend, members, *, profile, image_contract=None,
 
     def put(object_id, data):
         return resumable_put(backend, object_id, data, transport["upload"],
-                             transport["retry"], sleep_fn or (lambda ms: None))
+                             transport["retry"], sleep_fn)
 
-    pack_id = _object_id(pack_bytes)
-    put(pack_id, pack_bytes)
+    pack_id = f"sha256-{pack_sha}"
+    if pack_path is not None:
+        resumable_put_file(backend, pack_id, pack_path, transport["upload"],
+                           transport["retry"], sleep_fn)
+    else:
+        put(pack_id, pack_bytes)
     index_id = _object_id(index_raw)
     put(index_id, index_raw)
     objects = [
         {"object_id": pack_id, "kind": "pack",
-         "byte_length": len(pack_bytes), "sha256": sha256_bytes(pack_bytes),
+         "byte_length": pack_len, "sha256": pack_sha,
          "revision": None},
         {"object_id": index_id, "kind": "pack_index",
          "byte_length": len(index_raw), "sha256": sha256_bytes(index_raw),
@@ -83,15 +101,15 @@ def archive_frames(backend, members, *, profile, image_contract=None,
     doc = make_archive(
         archive_id or f"arc-{uuid.uuid4().hex[:12]}", profile, objects,
         pack={"object_id": pack_id, "index_object_id": index_id,
-              "byte_length": len(pack_bytes),
-              "sha256": sha256_bytes(pack_bytes),
+              "byte_length": pack_len,
+              "sha256": pack_sha,
               "index_sha256": sha256_bytes(index_raw)},
         transport=transport, connection=connection,
         verification={"level": "UPLOADED_UNVERIFIED",
                       "min_required": min_level,
                       "readback_cap_bytes": readback_cap})
-    achieved = verify_archive(backend, doc, sleep_fn=sleep_fn
-                              or (lambda ms: None))
+    achieved = verify_archive(backend, doc, sleep_fn=sleep_fn,
+                              readback_chunk_bytes=readback_chunk_bytes)
     sealed = seal_archive(doc, achieved)
     manifest_raw = canon_bytes(sealed)
     manifest_id = f"manifest-{sealed['archive_id']}"
@@ -99,6 +117,7 @@ def archive_frames(backend, members, *, profile, image_contract=None,
     return {"archive": sealed, "archive_sha256": archive_sha(sealed),
             "manifest_object_id": manifest_id,
             "pack_object_id": pack_id, "index_object_id": index_id,
+            "pack_members": entries,
             "achieved_level": achieved}
 
 
@@ -140,7 +159,8 @@ def _check_restore_dest(dest, allowed_root):
 
 def restore_archive(backend, archive_doc, workspace, dest_dir, *,
                     allowed_root=None, members=None, prefix="F",
-                    offline=False, whole_pack_cap=None, sleep_fn=None):
+                    offline=False, whole_pack_cap=None, sleep_fn=None,
+                    stream_chunk_bytes=None):
     """Restore selected members through staging into `dest_dir`.
 
     Nothing reaches the destination until every selected member was
@@ -148,6 +168,10 @@ def restore_archive(backend, archive_doc, workspace, dest_dir, *,
     the full index order; names are generated here — index fields never
     become paths. `allowed_root` is a fixed configured root supplied by the
     caller — never something derived from the destination.
+
+    `stream_chunk_bytes` makes the offline whole-pack verification hash
+    bounded ranged reads, and each verified member is released after it
+    is staged — neither the pack nor the member set is held in memory.
     """
     archive_doc = validate_archive(archive_doc)
     if archive_doc.get("pack") is None:
@@ -178,7 +202,7 @@ def restore_archive(backend, archive_doc, workspace, dest_dir, *,
         if offline:
             # Full-pack download + hash + reservation first; only then is
             # the restore allowed to report offline capability.
-            reader.verify_full_pack()
+            reader.verify_full_pack(stream_chunk_bytes)
             offline_ready = True
         names = []
         for position, member in enumerate(selected):
@@ -194,6 +218,11 @@ def restore_archive(backend, archive_doc, workspace, dest_dir, *,
             name = f"{prefix}_{position + 1:06d}.png"
             stage.write_member(name, data)
             names.append(name)
+            if stream_chunk_bytes is not None:
+                # Bounded-memory restore: the verified copy lives in the
+                # workspace cache, the member itself is released.
+                reader.verified.pop(member["member_id"], None)
+                del data
         published = stage.commit(dest)
     except Exception:
         stage.abort()
