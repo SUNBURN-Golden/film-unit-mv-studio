@@ -81,6 +81,16 @@ def _backend():
     return backend, transport
 
 
+def _stub_runtime(monkeypatch):
+    """Skip the real `ffmpeg -version`/platform probe in tests whose
+    subject is not the runtime record."""
+    monkeypatch.setattr("engine.remote_qualify._runtime", lambda: {
+        "python": "3.x", "implementation": "CPython",
+        "platform": "test", "machine": "test", "processor": "test",
+        "gpu": "hardware-unverified", "ffmpeg": "UNAVAILABLE",
+        "ffmpeg_path": None, "process_rss_bytes": None})
+
+
 def test_pkce_s256_matches_rfc7636():
     verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"
     assert pkce_challenge(verifier) == "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
@@ -536,6 +546,7 @@ def test_write_evidence_does_not_use_path_write_text(tmp_path, monkeypatch):
             direct_writes.append(self.name)
         return real_write_text(self, data, *args, **kwargs)
 
+    _stub_runtime(monkeypatch)
     monkeypatch.setattr(Path, "write_text", spy_write_text)
     write_evidence(evidence, waiting_report())
     assert direct_writes == []
@@ -610,6 +621,7 @@ def test_attended_capacity_block_denies_the_client_secret(tmp_path, monkeypatch)
 
     monkeypatch.setattr("engine.remote_qualify.connect_google",
                         lambda: _Session())
+    _stub_runtime(monkeypatch)
     from engine.remote_qualify import run_attended
     report, secrets = run_attended(1)
     assert report["detail"] == "CAPACITY_BLOCKED"
@@ -628,6 +640,7 @@ def test_panel_caption_reports_waiting(monkeypatch):
 
 def test_cli_without_a_client_file_writes_waiting_evidence(tmp_path, monkeypatch):
     monkeypatch.delenv("FILM_GOOGLE_OAUTH_CLIENT_FILE", raising=False)
+    _stub_runtime(monkeypatch)
     from engine.cli import main
     out = tmp_path / "evidence"
     assert main(["remote-qualify", "--evidence-dir", str(out)]) == 0
@@ -652,6 +665,7 @@ def test_evidence_inside_the_repo_is_refused(tmp_path, monkeypatch):
 
 def test_legacy_project_is_not_migrated(tmp_path, monkeypatch):
     monkeypatch.delenv("FILM_GOOGLE_OAUTH_CLIENT_FILE", raising=False)
+    _stub_runtime(monkeypatch)
     from engine.audio import synth_test_audio
     from engine.cli import main
     audio = synth_test_audio(tmp_path / "song.wav", seconds=1)
@@ -678,7 +692,8 @@ def _noise_png(seed, width, height):
     from PIL import Image
     buffer = io.BytesIO()
     Image.frombytes("RGBA", (width, height),
-                    os.urandom(width * height * 4)).save(buffer, "PNG")
+                    os.urandom(width * height * 4)).save(
+        buffer, "PNG", compress_level=0)
     return buffer.getvalue()
 
 
@@ -931,13 +946,39 @@ def test_fixture_archive_uses_bounded_retry_and_real_sleep(tmp_path, monkeypatch
     assert slept == [0.025]
 
 
-def test_qualify_cache_reuses_encode_and_worker(tmp_path, monkeypatch, capsys):
-    monkeypatch.delenv("FILM_GOOGLE_OAUTH_CLIENT_FILE", raising=False)
-    monkeypatch.setenv("FILM_QUALIFY_CACHE_DIR", str(tmp_path / "qcache"))
+@pytest.fixture(scope="module")
+def _populated_qualify_cache(tmp_path_factory):
+    """One cold fixture run shared by the qualify-cache tests so the full
+    Drive→worker→archive render happens once per module, not per test."""
     import engine.remote_qualify as rq
 
-    (tmp_path / "run1").mkdir()
-    first, _ = rq.run_fixture(tmp_path / "run1")
+    root = tmp_path_factory.mktemp("qualify-cache")
+    scratch = tmp_path_factory.mktemp("qualify-seed")
+    saved_cache = os.environ.get("FILM_QUALIFY_CACHE_DIR")
+    saved_client = os.environ.get("FILM_GOOGLE_OAUTH_CLIENT_FILE")
+    os.environ["FILM_QUALIFY_CACHE_DIR"] = str(root)
+    os.environ.pop("FILM_GOOGLE_OAUTH_CLIENT_FILE", None)
+    try:
+        first, _secrets = rq.run_fixture(scratch)
+    finally:
+        if saved_cache is None:
+            os.environ.pop("FILM_QUALIFY_CACHE_DIR", None)
+        else:
+            os.environ["FILM_QUALIFY_CACHE_DIR"] = saved_cache
+        if saved_client is None:
+            os.environ.pop("FILM_GOOGLE_OAUTH_CLIENT_FILE", None)
+        else:
+            os.environ["FILM_GOOGLE_OAUTH_CLIENT_FILE"] = saved_client
+    return root, first
+
+
+def test_qualify_cache_reuses_encode_and_worker(tmp_path, monkeypatch, capsys,
+                                                _populated_qualify_cache):
+    monkeypatch.delenv("FILM_GOOGLE_OAUTH_CLIENT_FILE", raising=False)
+    cache_root, first = _populated_qualify_cache
+    monkeypatch.setenv("FILM_QUALIFY_CACHE_DIR", str(cache_root))
+    import engine.remote_qualify as rq
+
     assert first["problems"] == []
     assert first["qualify_cache"]["reused"] == []
 
@@ -950,7 +991,7 @@ def test_qualify_cache_reuses_encode_and_worker(tmp_path, monkeypatch, capsys):
     assert "FILM_QUALIFY_CACHE_DIR" in capsys.readouterr().err
 
     cache_text = ""
-    for path in (tmp_path / "qcache").rglob("*.json"):
+    for path in cache_root.rglob("*.json"):
         cache_text += path.read_text(encoding="utf-8")
     for forbidden in ("anim018-client-secret-value", "mem-access-",
                       "mem-refresh-", "anim018-code",
@@ -958,15 +999,15 @@ def test_qualify_cache_reuses_encode_and_worker(tmp_path, monkeypatch, capsys):
         assert forbidden not in cache_text
 
 
-def test_qualify_cache_rejects_a_tampered_mp4(tmp_path, monkeypatch):
+def test_qualify_cache_rejects_a_tampered_mp4(tmp_path, monkeypatch,
+                                             _populated_qualify_cache):
     """A matching key with corrupted bytes is a miss, not a hit."""
     monkeypatch.delenv("FILM_GOOGLE_OAUTH_CLIENT_FILE", raising=False)
-    monkeypatch.setenv("FILM_QUALIFY_CACHE_DIR", str(tmp_path / "qcache"))
+    cache_root, first = _populated_qualify_cache
+    monkeypatch.setenv("FILM_QUALIFY_CACHE_DIR", str(cache_root))
     import engine.remote_qualify as rq
 
-    (tmp_path / "run1").mkdir()
-    first, _ = rq.run_fixture(tmp_path / "run1")
-    key_dir = tmp_path / "qcache" / first["qualify_cache"]["key"]
+    key_dir = cache_root / first["qualify_cache"]["key"]
     blob = (key_dir / "out.mp4").read_bytes()
     (key_dir / "out.mp4").write_bytes(bytes([blob[0] ^ 1]) + blob[1:])
 

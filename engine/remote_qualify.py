@@ -238,11 +238,17 @@ def _png(seed, width, height):
     return buffer.getvalue()
 
 
-def _write_client(path, secret):
+def _write_client(path):
+    """Fixture installed-app client JSON, built from fresh literals.
+
+    No caller-supplied, OAuth-session or token-derived value is written
+    to disk; the in-memory denylist marker is a separate copy of the
+    same fake string.
+    """
     path.write_text(json.dumps({
         "installed": {
             "client_id": "anim018-test.apps.googleusercontent.com",
-            "client_secret": secret,
+            "client_secret": "anim018-client-secret-value",
             "auth_uri": "https://accounts.google.com/o/oauth2/v2/auth",
             "token_uri": "https://oauth2.googleapis.com/token",
             "redirect_uris": ["http://127.0.0.1"]}}), encoding="utf-8")
@@ -363,8 +369,10 @@ class _QualifyCache:
     and geometry — a rerun with identical inputs reuses the encode output
     and the verified worker record after each stored file's SHA-256 is
     re-checked against the record. Only non-secret artifacts are stored:
-    out.mp4, per-frame digests and the worker job/verify outcome. Tokens
-    and client secrets never enter the cache directory.
+    out.mp4, per-frame digests and an allowlisted worker verify record.
+    The worker allowlist is job state, digests, ranges and frame hashes
+    only — grant fields, nonces, request ids and anything derived from
+    the OAuth session or tokens are never written to the cache.
     """
 
     def __init__(self, root, *, snapshot, recipe, frames, width, height):
@@ -428,14 +436,21 @@ class _QualifyCache:
         except (OSError, json.JSONDecodeError):
             return None
 
+    _JOB_FIELDS = ("job_key", "state", "snapshot_digest", "output_range",
+                   "attempts_used", "members")
+
     def store_worker(self, worker, frame_digests):
         from .core import atomic_text
         from .fav_pack import sha256_file
         self.dir.mkdir(parents=True, exist_ok=True)
+        job = worker.get("job") or {}
+        operation = job.get("operation") or {}
+        cached_job = {field: job.get(field) for field in self._JOB_FIELDS}
+        cached_job["recipe_digest"] = operation.get("recipe_digest")
         payload = {"state": worker["state"],
                    "qualification_state": worker["qualification_state"],
                    "route": worker["route"],
-                   "job": json.loads(json.dumps(worker["job"], default=str)),
+                   "job": cached_job,
                    "direct_drive": worker["direct_drive"],
                    "frame_digests": list(frame_digests)}
         atomic_text(self.dir / "worker.json",
@@ -819,7 +834,7 @@ def run_pipeline(session, transport, scratch, *, width, height, frames,
 def run_fixture(scratch, *, scratch_limit_bytes=DEFAULT_SCRATCH_LIMIT):
     """Offline protocol double. Never QUALIFIED."""
     secret = "anim018-client-secret-value"
-    _write_client(scratch / "client.json", secret)
+    _write_client(scratch / "client.json")
     transport = MemoryDriveTransport()
     browser, loop, _captured = _scripted_consent(transport)
     session = connect_google(
