@@ -259,7 +259,27 @@ def import_video(project, shot_id, data, filename, service_id="custom"):
     finally:
         staged.unlink(missing_ok=True)
     warning = _aspect_warning(p, info["width"], info["height"], "영상")
-    return {"target": shot_id, "warnings": [warning] if warning else [], **info}
+    warnings = [warning] if warning else []
+    check = _conti_check(p, shot_id, record["sha256"], service_id)
+    warnings += check.get("warnings", [])
+    return {"target": shot_id, "warnings": warnings, "conti_check": check, **info}
+
+
+def _conti_check(p, shot_id, sha, service_id):
+    """Self-check a dropped clip against its conti the moment it arrives; never blocks the import."""
+    from .conti import load_conti
+    from .conti_brief import check_take
+    if load_conti(p, shot_id) is None:
+        return {"verdict": None, "warnings": []}
+    try:
+        record = check_take(p, shot_id, sha256=sha, service=service_id)
+    except FilmError as exc:
+        return {"verdict": None, "warnings": [f"콘티 자동 점검을 못 했습니다: {exc}"]}
+    failed = [c for c in record["mechanical"] if c["status"] == "FAIL"]
+    return {"verdict": record["verdict"], "attempt": record["attempt"],
+            "failed": [f"{c['check']}: {c['detail']}" for c in failed],
+            "pending": sum(c["verdict"] == "PENDING" for c in record["criteria"]),
+            "warnings": [f"콘티 점검 {c['check']} 실패: {c['detail']}" for c in failed]}
 
 
 def downloads_folder():
@@ -343,12 +363,20 @@ def frame_brief(project, shot_id):
 
 
 def video_brief(project, shot_id):
-    """What to paste into a video service for this shot, starting from its first frame."""
+    """What to paste into a video service for this shot, starting from its first frame.
+
+    With a conti (engine/conti.py) the prompt is the conti's motion-only brief —
+    every beat in clip-relative seconds — and the acceptance checklist rides along.
+    """
+    from .conti_brief import shot_brief
     p = Path(project)
     shot = _shot(p, shot_id)
     first = (shot.get("references") or [f"storyboard/{shot_id}.png"])[0]
-    return {"prompt": build_prompt(p, shot), "seconds": -(-shot["duration_ms"] // 1000), "start_frame": first,
-            "frame_ready": shot.get("storyboard_kind") == "imported", "render_mode": shot["render_mode"]}
+    brief = shot_brief(p, shot_id)
+    return {"prompt": brief["video_prompt"] or build_prompt(p, shot), "seconds": -(-shot["duration_ms"] // 1000),
+            "clip_seconds": brief["clip_seconds"], "start_frame": first,
+            "frame_ready": shot.get("storyboard_kind") == "imported", "render_mode": shot["render_mode"],
+            "checklist": brief["checklist"], "conti_sha256": brief["conti_sha256"], "warnings": brief["warnings"]}
 
 
 def reference_brief(project, folder, entry_id):

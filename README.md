@@ -223,6 +223,29 @@ python -m engine.cli packets projects/project_001 --shots S001,S002
 - 영상 서비스가 프로젝트 화면비를 지원하지 않으면 가장 가까운 비율로 만듭니다. 컴파일 때 여백을 넣어 맞추고 클립 소리는 제거합니다.
 - 캐릭터·장소 참조 이미지는 `bible/characters.yaml`, `bible/locations.yaml`의 `reference_images`에 프로젝트 안 경로로 적습니다.
 
+## 콘티에서 샷 제작·점검까지 (W00 재설계)
+
+[REDESIGN W00](docs/REDESIGN_W00.md)의 다음 목표는 **본편의 어려운 컷 하나를 구독 서비스만으로 실제로 만들고 한 번 수정까지 끝내는 것**입니다. 그 첫 두 조각이 들어 있습니다. 어느 명령도 서비스를 호출하거나 소비자 앱을 자동 조작하지 않으며, 샷·가사·검수·LOCK을 바꾸지 않습니다.
+
+```bash
+python -m engine.cli conti-draft projects/project_001                 # 샷마다 conti/S001.json 뼈대 (가사 cue·비트 포함)
+python -m engine.cli conti-request projects/project_001 --shots S012   # 사람+LLM 토론용 지시문 (복사해 붙여넣기)
+python -m engine.cli conti-submit projects/project_001 --file answer.json
+python -m engine.cli conti-status projects/project_001                 # 샷별 READY / 비어 있는 항목
+python -m engine.cli conti-brief projects/project_001 S012             # 첫 프레임·영상 프롬프트 (비트를 클립 기준 초로 환산, 4·6·8초로 맞춤)
+python -m engine.cli import-asset projects/project_001 S012 /path/take.mp4 --kind draft
+python -m engine.cli conti-check projects/project_001 S012 --service flow --units 20 --human-minutes 4
+python -m engine.cli conti-judge-request projects/project_001 S012     # 시각 LLM에 붙일 판정 요청 + 함께 올릴 프레임 5장
+python -m engine.cli conti-judge-submit projects/project_001 S012 --file judge.json --source llm:claude
+python -m engine.cli conti-verdict projects/project_001 S012 --reviewer JunTae --pass 2
+python -m engine.cli conti-metrics projects/project_001                # 샷별 시도 횟수·판정·구독 단위·사람 시간
+```
+
+- **콘티**는 샷마다 장면 목표, 가사 anchor, 비트 지도, 프레이밍, 카메라 이동, 인물별 포즈·표정·동작 비트, 조명, 팔레트, 연속성, 참조, 전환, **검사 가능한 수용 기준**, 미결 질문을 담습니다. 샷 범위 밖 시각, 선언되지 않은 인물, 프로젝트 밖 경로는 거부합니다. 미결 질문이 비어 있고 필수 항목이 채워지면 READY입니다. 별도 LOCK 기록은 없습니다.
+- **brief**는 콘티의 모든 시각을 클립 시작 기준 초로 바꿔 쓰고(`at 0.5 s: sets the cup down`), 영상 앱이 만들 수 있는 4·6·8초 중 샷을 덮는 가장 짧은 길이를 고릅니다. 8초를 넘는 샷은 나누라고 경고합니다. 웹사이트 연결 화면의 **샷 영상** 프롬프트도 콘티가 있으면 이 brief를 씁니다.
+- **check**는 가져온 테이크를 ffprobe/ffmpeg로 점검합니다. 길이가 샷보다 짧거나(DURATION) 움직이는 샷인데 샘플 프레임 사이 변화가 없으면(MOTION) FAIL, 화면비·해상도는 경고만 합니다. 5장의 샘플 프레임을 `qc/conti/<샷>/`에 저장하고, 콘티의 수용 기준을 PENDING으로 적습니다. 같은 테이크를 다시 점검하면 시도 번호가 유지되고, 새 테이크는 다음 시도입니다. 웹사이트 연결로 영상을 끌어다 놓으면 콘티가 있는 샷은 자동으로 점검합니다.
+- **judge**는 수용 기준과 샘플 프레임을 구독 중인 시각 LLM(Claude Code·Gemini CLI처럼 로컬 이미지를 읽는 공식 CLI, 또는 프레임을 첨부한 채팅)에 넘기고 답을 기준별 PASS/FAIL로 저장합니다. UNSURE는 PENDING으로 남아 사람이 그것만 확인합니다. 구독 한도에 걸리면 기다릴 뿐 유료 API로 넘어가지 않습니다.
+
 ## 프레임 애니메이션 개발 설계
 
 `FRAME_ANIMATION_V1` 확장은 [채택 결정](docs/decisions/FRAME_ANIMATION_V1_ADOPTION_20260930.md), [개발 시작 안내](docs/FRAME_ANIMATION_V1_DEVELOPMENT_KO.md), [상세 설계](docs/FRAME_ANIMATION_V1_DESIGN_KO.md), [Drive 저장·원격 실행·복수 인코더 성능 설계](docs/FRAME_ANIMATION_V1_EXECUTION_STORAGE_KO.md)를 개발 기준으로 진행합니다. 구현된 개발판 흐름·경로 A/B/C·fake/UNQUALIFIED 경계는 [사용 안내](docs/FRAME_ANIMATION_V1_USER_GUIDE_KO.md)를 보세요. 정수 프레임·시퀀스·노출·전환·W00 검수와 함께 브라우저 Google 로그인, Drive에서 읽는 컴파일, AI 구독 실행 환경, FFmpeg 외 native 인코더, 성능 우선 scheduler를 다룹니다. ANIM-001~018의 순서·수용 조건을 제공합니다. 새 모드 예외는 ARCHITECTURE.md·PROJECT_SPEC.md에 연결되어 있으며 구현·실서비스 qualification은 후속 작업입니다. 현재 v0.3 기능은 기존 안내를 따릅니다.
