@@ -14,6 +14,16 @@ duplicates; `look` is reused as the canon field (§1.2); Korean alignment is
 re-scoped to line-level cues with the Hangul matching work named (§1.4); the
 REDESIGN_W00 R3 `production` block dependency is made explicit (§2).
 
+Revision 3 (2026-10-15), after the r4 plan review (no blocking findings; its
+four non-blocking corrections applied): conti answers live in
+`conti/<shot>.json`, not `qc/conti/`, and persisted requests are placed and
+named so `_records`' `*.json` scan never counts them as takes — the §1.5
+revision record moves inside the take's check record for the same reason
+(§1.1, §1.5); `look` is optional and the `far` plumbing tolerates its absence
+(§1.2); the MMS_FA spike names its uroman step, torch weight and **CC-BY-NC
+4.0** weight licence (§1.4, licence table); the R2 ✅ cross-reference points
+at REDESIGN_W00 §5 (§1.7).
+
 Source under investigation: `https://github.com/anabologyco-maker/claudia-bot`,
 cloned to `/workspace/film-run/claudia-src`, inspected at `40584a4` (v0.3.4).
 The clone is **not** part of this repository and nothing from it is vendored.
@@ -67,6 +77,8 @@ real run in section 2 before being claimed as working.
 | CMUdict | BSD-2-Clause data | English pronunciations only — not ported (Korean path doesn't need it) |
 | `wordfreq` | CC-BY-SA 4.0 | Exclude — attribution burden not worth it |
 | Whisper / faster-whisper / whisper.cpp | MIT | Candidate dependency for Korean lyric timing (§1.4, §2) |
+| torchaudio `MMS_FA` bundle weights | **CC-BY-NC 4.0** (non-commercial) — https://docs.pytorch.org/audio/2.11.0/generated/torchaudio.pipelines.MMS_FA.html | Spike only (§1.4); not shipped unless the owner rules the film's use acceptable under NC terms — otherwise the spike result is reference-only |
+| uroman (romaniser for MMS_FA input) | MIT — https://github.com/isi-nlp/uroman | Needed only by the MMS_FA spike |
 | Suno | Commercial use requires paid plan — https://help.suno.com/en/articles/9601665 | Only matters if the input song is Suno-generated; the film master is owner-supplied |
 
 ---
@@ -86,11 +98,13 @@ Classification legend: **reuse-as-is** (Film Unit already has it), **port-with-m
   `docs/00-overview.md` §4).
 - **What Film Unit already has:** the paste-out → paste-back contract with
   *stored answers* exists — `engine/conti.py` `conti-request`/`conti-submit`
-  (answers validated and stored under `qc/conti/`), `engine/conti_brief.py`
-  `conti-judge-request`/`conti-judge-submit` (judge answers land in the check
-  record's `judgements`), and `engine/director.py`'s proposal + log under
-  `bible/`. `engine/autopilot.py` + `app/execution_console.py` list what
-  remains to be done.
+  (answers validated and stored as `conti/<shot>.json` — `CONTI_DIR`,
+  `conti.py:21,233`), `engine/conti_brief.py`
+  `conti-judge-request`/`conti-judge-submit` (judge answers land in the
+  `judgements` of the take's check record `qc/conti/<shot>/<take sha16>.json`
+  — `QA_DIR`, `conti_brief.py:37,202-203`), and `engine/director.py`'s
+  proposal + log under `bible/`. `engine/autopilot.py` +
+  `app/execution_console.py` list what remains to be done.
 - **The real gap is narrower:** the *request text itself* is not persisted.
   `conti_request`/`judge_request` return text to paste; only the answer lands
   on disk — so a discussion resumed in a new session loses the exact request
@@ -99,17 +113,34 @@ Classification legend: **reuse-as-is** (Film Unit already has it), **port-with-m
   one. Claudia's `jobs/<id>/` tree with its own CREATED/USER_RUNS/DONE/FAILED
   status would be a parallel convention over state Film Unit already expresses
   (records on disk + autopilot's gate table) — dropped. Instead, each
-  `*-request` output is also written to disk next to where its answer is
-  stored (the `qc/conti/` records it feeds, and — for the hard cut —
-  `docs/evidence/hard-cut-01/`, where REDESIGN_W00 R4 keeps both request and
-  answer), so any answer can be re-read against the request that produced it
-  and a multi-session discussion resumes from files. The user still runs their
-  own Claude Code / Gemini CLI / web chat on the request text. No daemon, no
+  `*-request` output is also written to disk, as the exact returned text,
+  next to where its answer is stored:
+  - **conti request** → `conti/requests/<request sha16>.txt`. One
+    `conti_request` call can cover several shots, so the file is keyed by the
+    text's hash, not a shot id (the shot ids are inside its payload). Nothing
+    scans `conti/` — `conti.py` opens `conti/<shot>.json` by path only. The
+    answer links back through one optional `request_sha256` key that
+    `conti-submit` sets when given the request id; `KEYS` is a closed set
+    (`conti.py:26`, enforced at `:106`), so this is a one-key schema
+    extension, not a second record.
+  - **judge request** → `qc/conti/<shot>/<take sha16>.judge-<request sha16>.txt`,
+    beside the check record whose `judgements` its answer fills. Deliberately
+    **not** `*.json`: `_records` (`conti_brief.py:206-208`) loads every
+    `*.json` in that folder as a take check record, and `conti-metrics`
+    (`:416`) counts them as attempts.
+  - **hard cut only** — both are also copied to `docs/evidence/hard-cut-01/`,
+    where REDESIGN_W00 R4 keeps request and answer.
+
+  So any answer can be re-read against the request that produced it and a
+  multi-session discussion resumes from files. The user still runs their own
+  Claude Code / Gemini CLI / web chat on the request text. No daemon, no
   polling, no new state system.
 - **Dependencies:** none (plain files; the agent is the user's own
   subscription client).
 - **Verification:** unit test that the persisted request bytes equal what
-  `conti_request`/`judge_request` return; real verification is the §3 scene,
+  `conti_request`/`judge_request` return, and that `conti-metrics` attempt
+  counts and `load_check` results are unchanged after a judge request is
+  persisted; real verification is the §3 scene,
   where the conti for the hard cut is produced through persisted
   request/answer pairs.
 - **vs existing Film Unit:** `engine/autopilot.py` gate table +
@@ -133,9 +164,13 @@ Classification legend: **reuse-as-is** (Film Unit already has it), **port-with-m
   4-test-plates gate (G3) before any batch, `plates/picks.json` + `slop/board/plates.py`.
 - **What Film Unit already has:** `engine/packets.py` and
   `engine/conti_brief.py` already build prompts from `bible/characters.yaml`
-  with reference images and input dispositions, and each character already
-  carries a pinned identity text — `look` ("fixed visual traits repeated in
-  every shot") plus `invariants`, consumed by `packets.py`'s `entry_text`.
+  with reference images and input dispositions. The pinned identity text
+  already has a field: `look` ("fixed visual traits repeated in every shot"),
+  defined by the director proposal schema (`engine/director.py:27`, validated
+  at `:101`) and read with `invariants` by `packets.py`'s `entry_text`
+  (`:59-63`). It is **not** universally present — the shipped preset
+  `presets/water_please/characters.yaml` carries only
+  `invariants`/`behavior` — and `entry_text` already skips a missing `look`.
   **Reuse `look` as canon** — no duplicate `canon` field is added.
 - **What is missing:** (a) a short "far" variant of that identity text for
   wide shots, and (b) the fixed clause ordering that Claudia's records show
@@ -145,7 +180,11 @@ Classification legend: **reuse-as-is** (Film Unit already has it), **port-with-m
   clause assembly to Claudia's fixed order (identity text placed before the
   set); keep reference images as the *declared inputs* they already are
   (canon text is additive, not a replacement — reference images still ride
-  the handoff where the service supports them).
+  the handoff where the service supports them). Both `look` and `far` are
+  optional, as `entry_text` already treats `look`: a wide shot uses `far`,
+  else `look`, else `invariants` alone, and an entry with none of them gets
+  a brief warning ("no identity text — character may drift") rather than an
+  error, so preset bibles keep working unchanged.
 - **Adaptation guard (task §3):** the canon text is authored from the user's
   bible entry and style bible — **no Claudia canon, no photoreal default, no
   MJ parameter grammar** (`--ar`, `--raw`, personalization profile are MJ-only
@@ -153,7 +192,9 @@ Classification legend: **reuse-as-is** (Film Unit already has it), **port-with-m
   identity ("the short canon for a 2D cel-style lead" is just different text).
 - **Dependencies:** none — schema extension + prompt assembly change.
 - **Verification:** prompt-snapshot unit tests (existing style) asserting
-  clause order and identity-text presence; real check = the §3 scene's
+  clause order and identity-text presence, plus one on the `water_please`
+  preset shape (no `look`, no `far`) asserting the brief still renders with
+  the warning; real check = the §3 scene's
   first-frame candidates keep the character across the take.
 - **License/terms:** MIT. Midjourney-specific guidance excluded with MJ itself.
 
@@ -224,10 +265,25 @@ Classification legend: **reuse-as-is** (Film Unit already has it), **port-with-m
      - **Merge/correction rules — the part that ports:** energy-rise
        correction, interpolation of unplaced lines between anchored
        neighbours, low-confidence rows to the ear-check list.
-     Like-for-like alternative to spike first: a Korean-capable CTC *forced*
-     aligner (e.g. torchaudio's `MMS_FA` bundle) emits per-sheet tokens with
-     confidence, so claudia's merge rules apply directly — if it behaves on
-     sung Korean it is the smaller port than Whisper + fuzzy-match.
+     Method-alike alternative to spike: a Korean-capable CTC *forced*
+     aligner (torchaudio's `MMS_FA` bundle) emits per-sheet tokens with
+     scores, so claudia's merge rules would apply directly. It is **not** the
+     smaller port — its prep is real:
+     - **Romanisation step:** `MMS_FA`'s tokenizer takes Latin characters,
+       so each Hangul lyric line must first be romanised with uroman (MIT,
+       `pip install uroman`), and the aligned romanised tokens mapped back to
+       their Hangul line — a step of its own, like the Whisper path's
+       fuzzy-match.
+     - **Dependency weight:** pulls in `torch` + `torchaudio` (large wheels)
+       plus a model download; the default Whisper path can use
+       `faster-whisper` (CTranslate2, no torch). torchaudio is in maintenance
+       mode since 2.8 — `forced_align` is still documented in 2.11; pin and
+       re-verify at implementation time.
+     - **Weight licence:** **CC-BY-NC 4.0** (licence table above). Usable
+       only if the owner rules the film's use acceptable under
+       non-commercial terms; otherwise the spike is a timing reference only
+       and Whisper + fuzzy-match is the path.
+     The spike runs only if Whisper + fuzzy-match misses the §3.2 pass bar.
   2. **Vocal stem** (`engine/audio.py` extension): optional demucs import of
      the claudia stems approach, OR user-supplied stem export; fallback is a
      librosa harmonic/vocal-band proxy (already have librosa). htdemucs weight
@@ -246,13 +302,16 @@ Classification legend: **reuse-as-is** (Film Unit already has it), **port-with-m
      cut-on-beat/word rules port as *advisory scoring* into the conti/shot
      stage — the Film Unit conti stays authoritative, but its draft pace gets
      Claudia's measured numbers instead of a guess.
-- **Dependencies:** `whisper` or `faster-whisper` (optional extra; tests mock
-  its output), `demucs` optional, numpy/scipy/librosa/soundfile already present.
+- **Dependencies:** `faster-whisper` (preferred, no torch) or `whisper`
+  (optional extra; tests mock its output); spike-only and not in the default
+  extra: `torch` + `torchaudio` + `uroman` (MMS_FA, NC weights); `demucs`
+  optional; numpy/scipy/librosa/soundfile already present.
 - **Verification:** synthetic-audio unit tests (align on a generated tone track
   with known onsets; avsync on shifted copies — Claudia's own test style);
   real verification = the Korean-song run in §3.2.
 - **License/terms:** MIT code paths; whisper/faster-whisper MIT; demucs MIT +
-  flagged weights; wav2vec2/CMUdict not ported.
+  flagged weights; MMS_FA weights CC-BY-NC 4.0 (spike only, owner decision);
+  uroman MIT; wav2vec2/CMUdict not ported.
 
 ### 1.5 Candidate comparison, partial revision, user feedback application — **port-with-modification**
 
@@ -269,12 +328,20 @@ Classification legend: **reuse-as-is** (Film Unit already has it), **port-with-m
   (Claudia stores owner wording verbatim in `inbox.jsonl`; the traceable
   instruction→prompt→take chain is what partial revision needs); (b) the
   cover/cut-away decision ladder for failed sung spans.
-- **Port:** a `revision` record per shot (instruction text, resulting prompt
-  diff, take ids, timestamps) under `qc/conti/<shot>/`, consumed by the
-  existing replace-shot path. The ladder (keep synced span → cover clip → cut
-  away) becomes an advisory in the check record, not automation.
+- **Port:** a `revision` object **inside the new take's check record**
+  (`qc/conti/<shot>/<take sha16>.json`, written by `check_take`): the user's
+  instruction verbatim, the rejected take's `take_sha256` it replaces, the
+  persisted conti request that rewrote the field (§1.1), the prompt diff and
+  timestamps; `conti_sha256` already tells the two conti versions apart. Not
+  a separate file in that folder — `_records` (`conti_brief.py:206-208`)
+  would load it as a take and `conti-metrics` would count it as an attempt.
+  Consumed by the existing replace-shot path. The ladder (keep synced span →
+  cover clip → cut away) becomes an advisory in the check record, not
+  automation.
 - **Dependencies:** none new.
-- **Verification:** unit test on the record + the §4 revision test end-to-end.
+- **Verification:** unit test on the record (including: take 2 with a
+  `revision` object leaves `conti-metrics` at exactly 2 attempts) + the §4
+  revision test end-to-end.
 - **vs existing Film Unit:** all state lands in existing dirs; no parallel
   candidate DB.
 
@@ -316,8 +383,8 @@ Classification legend: **reuse-as-is** (Film Unit already has it), **port-with-m
   (subscription units, e.g. Flow credits) and `human_minutes` per take keyed
   to the conti digest, and `conti-metrics` (`conti_brief.py:416`) sums
   attempts/units/minutes per shot and in total. REDESIGN_W00 §2 names
-  `qc/conti/` + `docs/evidence/hard-cut-01/` as the numbers' home and marks
-  this ledger (R2) done.
+  `qc/conti/` + `docs/evidence/hard-cut-01/` as the numbers' home, and its §5
+  roadmap marks this ledger (R2) done ✅.
 - **Dropped as duplicate (r1 review):** the earlier-planned
   `subscription_units`/`attempt_no`/`human_minutes` fields on `handoff_log`,
   `engine/manual_spend.py` and `render/manual_spend.json` — a second ledger
@@ -386,19 +453,20 @@ of this path, not something this port re-implements.
 
 | File | Change |
 |---|---|
-| `engine/align.py` **(new)** | Korean lyric-line timing → proposed cues + ear-check list; output shaped to `lyrics_timed.json`; local Whisper (new code, optional extra) + Hangul normalisation/fuzzy-match to the lyric sheet (new step) + `slop/audio/merge.py` correction rules (the part that ports); MMS_FA forced aligner spiked as the like-for-like alternative |
-| `engine/sync_check.py` **(new)** | Port of `slop/sync/avsync.py` (numpy+FFmpeg only): lag, synced span, divergence, suggested cut; writes into `qc/conti/<shot>/` records |
+| `engine/align.py` **(new)** | Korean lyric-line timing → proposed cues + ear-check list; output shaped to `lyrics_timed.json`; local Whisper (new code, optional extra; `faster-whisper` preferred, no torch) + Hangul normalisation/fuzzy-match to the lyric sheet (new step) + `slop/audio/merge.py` correction rules (the part that ports). MMS_FA forced-aligner spike only if that misses the §3.2 bar — needs uroman romanisation + mapping back to Hangul lines, torch/torchaudio, and NC-licensed weights (owner decision before any use) |
+| `engine/sync_check.py` **(new)** | Port of `slop/sync/avsync.py` (numpy+FFmpeg only): lag, synced span, divergence, suggested cut; written as fields of the take's existing check record in `qc/conti/<shot>/` — no new file there |
 | `engine/audio.py` | Add optional vocal stem (demucs if installed / user-supplied stem / vocal-band proxy); master SHA protection unchanged |
-| `engine/packets.py`, `engine/conti_brief.py` | Character `far` field (canon text = the existing `look`/`invariants`); fixed clause order; sung-clip vs motion-clip prompt grammar; per-service capability notes in briefs |
+| `engine/packets.py`, `engine/conti_brief.py` | Optional character `far` field (canon text = the existing, also optional `look`/`invariants`; fallback far → look → invariants → warning); fixed clause order; sung-clip vs motion-clip prompt grammar; per-service capability notes in briefs |
+| `engine/conti.py`, `engine/conti_brief.py` (requests) | Persist request text (§1.1): `conti/requests/<sha16>.txt`; `qc/conti/<shot>/<take sha16>.judge-<sha16>.txt` (never `*.json` there); optional `request_sha256` added to conti `KEYS` |
 | `engine/handoff.py` | Brief gains "which app, expected clip length, what to download" and reminds the user to record `units`/`human_minutes` at `conti-check` — no new ledger fields; `handoff_log` unchanged |
 | `project.yaml` schema + `engine/w00_gate.py` | **Dependency (REDESIGN_W00 R3):** `production` block, approver read from settings, `gates: minimal` — required for the scene to reach Preview without lock ceremony |
-| `engine/revision` records | Extend `conti_brief` check-in with instruction→prompt→take chain (no new module if it fits there) |
+| `engine/conti_brief.py` (revision) | `check_take` gains an optional `revision` object in the take's own check record — instruction→request→prompt→take chain (§1.5); no new module, no extra file in `qc/conti/<shot>/` |
 | `app/handoff_ui.py`, `app/brief_board.py` | Surface the new brief fields and persisted requests |
 | `engine/autopilot.py`, `engine/builds.py`, `engine/compositor.py`, `engine/lyrics.py`, `engine/takes.py`, `engine/budget.py` | **Reuse as-is** — gates, immutable builds, exact-timing subtitles, take dedup, caps all stay |
-| `tests/` | Fast synthetic tests only: alignment on fixture word timestamps, avsync on shifted WAVs, ledger rollup, prompt-clause snapshots. No network, no model downloads in CI |
+| `tests/` | Fast synthetic tests only: alignment on fixture word timestamps, avsync on shifted WAVs, `conti-metrics` unchanged by persisted requests and revision objects, prompt-clause snapshots (incl. a bible with no `look`). No network, no model downloads, no torch in CI |
 
 **No duplicate engine/state:** every new artifact lands in existing dirs
-(`analysis/`, `qc/conti/`, `render/`, `lyrics/`) under existing schemas; no new
+(`analysis/`, `conti/`, `qc/conti/`, `render/`, `lyrics/`) under existing schemas; no new
 job queue, no new takes DB, no second ledger, no second state machine —
 autopilot gates and the persisted request/answer records follow the
 plain-file convention already in use.
@@ -482,7 +550,7 @@ lyrics timing, and audio untouched.
 
 | Risk | Mitigation |
 |---|---|
-| Whisper timing drifts on sung Korean (melisma, ad-libs) or fuzzy match misses spacing/particle variants | MMS_FA forced-aligner spike as the like-for-like fallback; ear-check list + energy-rise correction + existing manual cue editor; unresolved stays flagged |
+| Whisper timing drifts on sung Korean (melisma, ad-libs) or fuzzy match misses spacing/particle variants | ear-check list + energy-rise correction + existing manual cue editor; unresolved stays flagged. MMS_FA forced-aligner spike as a further option — costs a uroman romanisation + map-back step and a torch install, and its CC-BY-NC weights need an owner decision before any use in the film |
 | Flow doesn't copy the vocal → lip-sync can't be measured as audio-copy | capability-gated: sync-check only runs on audio-carrying takes expected to copy; otherwise vision-judge + cut structure; say "unmeasurable" rather than fake a number |
 | Clip length quantization (4/6/8 s) vs shot length | `conti_brief.clip_length` snapping already exists; brief prints the mismatch |
 | Flow monthly credit ceiling (Pro: 1,000/mo; ~20/gen Fast) | `conti-metrics` units ledger + worst-case estimate before the user starts; scene chosen to fit in a handful of generations |
