@@ -259,6 +259,18 @@ def main(argv=None):
     packets = sub.add_parser("packets", help="Write per-shot prompts and import commands for making media by hand in subscription apps; no provider calls")
     packets.add_argument("project")
     packets.add_argument("--shots", help="Comma-separated shot IDs; default all shots")
+    conti_draft = sub.add_parser("conti-draft", help="W00 redesign: write a detailed-conti skeleton per shot, seeded from the manifest, timed lyrics and measured beats; never overwrites an existing conti")
+    conti_draft.add_argument("project")
+    conti_draft.add_argument("--shots", help="Comma-separated shot IDs; default all shots")
+    conti_req = sub.add_parser("conti-request", help="W00 redesign: the paste-out text for the human+LLM conti discussion; no service is contacted")
+    conti_req.add_argument("project")
+    conti_req.add_argument("--shots", help="Comma-separated shot IDs; default all shots")
+    conti_req.add_argument("--language", default="English", help="Language of the conti text values")
+    conti_sub = sub.add_parser("conti-submit", help="W00 redesign: validate and store conti from a JSON answer file ({'conti': [...]} or one document)")
+    conti_sub.add_argument("project")
+    conti_sub.add_argument("--file", required=True)
+    conti_sub.add_argument("--source", default="llm", help="Recorded source label, e.g. manual or handoff:claude")
+    sub.add_parser("conti-status", help="W00 redesign: per-shot conti completeness — which fields still keep the direction unsettled").add_argument("project")
     images = sub.add_parser("images-estimate", help="Quote missing reference images or first frames with the chosen image model; no request is sent")
     images.add_argument("project")
     images.add_argument("--kind", choices=["references", "frames"], default="frames")
@@ -722,6 +734,21 @@ def main(argv=None):
         elif a.command == "packets":
             from .packets import export_packets
             result = export_packets(a.project, a.shots.split(",") if a.shots else None)
+        elif a.command == "conti-draft":
+            from .conti import draft_conti
+            result = draft_conti(a.project, a.shots.split(",") if a.shots else None)
+        elif a.command == "conti-request":
+            from .conti import conti_request
+            result = conti_request(a.project, a.shots.split(",") if a.shots else None,
+                                   language=a.language)
+        elif a.command == "conti-submit":
+            from .conti import submit_answer
+            result = submit_answer(a.project,
+                                   json.loads(Path(a.file).read_text(encoding="utf-8")),
+                                   source=a.source)
+        elif a.command == "conti-status":
+            from .conti import conti_status
+            result = conti_status(a.project)
         elif a.command == "images-estimate":
             from . import imagegen, providers
             result = imagegen.estimate(a.project, a.kind, providers.selected_image(a.project), a.shots.split(",") if a.shots else None)
