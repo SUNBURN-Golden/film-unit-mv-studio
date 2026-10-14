@@ -6,6 +6,14 @@ verified external fact (with URL), or planned work. Nothing here is a claim of
 real external generation: `README.md:7` still applies — this repository has
 zero verified real external AI video generations on record.
 
+Revision 2 (2026-10-14), after the r1 plan review: the manual-generation cost
+ledger is reclassified **reuse-as-is** (`qc/conti/` records + `conti-metrics`
+already exist and are tested — §1.7) and the planned `manual_spend` module,
+`handoff_log` cost fields and `jobs/<id>/` status tree are dropped as
+duplicates; `look` is reused as the canon field (§1.2); Korean alignment is
+re-scoped to line-level cues with the Hangul matching work named (§1.4); the
+REDESIGN_W00 R3 `production` block dependency is made explicit (§2).
+
 Source under investigation: `https://github.com/anabologyco-maker/claudia-bot`,
 cloned to `/workspace/film-run/claudia-src`, inspected at `40584a4` (v0.3.4).
 The clone is **not** part of this repository and nothing from it is vendored.
@@ -23,8 +31,9 @@ decision:
 1. **Its real code quality is high where it is local.** The modules worth
    porting are file-format and DSP work: forced alignment merging, beat maps,
    lip-sync measurement, storyboard pacing rules calibrated on a shipped film,
-   coverage/cover-clip logic, spend ledgers, and a failure catalog
-   (`docs/99-failures.md`) built from real production losses.
+   coverage/cover-clip logic, and a failure catalog (`docs/99-failures.md`)
+   built from real production losses. (Its spend-ledger *shape* is already
+   matched by Film Unit's own `qc/conti/` ledger — §1.7 reuses that.)
 2. **Its generation path is API-key based.** `slop/gen/openrouter.py`,
    `slop/gen/higgsfield.py`, `slop/fetch.py` submit, poll and download through
    paid API providers. Film Unit's hard rules (no paid APIs, no API keys, no
@@ -57,7 +66,7 @@ real run in section 2 before being claimed as working.
 | demucs code / `htdemucs` weights | MIT code; **weights carry no license tag** — claudia itself flags this (`slop/audio/stems.py` header) | Optional dependency only; document the flag; offer user-supplied stems as the alternative |
 | CMUdict | BSD-2-Clause data | English pronunciations only — not ported (Korean path doesn't need it) |
 | `wordfreq` | CC-BY-SA 4.0 | Exclude — attribution burden not worth it |
-| Whisper / faster-whisper / whisper.cpp | MIT | Candidate dependency for Korean word timing (§1.4, §2) |
+| Whisper / faster-whisper / whisper.cpp | MIT | Candidate dependency for Korean lyric timing (§1.4, §2) |
 | Suno | Commercial use requires paid plan — https://help.suno.com/en/articles/9601665 | Only matters if the input song is Suno-generated; the film master is owner-supplied |
 
 ---
@@ -75,27 +84,39 @@ Classification legend: **reuse-as-is** (Film Unit already has it), **port-with-m
   (verbatim inbox/outbox handoff to the chat relay), `docs/95-delegation.md`,
   `skills/mv-studio/SKILL.md`, `skills/mv-director/SKILL.md` (gate list G1–G6,
   `docs/00-overview.md` §4).
-- **Problem it solves in Film Unit:** today `engine/autopilot.py` stops at
-  gates, but heavy reasoning steps (conti drafting, prompt-book writing, review
-  summarising) happen as chat copy-paste with no durable job record. Claudia's
-  job-folder contract is exactly the "AI director" wiring the goal describes:
-  one folder = one delegated unit of work, resumable, with raw logs kept.
-- **Port:** adopt the *contract*, not the runner. One new, thin module
-  (planned `engine/director_job.py`) that writes `jobs/<id>/BRIEF.md`, records
-  `jobs/<id>/status.json` (CREATED/USER_RUNS/DONE/FAILED) and ingests
-  `jobs/<id>/outbox/` when the user drops the result back — the user runs their
-  own Claude Code / Gemini CLI / web chat on the brief. No daemon, no polling,
-  no new state system: a job folder is the same "plain files + explicit state"
-  pattern Film Unit already uses under `qc/` and `render/`.
+- **What Film Unit already has:** the paste-out → paste-back contract with
+  *stored answers* exists — `engine/conti.py` `conti-request`/`conti-submit`
+  (answers validated and stored under `qc/conti/`), `engine/conti_brief.py`
+  `conti-judge-request`/`conti-judge-submit` (judge answers land in the check
+  record's `judgements`), and `engine/director.py`'s proposal + log under
+  `bible/`. `engine/autopilot.py` + `app/execution_console.py` list what
+  remains to be done.
+- **The real gap is narrower:** the *request text itself* is not persisted.
+  `conti_request`/`judge_request` return text to paste; only the answer lands
+  on disk — so a discussion resumed in a new session loses the exact request
+  that produced an earlier answer.
+- **Port:** extend the existing request/answer convention, do not add a second
+  one. Claudia's `jobs/<id>/` tree with its own CREATED/USER_RUNS/DONE/FAILED
+  status would be a parallel convention over state Film Unit already expresses
+  (records on disk + autopilot's gate table) — dropped. Instead, each
+  `*-request` output is also written to disk next to where its answer is
+  stored (the `qc/conti/` records it feeds, and — for the hard cut —
+  `docs/evidence/hard-cut-01/`, where REDESIGN_W00 R4 keeps both request and
+  answer), so any answer can be re-read against the request that produced it
+  and a multi-session discussion resumes from files. The user still runs their
+  own Claude Code / Gemini CLI / web chat on the request text. No daemon, no
+  polling, no new state system.
 - **Dependencies:** none (plain files; the agent is the user's own
   subscription client).
-- **Verification:** unit test on a fixture job; real verification is the §3
-  scene, where the conti for the hard cut is produced through a job folder.
+- **Verification:** unit test that the persisted request bytes equal what
+  `conti_request`/`judge_request` return; real verification is the §3 scene,
+  where the conti for the hard cut is produced through persisted
+  request/answer pairs.
 - **vs existing Film Unit:** `engine/autopilot.py` gate table +
-  `app/execution_console.py` remain the orchestration authority; the job
-  folder only packages "work to be done outside". `docs/BROWSER_HANDOFF.md`
-  already describes the copy/paste equivalent — this formalises it for
-  multi-step delegated work.
+  `app/execution_console.py` remain the orchestration authority; the
+  persisted request only packages "work to be done outside".
+  `docs/BROWSER_HANDOFF.md` already describes the copy/paste equivalent —
+  this formalises it for multi-session discussions.
 - **License/terms:** MIT method port. Claude Code is included in Claude Pro/Max
   subscriptions (https://claude.com/pricing/,
   https://support.claude.com/en/articles/11145838-use-claude-code-with-your-pro-or-max-plan);
@@ -110,17 +131,21 @@ Classification legend: **reuse-as-is** (Film Unit already has it), **port-with-m
   plates drifted), fixed clause order (framing → canon → placement → pose →
   set → empty-field-for-type → style tail → `no text, no letters, no logos`),
   4-test-plates gate (G3) before any batch, `plates/picks.json` + `slop/board/plates.py`.
-- **Problem it solves in Film Unit:** `engine/packets.py` and
+- **What Film Unit already has:** `engine/packets.py` and
   `engine/conti_brief.py` already build prompts from `bible/characters.yaml`
-  with reference images and input dispositions. What is missing is (a) a
-  pinned *canon text* field per character with a short "far" variant for wide
-  shots, and (b) the fixed clause ordering that Claudia's records show prevents
-  the set swallowing the character.
-- **Port:** add `canon`/`far` text fields to character bible entries, plumb
-  them through `packets.py`/`conti_brief.py`, reorder clause assembly, keep
-  reference images as the *declared inputs* they already are (canon text is
-  additive, not a replacement — reference images still ride the handoff where
-  the service supports them).
+  with reference images and input dispositions, and each character already
+  carries a pinned identity text — `look` ("fixed visual traits repeated in
+  every shot") plus `invariants`, consumed by `packets.py`'s `entry_text`.
+  **Reuse `look` as canon** — no duplicate `canon` field is added.
+- **What is missing:** (a) a short "far" variant of that identity text for
+  wide shots, and (b) the fixed clause ordering that Claudia's records show
+  prevents the set swallowing the character.
+- **Port:** add only the `far` text field to character bible entries; plumb
+  `look`/`invariants`/`far` through `packets.py`/`conti_brief.py` and reorder
+  clause assembly to Claudia's fixed order (identity text placed before the
+  set); keep reference images as the *declared inputs* they already are
+  (canon text is additive, not a replacement — reference images still ride
+  the handoff where the service supports them).
 - **Adaptation guard (task §3):** the canon text is authored from the user's
   bible entry and style bible — **no Claudia canon, no photoreal default, no
   MJ parameter grammar** (`--ar`, `--raw`, personalization profile are MJ-only
@@ -128,8 +153,8 @@ Classification legend: **reuse-as-is** (Film Unit already has it), **port-with-m
   identity ("the short canon for a 2D cel-style lead" is just different text).
 - **Dependencies:** none — schema extension + prompt assembly change.
 - **Verification:** prompt-snapshot unit tests (existing style) asserting
-  clause order and canon presence; real check = the §3 scene's first-frame
-  candidates keep the character across the take.
+  clause order and identity-text presence; real check = the §3 scene's
+  first-frame candidates keep the character across the take.
 - **License/terms:** MIT. Midjourney-specific guidance excluded with MJ itself.
 
 ### 1.3 Real image/video generation request → result retrieval → applied to shot — **design-reference-only**
@@ -153,7 +178,7 @@ Classification legend: **reuse-as-is** (Film Unit already has it), **port-with-m
 - **Dependencies (of what remains):** none beyond existing modules.
 - **Verification:** existing handoff/segment tests; real run in §4.
 - **vs existing Film Unit:** manual handoff is already the sanctioned path;
-  this area adds no new engine, only brief templates and ledger fields.
+  this area adds no new engine, only brief-text additions.
 - **License/terms:** provider ToS gate everything — see service matrix §3.3.
   Grok Imagine API (https://x.ai/api/imagine, from $0.02/s) and
   OpenRouter/Higgsfield are **out** (paid API); Grok Imagine on the user's own
@@ -178,17 +203,31 @@ Classification legend: **reuse-as-is** (Film Unit already has it), **port-with-m
   with the song" is human labour, and lip-sync review doesn't exist. This is
   the largest real gap to the goal.
 - **Port:**
-  1. **Korean word timing** (planned `engine/align.py`): Whisper word-level
-     timestamps on the vocal band/stem, merged per claudia's `merge.py` rules
-     (confidence threshold → energy-rise correction on long words → interpolate
-     unplaced words inside a line) producing *proposed* cues for
-     `lyrics/lyrics_timed.json` plus an ear-check list. **Never auto-approved**
-     — the existing review fingerprint flow stays the gate.
-     *Honesty:* claudia's own aligner is English-only (wav2vec2-960h + CMUdict
-     spell A–Z only); the method ports, the recognizer must be swapped to a
-     Korean-capable one — Whisper (`whisper`/`faster-whisper`, MIT; Korean is a
-     supported language) on the isolated vocal. This is why "English alignment
-     ≠ Korean support" is a real engineering item, not a checkbox.
+  1. **Korean lyric-line timing** (planned `engine/align.py`): *proposed* cues
+     for `lyrics/lyrics_timed.json` plus an ear-check list. **Never
+     auto-approved** — the existing review fingerprint flow stays the gate.
+     Film Unit cues are line-level (`engine/lyrics.py` emits SRT/ASS from
+     `cues[].start_ms/end_ms/text`), so the realistic target is each lyric
+     line's start/end, not per-word karaoke. Three pieces, honestly labelled:
+     - **Recognizer — new code, not a port:** local Whisper
+       (`whisper`/`faster-whisper`, MIT; Korean supported) word timestamps on
+       the isolated vocal. Claudia's own Whisper path is a paid OpenRouter
+       call (`slop/audio/whisper.py`) — nothing of it ports.
+     - **Hangul normalisation + lyric-sheet matching — the named new step:**
+       Whisper transcribes freely, so its tokens must be normalised
+       (spacing, particle-ending differences) and fuzzy-matched against each
+       lyric line to anchor line boundaries. Claudia's `merge.py` rules do
+       not cover this — they assume a *forced* aligner that already emits
+       sheet-aligned tokens (confidence ≥ 0.5 keeps the forced token, else
+       Whisper fills), and its `norm` strips to `[a-z]`, which would erase
+       Hangul outright.
+     - **Merge/correction rules — the part that ports:** energy-rise
+       correction, interpolation of unplaced lines between anchored
+       neighbours, low-confidence rows to the ear-check list.
+     Like-for-like alternative to spike first: a Korean-capable CTC *forced*
+     aligner (e.g. torchaudio's `MMS_FA` bundle) emits per-sheet tokens with
+     confidence, so claudia's merge rules apply directly — if it behaves on
+     sung Korean it is the smaller port than Whisper + fuzzy-match.
   2. **Vocal stem** (`engine/audio.py` extension): optional demucs import of
      the claudia stems approach, OR user-supplied stem export; fallback is a
      librosa harmonic/vocal-band proxy (already have librosa). htdemucs weight
@@ -246,8 +285,9 @@ Classification legend: **reuse-as-is** (Film Unit already has it), **port-with-m
   bot (relay + browser executor), user's Midjourney/Suno (manual), OpenRouter/
   Higgsfield (paid API), local FFmpeg/Python.
 - **Film Unit's split (kept):** director/reasoning = the user's own Claude
-  Code/Gemini CLI/Claude web subscription via job-folder briefs and copy-paste
-  (§1.1); image generation = user's browser, their subscription app (Gemini
+  Code/Gemini CLI/Claude web subscription via persisted request/answer pairs
+  and copy-paste (§1.1); image generation = user's browser, their
+  subscription app (Gemini
   image, etc.) via `handoff.py`; video = user's browser, Flow/Veo or Grok
   Imagine or any subscription app the user picks; all analysis/edit/compose =
   local Python+FFmpeg. **No API stage exists in the design.**
@@ -262,26 +302,37 @@ Classification legend: **reuse-as-is** (Film Unit already has it), **port-with-m
   by Film Unit's own handoff doc.
 - **Dependencies/terms:** verified current sources in §3.3.
 
-### 1.7 Cost control and production failure recovery — **port-with-modification** (small port)
+### 1.7 Cost control and production failure recovery — ledger **reuse-as-is**; failure checklist **port-with-modification** (doc only)
 
 - **Claudia code paths:** `templates/project/project.json` budget block +
   `confirm_over_usd`, `slop spend` ledger reading provider-reported usage,
   estimate-before-submit, `spend --freeze`, `docs/99-failures.md`.
-- **Problem it solves in Film Unit:** `engine/budget.py` (estimate → exact
-  approval → reserve; worst-case cap; failed stays reserved),
-  `engine/segment_gen.py` (SUBMIT_INTENT journal before any side effect;
-  UNKNOWN fencing) already enforce the *paid* side. The hole: **manual
-  generation has no ledger** — a user burning Flow credits on retries isn't
-  visible to the project.
-- **Port:** add optional `subscription_units` (e.g. "Flow credits"),
-  `attempt_no`, `human_minutes` fields to `handoff_log`/`check_take` records —
-  user-entered at import time; a `render/manual_spend.json` roll-up so the
-  §4 report's "real cost" is real. Also port `docs/99-failures.md` as a Film
-  Unit failure checklist adapted to manual mode (stale tab, wrong file
-  imported, download folder mis-assignment, silent provider decline →
-  user-visible "still NOTHING_IMPORTED" rather than a hung state).
+- **What Film Unit already has — the ledger exists on both sides:**
+  `engine/budget.py` (estimate → exact approval → reserve; worst-case cap;
+  failed stays reserved) and `engine/segment_gen.py` (SUBMIT_INTENT journal
+  before any side effect; UNKNOWN fencing) cover the paid side, and the
+  *manual* side is already recorded too — `check_take`
+  (`engine/conti_brief.py:257`) stores `attempt`, `service`, `units`
+  (subscription units, e.g. Flow credits) and `human_minutes` per take keyed
+  to the conti digest, and `conti-metrics` (`conti_brief.py:416`) sums
+  attempts/units/minutes per shot and in total. REDESIGN_W00 §2 names
+  `qc/conti/` + `docs/evidence/hard-cut-01/` as the numbers' home and marks
+  this ledger (R2) done.
+- **Dropped as duplicate (r1 review):** the earlier-planned
+  `subscription_units`/`attempt_no`/`human_minutes` fields on `handoff_log`,
+  `engine/manual_spend.py` and `render/manual_spend.json` — a second ledger
+  over state `qc/conti/` already records and `conti-metrics` already
+  aggregates.
+- **Port (what actually remains):** `docs/99-failures.md` as a Film Unit
+  failure checklist adapted to manual mode — stale tab, wrong file imported,
+  download folder mis-assignment, silent provider decline → a user-visible
+  "still NOTHING_IMPORTED" rather than a hung state. Brief-text additions so
+  the user knows to enter `units`/`human_minutes` when they run
+  `conti-check`.
 - **Dependencies:** none.
-- **Verification:** unit test on ledger rollup; §4 report is the proof format.
+- **Verification:** the `conti-metrics` rollup is already tested (R2
+  acceptance); the §4 report reads it — there is no new ledger to prove. The
+  failure checklist is a doc, exercised during the §4 run.
 - **Duplicate-charge prevention:** unchanged — content-keyed takes
   (`engine/takes.py`) mean re-importing the same file is idempotent.
 
@@ -293,7 +344,7 @@ Classification legend: **reuse-as-is** (Film Unit already has it), **port-with-m
 | `slop/gen/{openrouter,higgsfield}.py`, `slop/fetch.py`, paid adapters | Hard rule: no paid APIs, no keys |
 | Grok-as-browser-executor (Midjourney paste loops) | ToS automation bans (§1.0.3, MJ ToS link above); Film Unit handoff policy |
 | `slop/taste/` (arena, embedding server, tunnels) | Whole subsystem; out of scope for the hard cut — revisit if taste iteration becomes the bottleneck |
-| `runner/deleg.mjs` as shipped (engine spawning, env scrubbing, tgz pack/unpack, `wire`) | Claude Code/Gemini CLI runtime assumptions + supervisor; Film Unit ports only the folder contract (§1.1) |
+| `runner/deleg.mjs` as shipped (engine spawning, env scrubbing, tgz pack/unpack, `wire`) | Claude Code/Gemini CLI runtime assumptions + supervisor; Film Unit ports only the persisted-request idea (§1.1) |
 | Claudia canon content (`project.json lead.canon` text, claudia.gallery MCP) | Task §3: Claudia character and photoreal direction must not be defaults |
 | Midjourney prompt grammar (`--ar`, `--raw`, profiles, srefs) | Service-specific to a service not in the allowed set |
 | `wordfreq`-dependent text stats | CC-BY-SA burden |
@@ -308,9 +359,9 @@ the real Korean song, driven end to end inside Film Unit:
 ```
 input (master audio + lyrics.txt + character bible + direction)
   → analyze (existing engine/audio.py + vocal stem + beat map)
-  → Korean word alignment (new engine/align.py → proposed cues)
+  → Korean lyric-line alignment (new engine/align.py → proposed cues)
   → reviewer confirms cues (existing lyrics review fingerprint)
-  → conti/brief for the scene's shots (conti_brief + canon fields + pace rules)
+  → conti/brief for the scene's shots (conti_brief + `look`/`far` canon text + pace rules)
   → manual generation (user's browser: image app for first frame →
      Flow/Veo or Grok Imagine for the clip) via engine/handoff.py briefs
   → import → mechanical checks + sync-measure + vision-judge brief
@@ -321,25 +372,36 @@ input (master audio + lyrics.txt + character bible + direction)
      subtitles) → Final after locks
 ```
 
+**Prerequisite — REDESIGN_W00 R3 (settings-based approvals).** The scene runs
+under the `production` block in `project.yaml` (`approver`,
+`max_attempts_per_shot`, `services`, `gates: minimal`): with `gates: minimal`
+the autopilot reaches PREVIEW_READY on a LEGACY project with no lock
+ceremony — the PLAN/WAVE/FINAL ladder, route decision and spend/delivery
+approvals run only under `gates: full` (REDESIGN_W00 §4). "Final after locks"
+above is the existing production LOCK at `compile-final` — unchanged. The
+autopilot is reused as-is *on top of* that setting; R3 is a named dependency
+of this path, not something this port re-implements.
+
 ### Files to change or reuse (phase 2)
 
 | File | Change |
 |---|---|
-| `engine/align.py` **(new)** | Whisper-based Korean word timing → proposed cues + ear-check list; output shaped to `lyrics_timed.json`; method ported from `slop/audio/merge.py` (confidence → energy-rise → interpolate), recognizer swapped |
+| `engine/align.py` **(new)** | Korean lyric-line timing → proposed cues + ear-check list; output shaped to `lyrics_timed.json`; local Whisper (new code, optional extra) + Hangul normalisation/fuzzy-match to the lyric sheet (new step) + `slop/audio/merge.py` correction rules (the part that ports); MMS_FA forced aligner spiked as the like-for-like alternative |
 | `engine/sync_check.py` **(new)** | Port of `slop/sync/avsync.py` (numpy+FFmpeg only): lag, synced span, divergence, suggested cut; writes into `qc/conti/<shot>/` records |
 | `engine/audio.py` | Add optional vocal stem (demucs if installed / user-supplied stem / vocal-band proxy); master SHA protection unchanged |
-| `engine/packets.py`, `engine/conti_brief.py` | Character `canon`/`far` fields; fixed clause order; sung-clip vs motion-clip prompt grammar; per-service capability notes in briefs |
-| `engine/handoff.py` | Brief gains "which app, expected clip length, what to download"; import gains optional `subscription_units`/`attempt_no`/`human_minutes` → `render/handoff_log.json` |
-| `engine/manual_spend.py` **(new, ~100 lines)** or fold into handoff | Roll-up ledger for manual units + human minutes |
+| `engine/packets.py`, `engine/conti_brief.py` | Character `far` field (canon text = the existing `look`/`invariants`); fixed clause order; sung-clip vs motion-clip prompt grammar; per-service capability notes in briefs |
+| `engine/handoff.py` | Brief gains "which app, expected clip length, what to download" and reminds the user to record `units`/`human_minutes` at `conti-check` — no new ledger fields; `handoff_log` unchanged |
+| `project.yaml` schema + `engine/w00_gate.py` | **Dependency (REDESIGN_W00 R3):** `production` block, approver read from settings, `gates: minimal` — required for the scene to reach Preview without lock ceremony |
 | `engine/revision` records | Extend `conti_brief` check-in with instruction→prompt→take chain (no new module if it fits there) |
-| `app/handoff_ui.py`, `app/brief_board.py` | Surface the new brief fields and ledger entry points |
+| `app/handoff_ui.py`, `app/brief_board.py` | Surface the new brief fields and persisted requests |
 | `engine/autopilot.py`, `engine/builds.py`, `engine/compositor.py`, `engine/lyrics.py`, `engine/takes.py`, `engine/budget.py` | **Reuse as-is** — gates, immutable builds, exact-timing subtitles, take dedup, caps all stay |
 | `tests/` | Fast synthetic tests only: alignment on fixture word timestamps, avsync on shifted WAVs, ledger rollup, prompt-clause snapshots. No network, no model downloads in CI |
 
 **No duplicate engine/state:** every new artifact lands in existing dirs
 (`analysis/`, `qc/conti/`, `render/`, `lyrics/`) under existing schemas; no new
-job queue, no new takes DB, no second state machine — autopilot gates and the
-job-folder contract reuse the plain-file convention already in use.
+job queue, no new takes DB, no second ledger, no second state machine —
+autopilot gates and the persisted request/answer records follow the
+plain-file convention already in use.
 
 ---
 
@@ -347,12 +409,12 @@ job-folder contract reuse the plain-file convention already in use.
 
 ### 3.1 Characters and 2D, not Claudia and photoreal
 
-- Canon/far text and every style word come from the project's own
+- `look`/`far` identity text and every style word come from the project's own
   `bible/characters.yaml` + style bible. The Claudia canon text is excluded
-  (§1.8). A 2D-animated lead is expressed by canon text + style tail + first-frame
-  reference — the same fields photoreal would use, different content. Tests
-  will include a 2D-style bible fixture so "photoreal" can never be the
-  hardcoded default.
+  (§1.8). A 2D-animated lead is expressed by that identity text + style tail
+  + first-frame reference — the same fields photoreal would use, different
+  content. Tests will include a 2D-style bible fixture so "photoreal" can
+  never be the hardcoded default.
 
 ### 3.2 Korean real-song verification plan
 
@@ -360,9 +422,9 @@ Subject: the owner's real Korean-language master (the film's song), supplied
 via `input/`. Steps and pass criteria:
 
 1. `analyze` on the master — beat map + tempo; master SHA unchanged (asserted).
-2. `align` — Whisper word timings over the vocal band → proposed cues +
-   ear-check list. **Pass:** the ear-check list exists; user confirms ≥ the
-   sampled line starts; unresolved rows remain flagged, never guessed.
+2. `align` — Whisper timings over the vocal band → Hangul-matched proposed
+   cues + ear-check list. **Pass:** the ear-check list exists; user confirms
+   ≥ the sampled line starts; unresolved rows remain flagged, never guessed.
 3. Scene = first sung window 5–10 s (verse-1 or hook opening the analysis
    picks), one character, 2D look per project bible.
 4. Briefs → user generates first frame + clip in their subscription app →
@@ -410,8 +472,8 @@ lyrics timing, and audio untouched.
 |---|---|
 | Before/after outputs | build dirs + take files + hashes |
 | Human intervention | count of handoffs, browser sessions, minutes |
-| Elapsed wall time | job/brief/check timestamps |
-| Real cost | `manual_spend.json` units (subscription credits) + $0 marginal cash |
+| Elapsed wall time | brief/check/build timestamps |
+| Real cost | `conti-metrics` totals — attempts, subscription `units`, `human_minutes` from `qc/conti/` records — + $0 marginal cash |
 | Failures | every fenced/UNKNOWN/failed import, verbatim |
 | Unsupported items | anything still not producible |
 | Test-pass counts | pytest tallies — **separate from production success** |
@@ -420,10 +482,10 @@ lyrics timing, and audio untouched.
 
 | Risk | Mitigation |
 |---|---|
-| Whisper word timing drifts on sung Korean (melisma, ad-libs) | ear-check list + energy-rise correction + existing manual cue editor; unresolved stays flagged |
+| Whisper timing drifts on sung Korean (melisma, ad-libs) or fuzzy match misses spacing/particle variants | MMS_FA forced-aligner spike as the like-for-like fallback; ear-check list + energy-rise correction + existing manual cue editor; unresolved stays flagged |
 | Flow doesn't copy the vocal → lip-sync can't be measured as audio-copy | capability-gated: sync-check only runs on audio-carrying takes expected to copy; otherwise vision-judge + cut structure; say "unmeasurable" rather than fake a number |
 | Clip length quantization (4/6/8 s) vs shot length | `conti_brief.clip_length` snapping already exists; brief prints the mismatch |
-| Flow monthly credit ceiling (Pro: 1,000/mo; ~20/gen Fast) | ledger + worst-case estimate before the user starts; scene chosen to fit in a handful of generations |
+| Flow monthly credit ceiling (Pro: 1,000/mo; ~20/gen Fast) | `conti-metrics` units ledger + worst-case estimate before the user starts; scene chosen to fit in a handful of generations |
 | Character consistency across takes in 2D | canon text + reference images + contact-sheet comparison; human eyeballs stay the final gate |
 | htdemucs weight licence unclear | stems optional; user-supplied stem export supported; flag printed |
 | No polling means the engine can't know a generation finished | by design — UNKNOWN stays fenced; import is the completion signal |
