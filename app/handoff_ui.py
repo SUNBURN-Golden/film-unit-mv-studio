@@ -190,8 +190,13 @@ def _one_prompt(p, kind, targets):
         brief = _guarded(lambda: handoff.video_brief(p, pick))
         if brief:
             note = "" if brief["frame_ready"] else " · 먼저 첫 프레임을 가져오면 그 이미지로 영상을 만들 수 있습니다"
-            st.write(f"시작 프레임 `{brief['start_frame']}` · 최소 **{brief['seconds']}초**{note}")
+            clip = f" · 앱에서 **{brief['clip_seconds']}초** 클립으로" if brief.get("clip_seconds") else ""
+            st.write(f"시작 프레임 `{brief['start_frame']}` · 최소 **{brief['seconds']}초**{clip}{note}")
+            for warning in brief.get("warnings", []):
+                st.caption(f"콘티: {warning}")
             st.code(brief["prompt"], language=None, wrap_lines=True)
+            if brief.get("checklist"):
+                st.caption("가져온 뒤 점검할 수용 기준: " + " · ".join(brief["checklist"]))
 
 
 def render_media(p, image_manual, video_manual):

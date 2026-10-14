@@ -259,6 +259,48 @@ def main(argv=None):
     packets = sub.add_parser("packets", help="Write per-shot prompts and import commands for making media by hand in subscription apps; no provider calls")
     packets.add_argument("project")
     packets.add_argument("--shots", help="Comma-separated shot IDs; default all shots")
+    conti_draft = sub.add_parser("conti-draft", help="W00 redesign: write a detailed-conti skeleton per shot, seeded from the manifest, timed lyrics and measured beats; never overwrites an existing conti")
+    conti_draft.add_argument("project")
+    conti_draft.add_argument("--shots", help="Comma-separated shot IDs; default all shots")
+    conti_req = sub.add_parser("conti-request", help="W00 redesign: the paste-out text for the human+LLM conti discussion; no service is contacted")
+    conti_req.add_argument("project")
+    conti_req.add_argument("--shots", help="Comma-separated shot IDs; default all shots")
+    conti_req.add_argument("--language", default="English", help="Language of the conti text values")
+    conti_sub = sub.add_parser("conti-submit", help="W00 redesign: validate and store conti from a JSON answer file ({'conti': [...]} or one document)")
+    conti_sub.add_argument("project")
+    conti_sub.add_argument("--file", required=True)
+    conti_sub.add_argument("--source", default="llm", help="Recorded source label, e.g. manual or handoff:claude")
+    sub.add_parser("conti-status", help="W00 redesign: per-shot conti completeness — which fields still keep the direction unsettled").add_argument("project")
+    brief_cmd = sub.add_parser("conti-brief", help="W00 redesign R2: first-frame and motion-only prompts for one shot from its conti (beats in clip-relative seconds, clip length snapped to 4/6/8 s), attachments and the acceptance checklist; no service is contacted")
+    brief_cmd.add_argument("project")
+    brief_cmd.add_argument("shot")
+    check_cmd = sub.add_parser("conti-check", help="W00 redesign R2: check the shot's imported take against the shot and its conti — duration/aspect/resolution/stillness, a five-frame contact sheet, criteria PENDING, attempt/units/minutes ledger")
+    check_cmd.add_argument("project")
+    check_cmd.add_argument("shot")
+    check_cmd.add_argument("--sha", help="Take sha256; default the shot's current draft/final take")
+    check_cmd.add_argument("--service", default="", help="Which subscription app made it, e.g. flow")
+    check_cmd.add_argument("--units", type=float, help="Subscription units the take cost (credits), for the ledger")
+    check_cmd.add_argument("--human-minutes", type=float, help="Hands-on minutes spent making it, for the ledger")
+    check_cmd.add_argument("--note", default="")
+    verdict_cmd = sub.add_parser("conti-verdict", help="W00 redesign R2: a person settles criteria of a checked take by index")
+    verdict_cmd.add_argument("project")
+    verdict_cmd.add_argument("shot")
+    verdict_cmd.add_argument("--sha", help="Take sha256; default the latest checked take")
+    verdict_cmd.add_argument("--reviewer", required=True)
+    verdict_cmd.add_argument("--pass", dest="passed", default="", help="Comma-separated criterion indexes that pass")
+    verdict_cmd.add_argument("--fail", default="", help="Comma-separated criterion indexes that fail")
+    verdict_cmd.add_argument("--note", default="")
+    judge_req = sub.add_parser("conti-judge-request", help="W00 redesign R2: the paste-out text (plus frames to attach) for a vision LLM to judge a checked take against the conti criteria")
+    judge_req.add_argument("project")
+    judge_req.add_argument("shot")
+    judge_req.add_argument("--sha", help="Take sha256; default the latest checked take")
+    judge_sub = sub.add_parser("conti-judge-submit", help="W00 redesign R2: store a pasted judge answer; UNSURE stays PENDING for a person")
+    judge_sub.add_argument("project")
+    judge_sub.add_argument("shot")
+    judge_sub.add_argument("--file", required=True)
+    judge_sub.add_argument("--sha", help="Take sha256; default the latest checked take")
+    judge_sub.add_argument("--source", default="llm", help="Recorded judge label, e.g. llm:claude")
+    sub.add_parser("conti-metrics", help="W00 redesign R2: per-shot attempts, latest verdict, subscription units and human minutes — the hard-cut ledger").add_argument("project")
     images = sub.add_parser("images-estimate", help="Quote missing reference images or first frames with the chosen image model; no request is sent")
     images.add_argument("project")
     images.add_argument("--kind", choices=["references", "frames"], default="frames")
@@ -722,6 +764,43 @@ def main(argv=None):
         elif a.command == "packets":
             from .packets import export_packets
             result = export_packets(a.project, a.shots.split(",") if a.shots else None)
+        elif a.command == "conti-draft":
+            from .conti import draft_conti
+            result = draft_conti(a.project, a.shots.split(",") if a.shots else None)
+        elif a.command == "conti-request":
+            from .conti import conti_request
+            result = conti_request(a.project, a.shots.split(",") if a.shots else None,
+                                   language=a.language)
+        elif a.command == "conti-submit":
+            from .conti import submit_answer
+            result = submit_answer(a.project,
+                                   json.loads(Path(a.file).read_text(encoding="utf-8")),
+                                   source=a.source)
+        elif a.command == "conti-status":
+            from .conti import conti_status
+            result = conti_status(a.project)
+        elif a.command == "conti-brief":
+            from .conti_brief import shot_brief
+            result = shot_brief(a.project, a.shot)
+        elif a.command == "conti-check":
+            from .conti_brief import check_take
+            result = check_take(a.project, a.shot, sha256=a.sha, service=a.service, units=a.units,
+                                human_minutes=a.human_minutes, note=a.note)
+        elif a.command == "conti-verdict":
+            from .conti_brief import record_verdicts
+            verdicts = {**{i.strip(): "PASS" for i in a.passed.split(",") if i.strip()},
+                        **{i.strip(): "FAIL" for i in a.fail.split(",") if i.strip()}}
+            result = record_verdicts(a.project, a.shot, a.sha, verdicts, a.reviewer, note=a.note)
+        elif a.command == "conti-judge-request":
+            from .conti_brief import judge_request
+            result = judge_request(a.project, a.shot, a.sha)
+        elif a.command == "conti-judge-submit":
+            from .conti_brief import submit_judgement
+            result = submit_judgement(a.project, a.shot, Path(a.file).read_text(encoding="utf-8"),
+                                      sha256=a.sha, source=a.source)
+        elif a.command == "conti-metrics":
+            from .conti_brief import conti_metrics
+            result = conti_metrics(a.project)
         elif a.command == "images-estimate":
             from . import imagegen, providers
             result = imagegen.estimate(a.project, a.kind, providers.selected_image(a.project), a.shots.split(",") if a.shots else None)
