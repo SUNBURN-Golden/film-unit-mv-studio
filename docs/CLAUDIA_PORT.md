@@ -696,7 +696,10 @@ commands/functions:
 | Stills at 1.0/2.5/4.0/6.0 s | `before_*.jpg` | `after_*.jpg` (grid: `before_after_grid.jpg`) |
 | Check record | `check_18ea8dec7939ddfd.json` | `check_47b4ebce7c659eb9.json` (with `revision`, judgements) |
 
-The full-length builds (`MASTER_CLEAN.mp4`, `MASTER_SUBBED.mp4`, `lyrics.ass/.srt`)
+The run is reproducible from `docs/evidence/claudia-hardcut-01/stage1.sh`
+(master → `lyrics-align`) and `stage2.py` (package → B0002 → invariants);
+`render_local_take.py` is the local stand-in renderer — evidence tooling, not
+an engine feature. The full-length builds (`MASTER_CLEAN.mp4`, `MASTER_SUBBED.mp4`, `lyrics.ass/.srt`)
 are in the run project (`projects/arirang_hardcut/builds/B0001`, `B0002`, not
 committed — `projects/` is git-ignored); only the 8 s scene excerpts are
 committed. The other 30-odd shots of the song are timing slates — this was a
