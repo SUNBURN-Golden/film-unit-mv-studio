@@ -46,7 +46,7 @@ from .animation_schema import (canon_bytes, load_animation_timeline,
                                read_canon, require_animation_profile)
 from .builds import allocate_build, capture, seal_build, verify_build
 from .compiler import media_check
-from .core import (FilmError, digest, now, project_mutex,
+from .core import (FilmError, digest, gates, now, project_mutex,
                    read, safe_path, write)
 from .encoder_backends import (FrameSource, encode_delivery,
                                make_encode_recipe)
@@ -240,8 +240,10 @@ def compile_final_candidate(project, exposure=None, progress=None):
         # Scope approval (ANIM-007): once a project declares production waves
         # or scope locks, Final production needs a current FINAL_LOCK.
         # Projects without either file keep the ANIM-006 gates unchanged.
+        # `gates: minimal` (REDESIGN_W00 R3) leaves the lock ladder to `full`.
         from .animation_locks import LOCKS_PATH, WAVES_PATH, lock_status
-        if safe_path(p, WAVES_PATH).is_file() or safe_path(p, LOCKS_PATH).is_file():
+        if gates(p) == "full" and (safe_path(p, WAVES_PATH).is_file()
+                                   or safe_path(p, LOCKS_PATH).is_file()):
             final = lock_status(p)["final"]
             if final["state"] != "CURRENT":
                 raise FilmError(

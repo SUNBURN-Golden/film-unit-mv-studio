@@ -15,8 +15,8 @@ Records (all CANON_JSON_V1 append-only logs under production/):
   segment-job result id, the selection reason, the reviewer and the
   KEEP / CHANGE / MIX decision.
 - `approver_delegation` (approver_delegations.jsonl): a delegation record
-  naming delegator, scope and expiry. Only the primary approver 박준태 or
-  an unexpired delegate may author HUMAN pilot/spend/delivery approvals.
+  naming delegator, scope and expiry. Only the primary approver (the
+  project's `production.approver` setting) or an unexpired delegate may author HUMAN pilot/spend/delivery approvals.
 - `w00_spend_approval` (w00_spend_approvals.jsonl): the separate
   additional-spend approval a CHANGE/MIX route requires, bound to the
   exact route-decision revision it approves.
@@ -62,18 +62,21 @@ from .animation_schema import (canon_bytes, check_document,
                                load_animation_timeline,
                                require_animation_profile)
 from .builds import list_builds, verify_build
-from .core import FilmError, atomic_text, digest, now, project_mutex, read, \
-    safe_path
+from .core import FilmError, atomic_text, digest, gates, now, project_mutex, \
+    read, safe_path
 
-PRIMARY_APPROVER = "박준태"          # built-in default; see primary_approver()
+# Last resort only: projects and records written before the approver became a
+# setting (REDESIGN_W00 R3) name this person, so they keep validating. A project
+# that sets `production.approver` (or the user setting) never reaches it.
+LEGACY_APPROVER = "박준태"
 
 
-def primary_approver(p=None):
-    """The human primary approver name (REDESIGN_W00 R3: approvals are settings).
+def approver_source(p=None):
+    """Where the primary approver name comes from: (name, source).
 
     Order: the project's ``production.approver`` in project.yaml, then the
     user setting ``w00_gate.primary_approver`` (engine/settings.py), then the
-    built-in name — so projects without the setting keep validating.
+    pre-setting legacy name — so existing projects and records keep validating.
     """
     if p is not None:
         from .core import production_block
@@ -82,10 +85,17 @@ def primary_approver(p=None):
         except FilmError:
             name = ""
         if name:
-            return name
+            return name, "project"
     from .settings import get_settings
     name = (get_settings("w00_gate").get("primary_approver") or "").strip()
-    return name or PRIMARY_APPROVER
+    if name:
+        return name, "user_setting"
+    return LEGACY_APPROVER, "legacy_default"
+
+
+def primary_approver(p=None):
+    """The human primary approver name (REDESIGN_W00 R3: approvals are settings)."""
+    return approver_source(p)[0]
 
 
 PILOT_TYPE = "w00_pilot"
@@ -235,7 +245,14 @@ def validate_pilot(record):
 
 
 def validate_delegation(record, p=None):
-    """Structural contract of one `approver_delegation` record."""
+    """Structural contract of one `approver_delegation` record.
+
+    Shape only: whether the delegator is the *current* approver is decided
+    when a delegation is written (`record_delegation`) and when it is relied
+    on (`_delegation_for`). A record made under an earlier approver therefore
+    stays readable after `production.approver` changes — it just no longer
+    grants anything.
+    """
     check_document(record, DELEGATION_TYPE)
     if type(record) is not dict or set(record.keys()) != DELEGATION_FIELDS:
         raise FilmError("approver_delegation must hold exactly its schema "
@@ -244,14 +261,12 @@ def validate_delegation(record, p=None):
                                    if type(record["delegation_id"]) is str
                                    else ""):
         raise FilmError(f"Bad delegation id: {record['delegation_id']}")
-    approver = primary_approver(p)
-    if record["delegator"] != approver:
-        raise FilmError("a delegation's delegator must be the primary "
-                        f"approver {approver}")
+    if type(record["delegator"]) is not str or not record["delegator"].strip():
+        raise FilmError("a delegation needs its delegator")
     if type(record["delegate"]) is not str or not record["delegate"].strip() \
-            or record["delegate"] == approver:
-        raise FilmError("a delegation needs a delegate distinct from the "
-                        "primary approver")
+            or record["delegate"] == record["delegator"]:
+        raise FilmError("a delegation needs a delegate distinct from its "
+                        "delegator")
     scope = record["scope"]
     if type(scope) is not list or not scope \
             or any(s not in DELEGATION_SCOPES for s in scope):
@@ -426,8 +441,9 @@ def record_delegation(project, *, delegate, scope, expires_at_ms,
 def _delegation_for(p, delegate, scope, now_ms=None):
     """The latest unexpired delegation covering `scope`, if one exists."""
     found = None
+    approver = primary_approver(p)
     for record in load_delegations(p):
-        if record["delegate"] != delegate:
+        if record["delegate"] != delegate or record["delegator"] != approver:
             continue
         if scope not in record["scope"] and "ALL" not in record["scope"]:
             continue
@@ -967,25 +983,31 @@ def gate_status(project):
         scope_rows = [row for row in rows
                       if row["state"] != "OUT_OF_SCOPE"]
 
+        # `gates: minimal` (REDESIGN_W00 R3) leaves the ladder, the route
+        # decision and the spend approvals to `full`; UNKNOWN fencing below
+        # applies either way.
+        full = gates(p) == "full"
         reasons = []
-        if not targets["declared"]:
-            reasons.append(f"{WAVES_PATH} is not declared — the W00 scope "
-                           "is unknown")
-        else:
-            if locks["plan"]["state"] != "CURRENT":
-                reasons.append(f"PLAN_LOCK is {locks['plan']['state']}")
-            wave_lock = locks["waves"].get(initial, {})
-            if wave_lock.get("state") != "CURRENT":
-                reasons.append(f"WAVE_LOCK {initial} is "
-                               f"{wave_lock.get('state', 'UNLOCKED')}")
-            for row in scope_rows:
-                if row["state"] != "CURRENT":
-                    detail = ("no pilot record"
-                              if row["state"] == "NO_PILOT_RECORD"
-                              else "pilot record is stale")
-                    reasons.append(f"{row['target_id']}: {detail}")
-            if decision is None:
-                reasons.append("the W00 route decision is pending")
+        if full:
+            if not targets["declared"]:
+                reasons.append(f"{WAVES_PATH} is not declared — the W00 scope "
+                               "is unknown")
+            else:
+                if locks["plan"]["state"] != "CURRENT":
+                    reasons.append(f"PLAN_LOCK is {locks['plan']['state']}")
+                wave_lock = locks["waves"].get(initial, {})
+                if wave_lock.get("state") != "CURRENT":
+                    reasons.append(f"WAVE_LOCK {initial} is "
+                                   f"{wave_lock.get('state', 'UNLOCKED')}")
+                for row in scope_rows:
+                    if row["state"] != "CURRENT":
+                        detail = ("no pilot record"
+                                  if row["state"] == "NO_PILOT_RECORD"
+                                  else "pilot record is stale")
+                        reasons.append(f"{row['target_id']}: {detail}")
+                if decision is None:
+                    reasons.append("the W00 route decision is pending")
+
         # An ambiguous durable job always fences progression — reconcile
         # its existing identity before anything advances.
         unknown = [j for j in jobs if j["status"] in AMBIGUOUS_STATES]
@@ -993,8 +1015,8 @@ def gate_status(project):
             reasons.append(f"{job['job_id']} is {job['status']} — reconcile "
                            "the existing job identity; progression is "
                            "fenced")
-        if decision is not None and decision["decision"] in ("CHANGE",
-                                                             "MIX"):
+        if full and decision is not None \
+                and decision["decision"] in ("CHANGE", "MIX"):
             for wave_id, wave in locks["waves"].items():
                 if wave["state"] == "STALE":
                     reasons.append(f"WAVE_LOCK {wave_id} is STALE — the "
@@ -1033,7 +1055,7 @@ def gate_status(project):
                         f"{job['job_id']} ({job['status']}) needs an "
                         f"additional-spend approval bound to "
                         f"{decision['decision_id']}")
-        if decision is not None and decision["decision"] == "KEEP":
+        if full and decision is not None and decision["decision"] == "KEEP":
             for row in scope_rows:
                 if row["state"] == "CURRENT" \
                         and row["decision"] != "KEEP":
@@ -1107,7 +1129,10 @@ def gate_status(project):
                 "route_decision": decision,
                 "open_waves": open_waves,
                 "gate": {"state": "BLOCKED" if reasons else "OPEN",
-                         "reasons": reasons},
+                         "reasons": reasons,
+                         "gates": "full" if full else "minimal"},
+                "approver": dict(zip(("name", "source"),
+                                     approver_source(p))),
                 "locks": {"plan": locks["plan"], "waves": locks["waves"],
                           "final": locks["final"]},
                 "reviews": reviews["targets"],

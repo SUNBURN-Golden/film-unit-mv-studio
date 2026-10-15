@@ -207,65 +207,76 @@ def animation_autopilot(project, progress=None):
     initial = _initial_wave(config)
     timeline = load_animation_timeline(p)
     status = lock_status(p)
-    if status["plan"]["state"] != "CURRENT":
-        return _gate({"stage": "NEEDS_PLAN_LOCK", "lock": status["plan"],
-                      "next": f"python -m engine.cli animation-lock {target} "
-                              "--scope PLAN_LOCK --approver <name>"})
-    waves = load_waves(p)
-    if waves is None:
-        return _gate({"stage": "NEEDS_PRODUCTION_INPUTS", "wave": initial,
-                      "missing": [WAVES_PATH],
-                      "next": f"declare the production order: python -m engine.cli "
-                              f"animation-waves {target} --file <waves.json>"})
-    decision = latest_route_decision(p, initial)
     reviews = review_status(p, strict=False)
-    wave_by_shot = {s: w["wave"] for w in waves["waves"] for s in w["shots"]}
-    for wave in waves["waves"]:
-        wave_id = wave["wave"]
-        if wave_id != initial:
-            if decision is None:
-                return _gate({"stage": "NEEDS_ROUTE_DECISION", "wave": initial,
-                              "next": f"python -m engine.cli route-decision {target} {initial} "
-                                      "--decision keep|change|mix --decider <name> "
-                                      "--approver <name> --apply-scope <waves>"})
-            if wave_id not in decision["apply_scope"]["waves"]:
-                return _gate({"stage": "WAVE_SCOPE_CLOSED", "wave": wave_id,
-                              "route": decision["decision_id"],
-                              "next": f"{wave_id} is outside the apply scope recorded by "
-                                      f"{decision['decision_id']}; a later decision or "
-                                      "plan revision must open it"})
-        missing = unresolved_wave_shots(p, timeline, waves, wave_id)
+    full = gates(p) == "full"
+    if not full:
+        # REDESIGN_W00 R3: no PLAN/WAVE/FINAL ladder and no route decision.
+        # Every cut still needs its adopted frames and a current review.
+        every = {"waves": [{"wave": "ALL", "shots": [e["shot_id"] for e in timeline["entries"]]}]}
+        missing = unresolved_wave_shots(p, timeline, every, "ALL")
         if missing:
-            return _gate({"stage": "NEEDS_PRODUCTION_INPUTS", "wave": wave_id,
+            return _gate({"stage": "NEEDS_PRODUCTION_INPUTS", "wave": None,
                           "missing": missing,
-                          "next": "import the wave's adopted frame sequences "
-                                  "(animation-import), then lock the wave"})
-        lock = status["waves"].get(wave_id, {"state": "UNLOCKED"})
-        if lock["state"] != "CURRENT":
-            return _gate({"stage": "NEEDS_WAVE_LOCK", "wave": wave_id,
-                          "lock": lock,
+                          "next": "import the adopted frame sequences (animation-import)"})
+    else:
+        if status["plan"]["state"] != "CURRENT":
+            return _gate({"stage": "NEEDS_PLAN_LOCK", "lock": status["plan"],
                           "next": f"python -m engine.cli animation-lock {target} "
-                                  f"--scope WAVE_LOCK --wave {wave_id} --approver <name>"})
-        pending = [entry["instance_id"] for entry in timeline["entries"]
-                   if wave_by_shot.get(entry["shot_id"]) == wave_id
-                   and reviews["targets"].get(entry["instance_id"], {})
-                   .get("state") != "CURRENT"]
-        if pending:
-            return _gate({"stage": "NEEDS_CUT_REVIEW", "wave": wave_id,
-                          "pending": pending,
-                          "next": "record cut reviews inside the locked scope "
-                                  "(review-cut)"})
-        if wave_id == initial and decision is None:
-            adopted = {entry["instance_id"]:
-                       reviews["targets"][entry["instance_id"]]["binding_sha256"]
-                       for entry in timeline["entries"]
-                       if wave_by_shot.get(entry["shot_id"]) == wave_id}
-            return _gate({"stage": "NEEDS_ROUTE_DECISION", "wave": wave_id,
-                          "adopted": adopted,
-                          "next": f"initial wave adopted; the production lead records "
-                                  f"the route decision: python -m engine.cli "
-                                  f"route-decision {target} {wave_id} --decision "
-                                  "keep|change|mix --decider <name> --approver <name>"})
+                                  "--scope PLAN_LOCK --approver <name>"})
+        waves = load_waves(p)
+        if waves is None:
+            return _gate({"stage": "NEEDS_PRODUCTION_INPUTS", "wave": initial,
+                          "missing": [WAVES_PATH],
+                          "next": f"declare the production order: python -m engine.cli "
+                                  f"animation-waves {target} --file <waves.json>"})
+        decision = latest_route_decision(p, initial)
+        wave_by_shot = {s: w["wave"] for w in waves["waves"] for s in w["shots"]}
+        for wave in waves["waves"]:
+            wave_id = wave["wave"]
+            if wave_id != initial:
+                if decision is None:
+                    return _gate({"stage": "NEEDS_ROUTE_DECISION", "wave": initial,
+                                  "next": f"python -m engine.cli route-decision {target} {initial} "
+                                          "--decision keep|change|mix --decider <name> "
+                                          "--approver <name> --apply-scope <waves>"})
+                if wave_id not in decision["apply_scope"]["waves"]:
+                    return _gate({"stage": "WAVE_SCOPE_CLOSED", "wave": wave_id,
+                                  "route": decision["decision_id"],
+                                  "next": f"{wave_id} is outside the apply scope recorded by "
+                                          f"{decision['decision_id']}; a later decision or "
+                                          "plan revision must open it"})
+            missing = unresolved_wave_shots(p, timeline, waves, wave_id)
+            if missing:
+                return _gate({"stage": "NEEDS_PRODUCTION_INPUTS", "wave": wave_id,
+                              "missing": missing,
+                              "next": "import the wave's adopted frame sequences "
+                                      "(animation-import), then lock the wave"})
+            lock = status["waves"].get(wave_id, {"state": "UNLOCKED"})
+            if lock["state"] != "CURRENT":
+                return _gate({"stage": "NEEDS_WAVE_LOCK", "wave": wave_id,
+                              "lock": lock,
+                              "next": f"python -m engine.cli animation-lock {target} "
+                                      f"--scope WAVE_LOCK --wave {wave_id} --approver <name>"})
+            pending = [entry["instance_id"] for entry in timeline["entries"]
+                       if wave_by_shot.get(entry["shot_id"]) == wave_id
+                       and reviews["targets"].get(entry["instance_id"], {})
+                       .get("state") != "CURRENT"]
+            if pending:
+                return _gate({"stage": "NEEDS_CUT_REVIEW", "wave": wave_id,
+                              "pending": pending,
+                              "next": "record cut reviews inside the locked scope "
+                                      "(review-cut)"})
+            if wave_id == initial and decision is None:
+                adopted = {entry["instance_id"]:
+                           reviews["targets"][entry["instance_id"]]["binding_sha256"]
+                           for entry in timeline["entries"]
+                           if wave_by_shot.get(entry["shot_id"]) == wave_id}
+                return _gate({"stage": "NEEDS_ROUTE_DECISION", "wave": wave_id,
+                              "adopted": adopted,
+                              "next": f"initial wave adopted; the production lead records "
+                                      f"the route decision: python -m engine.cli "
+                                      f"route-decision {target} {wave_id} --decision "
+                                      "keep|change|mix --decider <name> --approver <name>"})
     pending = [target_id for target_id, row in reviews["targets"].items()
                if row["state"] != "CURRENT"]
     if pending:
@@ -273,7 +284,7 @@ def animation_autopilot(project, progress=None):
                       "pending": pending,
                       "next": "every cut and transition needs a current review "
                               "before the Final scope locks"})
-    if status["final"]["state"] != "CURRENT":
+    if full and status["final"]["state"] != "CURRENT":
         return _gate({"stage": "NEEDS_FINAL_LOCK", "lock": status["final"],
                       "next": f"python -m engine.cli animation-lock {target} "
                               "--scope FINAL_LOCK --approver <name>"})

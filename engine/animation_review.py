@@ -33,7 +33,7 @@ from .animation_schema import (canon_bytes, check_document,
                                load_animation_timeline,
                                require_animation_profile)
 from .builds import verify_build
-from .core import FilmError, atomic_text, digest, now, read, safe_path
+from .core import FilmError, atomic_text, digest, gates, now, read, safe_path
 from .exposure import schedule_digest
 from .frame_clock import frame_filename
 from .transitions import audit_timeline
@@ -523,9 +523,14 @@ def record_transition_review(project, transition_id, *, reviewer, methods,
 
 
 def _final_film_governor(project, reviewer, now_ms=None):
-    """ADR 0001 §7: a FINAL_FILM approval is current only for 박준태 or an
-    unexpired delegate covering DELIVERY_APPROVAL."""
+    """ADR 0001 §7: a FINAL_FILM approval is current only for the project's
+    approver (production.approver) or an unexpired delegate covering
+    DELIVERY_APPROVAL; under `gates: minimal` a named reviewer suffices."""
     from .w00_gate import _approver_verdict
+    if gates(project) == "minimal":
+        name = str(reviewer or "").strip()
+        return (True, "gates: minimal — the named reviewer is the approver", None) \
+            if name else (False, "a reviewer name is required", None)
     return _approver_verdict(project, reviewer, "DELIVERY_APPROVAL", now_ms)
 
 
@@ -663,6 +668,18 @@ def film_review_status(project, build_id, now_ms=None):
     if approved:
         governed, why, _delegation = _final_film_governor(
             p, latest["reviewer"], now_ms)
+        if governed:
+            # Under `gates: minimal` any name passes the governor, so a
+            # synthetic-fixture audit must still keep its review from
+            # reading as a human approval.
+            if gates(p) == "minimal":
+                from .w00_gate import load_delivery_approvals
+                fixture = any(a["review_id"] == latest["review_id"]
+                              and a["reviewer_kind"] != "HUMAN"
+                              for a in load_delivery_approvals(p))
+                if fixture:
+                    governed, why = False, ("a SYNTHETIC_FIXTURE record is "
+                                            "never a human approval")
         if not governed:
             return {"state": "UNGOVERNED", "review_id": None,
                     "reviewer": latest["reviewer"], "reason": why,

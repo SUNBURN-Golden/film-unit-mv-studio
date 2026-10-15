@@ -180,6 +180,11 @@ def animation_init(project, profile="frame-animation-v1"):
         updated = dict(config)
         updated["schema_version"] = ANIMATION_PROJECT_SCHEMA
         updated["production_profile"] = ANIMATION_PROFILE
+        # REDESIGN_W00 R3: the ceremony profile keeps its PLAN/WAVE/FINAL
+        # ladder, route decision and spend/delivery approvals on conversion
+        # (init's `minimal` is for the LEGACY path); relax it with
+        # `production --gates minimal`.
+        updated["production"] = {**(config.get("production") or {}), "gates": "full"}
         updated["schema_versions"] = {**config.get("schema_versions", {}),
                                       **ANIMATION_SCHEMA_VERSIONS}
         updated["animation"] = {

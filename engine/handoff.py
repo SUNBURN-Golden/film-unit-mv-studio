@@ -292,7 +292,9 @@ def _conti_check(p, shot_id, sha, service_id):
     except FilmError as exc:
         return {"verdict": None, "warnings": [f"콘티 자동 점검을 못 했습니다: {exc}"]}
     failed = [c for c in record["mechanical"] if c["status"] == "FAIL"]
+    from .conti_brief import revision_loop
     return {"verdict": record["verdict"], "attempt": record["attempt"],
+            "loop": revision_loop(p, shot_id),
             "failed": [f"{c['check']}: {c['detail']}" for c in failed],
             "pending": sum(c["verdict"] == "PENDING" for c in record["criteria"]),
             "warnings": [f"콘티 점검 {c['check']} 실패: {c['detail']}" for c in failed]}

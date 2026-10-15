@@ -556,7 +556,7 @@ def _approve_film(p, build, reviewer, decision, reviewer_kind="HUMAN"):
     (non-stale) cut/transition reviews, then the governed delivery path.
 
     `approve_delivery` records the FINAL_FILM review and the delivery
-    audit. A HUMAN name other than 박준태 or an unexpired delegate is
+    audit. A HUMAN name other than the project's approver (production.approver) or an unexpired delegate is
     refused and cannot become CURRENT.
     """
     build_id = build["build_id"]
@@ -649,7 +649,7 @@ def _w00_gate(p):
     reviewer = c1.text_input("파일럿 검토자", key="an_pilot_reviewer")
     kind = c2.selectbox("검토자 종류", ["SYNTHETIC_FIXTURE", "HUMAN"],
                         key="an_pilot_kind",
-                        help="HUMAN은 박준태 또는 기록된 위임자만 가능합니다")
+                        help="HUMAN은 프로젝트 승인자(production.approver) 또는 기록된 위임자만 가능합니다")
     reason = st.text_input("선정·검토 이유", key="an_pilot_reason")
     c3, c4 = st.columns(2)
     cap_ref = c3.text_input("capability 참조 (없으면 비움)", key="an_pilot_cap")
@@ -684,7 +684,7 @@ def _w00_gate(p):
             f"{pick}의 W00 파일럿을 기록했습니다")
 
     with st.expander("승인자 위임 · 추가 지출 승인", expanded=False):
-        st.caption("HUMAN 승인자는 박준태이거나 아래 위임 기록이 있어야 "
+        st.caption("HUMAN 승인자는 프로젝트 승인자(production.approver)이거나 아래 위임 기록이 있어야 "
                    "합니다. CHANGE/MIX 경로의 추가 지출은 결정 revision에 "
                    "묶인 별도 승인이 필요합니다.")
         c1, c2 = st.columns(2)
@@ -720,7 +720,7 @@ def _deliveries(p, pick):
     st.markdown("**sealed 전달 파일 별도 승인 — clean / subbed**")
     st.caption("clean과 subbed는 각자의 파일 해시에 묶여 별도로 승인됩니다 — "
                "한쪽 승인이 다른 쪽을 대신하지 않고, 승인은 봉인된 build를 "
-               "바꾸지 않습니다. 승인자는 박준태 또는 기록된 위임자이며 "
+               "바꾸지 않습니다. 승인자는 프로젝트 승인자(production.approver) 또는 기록된 위임자이며 "
                "합성 fixture 승인은 SYNTHETIC_FIXTURE로만 기록됩니다.")
     delivery = _guarded(lambda: deliverable_status(p, pick["build_id"]))
     if delivery is None:
@@ -776,7 +776,7 @@ def _output(p, entries, locks, route, reviews):
     reviewer_kind = st.selectbox(
         "검토자 종류", ["HUMAN", "SYNTHETIC_FIXTURE"], key="an_film_kind")
     st.caption("최종 승인은 정확한 빌드와 현재 검수에 묶이며, HUMAN은 "
-               "박준태 또는 만료되지 않은 위임자만 CURRENT가 됩니다. "
+               "프로젝트 승인자(production.approver) 또는 만료되지 않은 위임자만 CURRENT가 됩니다. "
                "그 밖의 HUMAN 이름은 거절됩니다. 합성 fixture는 그 이름을 "
                "쓸 수 없어 CURRENT가 되지 않으며, 실제 작품 승인·"
                "qualification·release를 대신하지 않습니다.")
