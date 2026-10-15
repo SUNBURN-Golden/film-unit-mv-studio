@@ -34,7 +34,7 @@ from .animation_review import (bound_targets, require_current_reviews,
                                sequence_content_digest, shared_intent_digest)
 from .animation_schema import (canon_bytes, check_document, load_animation_timeline,
                                read_canon, require_animation_profile, write_canon)
-from .core import FilmError, atomic_text, digest, now, project_mutex, read, safe_path
+from .core import FilmError, atomic_text, digest, gates, now, project_mutex, read, safe_path
 from .lyrics import lyrics_review_fingerprint, timing_fingerprint, validate_lyrics
 
 WAVES_TYPE = "animation_waves"
@@ -521,7 +521,10 @@ def wave_scope_gate(p, shot_ids):
     """Refuse production review for shots outside a currently locked wave.
 
     Projects without a declared production/waves.json (pre-ANIM-007) keep the
-    ANIM-006 behaviour: reviews bind content only."""
+    ANIM-006 behaviour: reviews bind content only. Under `gates: minimal`
+    (REDESIGN_W00 R3) the wave ladder is off the critical path."""
+    if gates(p) == "minimal":
+        return
     waves = load_waves(p)
     if waves is None:
         return

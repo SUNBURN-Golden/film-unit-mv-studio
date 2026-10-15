@@ -29,9 +29,9 @@ import re
 import numpy as np
 from PIL import Image
 
-from .conti import load_conti, missing_fields
-from .core import (FilmError, atomic_text, ffmpeg, now, object_hash, probe, project_mutex, read,
-                   require_legacy_profile, safe_path, write)
+from .conti import CONTI_SCHEMA, load_conti, missing_fields, persist_request
+from .core import (FilmError, atomic_text, ffmpeg, now, object_hash, probe, production_block, project_mutex,
+                   read, require_legacy_profile, safe_path, write)
 from .director import extract_json
 from .packets import aspect_ratio, entry_text, frame_references, _style_words
 from .renderers import build_prompt
@@ -293,6 +293,7 @@ def record_revision(project, shot_id, instruction, note=""):
         latest = rows[-1]
         if (latest.get("revision_request") or {}).get("fulfilled_by"):
             raise FilmError(f"{shot_id}: the latest take was already revised; check the new take first")
+        _require_attempt_left(p, shot_id, latest)
         brief = shot_brief(p, shot_id)
         latest["revision_request"] = {
             "instruction": instruction[:2000], "note": str(note or "")[:600], "at": now(),
@@ -303,6 +304,20 @@ def record_revision(project, shot_id, instruction, note=""):
     return {"shot_id": shot_id, "revises_take": latest["take_sha256"], "attempt": latest["attempt"],
             **{k: v for k, v in latest["revision_request"].items() if k != "conti"},
             "next": "change the conti field the instruction is about (conti-submit), import the new take, then conti-check"}
+
+
+def attempt_cap(p):
+    """project.yaml production.max_attempts_per_shot, or None when unset or invalid."""
+    cap = production_block(p).get("max_attempts_per_shot")
+    return cap if isinstance(cap, int) and not isinstance(cap, bool) and cap > 0 else None
+
+
+def _require_attempt_left(p, shot_id, record):
+    cap = attempt_cap(p)
+    if cap is not None and record["attempt"] >= cap:
+        raise FilmError(f"{shot_id}: attempt {record['attempt']} is the per-shot cap {cap} "
+                        "(project.yaml production.max_attempts_per_shot): accept the take, stop, "
+                        "or raise the cap on purpose (python -m engine.cli production --max-attempts N)")
 
 
 def _open_request(rows):
@@ -426,9 +441,8 @@ def check_take(project, shot_id, *, sha256=None, service="", units=None, human_m
                                for i, c in enumerate((doc or {}).get("acceptance_criteria", []))],
                   "judgements": [], "reviewer": "",
                   "warnings": [] if doc else ["no conti: there are no acceptance criteria to judge"]}
-        from .core import production_block
-        cap = production_block(p).get("max_attempts_per_shot")
-        if isinstance(cap, int) and not isinstance(cap, bool) and cap > 0 and attempt > cap:
+        cap = attempt_cap(p)
+        if cap is not None and attempt > cap:
             record["warnings"].append(f"attempt {attempt} is over the per-shot cap {cap} "
                                       "(project.yaml production.max_attempts_per_shot): stop or decide")
         source = _open_request(previous) if same is None else None
@@ -493,12 +507,144 @@ def record_verdicts(project, shot_id, sha256, verdicts, reviewer, note=""):
                 raise FilmError(f"criterion {index}: verdict must be one of {VERDICTS}")
             by_index[index].update(verdict=verdict, reason=str(reason or "")[:600])
             applied[str(index)] = verdict
-        record["judgements"].append({"at": now(), "reviewer": str(reviewer).strip()[:80],
-                                     "verdicts": applied, "note": str(note or "")[:600]})
+        entry = {"at": now(), "reviewer": str(reviewer).strip()[:80],
+                 "verdicts": applied, "note": str(note or "")[:600]}
+        # The criteria on this record are the ones the take was checked
+        # against. If the conti was revised since, flag the verdict rather
+        # than let it read as an answer to the current conti.
+        now_sha = conti_digest(load_conti(p, shot_id))
+        if record.get("conti_sha256") != now_sha:
+            entry["conti_changed"] = {"checked_against": record.get("conti_sha256"), "now": now_sha}
+            warning = (f"verdict recorded against a conti that changed since this take was checked "
+                       f"({str(record.get('conti_sha256'))[:12]} → {str(now_sha)[:12]}): it answers the criteria "
+                       "as they were then — re-check the take (conti-check) or confirm the criteria still hold")
+            if warning not in record.setdefault("warnings", []):
+                record["warnings"].append(warning)
+        record["judgements"].append(entry)
         record["reviewer"] = str(reviewer).strip()[:80]
         record["verdict"] = _overall(record)
         write(_record_path(p, shot_id, record["take_sha256"]), record)
     return record
+
+
+# ---- the revision loop: failed criterion → rewrite request → new brief → attempt n+1 ----
+
+REWRITE_SYSTEM = """You are revising ONE shot's conti (storyboard document) for a music video because a generated take failed its checks. Reply with ONE JSON object and nothing else.
+- Return the shot's complete conti document (same shot_id, same JSON shape as current_conti), not a patch.
+- Change only what is needed to fix the failures: typically blocking[].motion_beats, camera.moves, framing, lighting or pose, so that the prompts built from the conti steer the next take away from the failure.
+- Keep every at_ms inside the shot's own range, use only the declared cast, and write text values in {language}.
+- Do not weaken, delete or reword acceptance_criteria to make a failure pass. Edit a criterion only when it cannot be checked from the picture, and say so in open_questions.
+- Put anything you cannot decide in open_questions; an empty list means the direction is settled.
+Answer in exactly this JSON shape:
+{schema}"""
+
+
+def _failures(record):
+    """What failed on a checked take: mechanical FAILs and FAILed criteria, with their reasons."""
+    out = [{"kind": "mechanical", "check": c["check"], "detail": c["detail"]}
+           for c in record.get("mechanical", []) if c["status"] == "FAIL"]
+    out += [{"kind": "criterion", "index": c["index"], "text": c["text"], "reason": c.get("reason", "")}
+            for c in record.get("criteria", []) if c["verdict"] == "FAIL"]
+    return out
+
+
+def _auto_instruction(failures):
+    parts = [f"{f['check']} failed ({f['detail']})" if f["kind"] == "mechanical"
+             else f"criterion {f['index']} failed: {f['text']}" + (f" — {f['reason']}" if f["reason"] else "")
+             for f in failures]
+    return "Auto: " + "; ".join(parts)
+
+
+def rewrite_request(project, shot_id, language="English"):
+    """The paste-out text that asks a subscription LLM to rewrite the conti after a FAILed take.
+
+    Takes the shot's latest checked take, which must carry a FAIL (a mechanical
+    check or a criterion), and refuses once the per-shot attempt cap
+    (``production.max_attempts_per_shot``) is reached. It stores the failure as
+    the take's ``revision_request`` (the same chain ``conti-revision`` writes),
+    persists the request text under ``conti/requests/`` and returns it. The
+    answer goes through ``conti-submit --request <id>``; the regenerated brief
+    and the next ``conti-check`` are attempt n+1 and carry the revision record.
+    """
+    p = Path(project)
+    require_legacy_profile(p)
+    doc = load_conti(p, shot_id)
+    if doc is None:
+        raise FilmError(f"{shot_id}: no conti — settle direction first (conti-draft/conti-submit)")
+    rows = _records(p, shot_id)
+    if not rows:
+        raise FilmError(f"{shot_id}: no checked take to revise — conti-check a take first")
+    record = rows[-1]
+    failures = _failures(record)
+    if not failures:
+        raise FilmError(f"{shot_id}: attempt {record['attempt']} has no FAIL (verdict {record['verdict']}) — "
+                        "judge or confirm its criteria first (conti-judge-request / conti-verdict)")
+    request = record.get("revision_request") or {}
+    if not request:
+        record_revision(p, shot_id, _auto_instruction(failures), note="auto: failed checks")
+    elif request.get("fulfilled_by"):
+        raise FilmError(f"{shot_id}: the latest take was already revised; check the new take first")
+    else:
+        _require_attempt_left(p, shot_id, record)
+    brief = shot_brief(p, shot_id)
+    cap = attempt_cap(p)
+    payload = {"shot_id": shot_id, "attempt": record["attempt"], "next_attempt": record["attempt"] + 1,
+               "attempts_left_after_this_one": None if cap is None else cap - record["attempt"] - 1,
+               "shot_range_ms": [brief["in_ms"], brief["out_ms"]], "clip_seconds": brief["clip_seconds"],
+               "failures": failures, "mechanical": record["mechanical"],
+               "judge_notes": [j for j in record.get("judgements", []) if j.get("note")][-3:],
+               "current_conti": {k: v for k, v in doc.items() if k not in {"updated_at", "source", "request_sha256"}},
+               "current_prompts": {"first_frame": brief["first_frame_prompt"], "video": brief["video_prompt"]}}
+    text = (f"{REWRITE_SYSTEM.format(language=language, schema=json.dumps(CONTI_SCHEMA['conti'][0], ensure_ascii=False))}"
+            f"\n\n=== 입력 자료 (JSON) ===\n{json.dumps(payload, ensure_ascii=False)}\n\n"
+            "위 지시대로 JSON 객체 하나만 답하세요. 설명 문장 없이, 코드 블록 하나 안에 넣어도 됩니다.")
+    request_id, request_file = persist_request(p, text)
+    with project_mutex(p):
+        latest = _records(p, shot_id)[-1]
+        latest["revision_request"]["rewrite_request_id"] = request_id
+        write(_record_path(p, shot_id, latest["take_sha256"]), latest)
+    return {"shot_id": shot_id, "attempt": record["attempt"], "next_attempt": record["attempt"] + 1,
+            "attempts_left_after_this_one": payload["attempts_left_after_this_one"], "failures": failures,
+            "request_id": request_id, "request_file": request_file, "text": text,
+            "next": f"paste it to your LLM, save the JSON answer, then: conti-submit --file <answer> --request {request_id}; "
+                    f"conti-brief {shot_id} for the new prompts; make and import take {record['attempt'] + 1}; conti-check"}
+
+
+def revision_loop(project, shot_id):
+    """Where a shot is in the check → rewrite → regenerate loop, computed from its records.
+
+    Stages: NEEDS_TAKE, NEEDS_VERDICTS (criteria still PENDING), ACCEPTED (PASS),
+    NEEDS_REWRITE (FAIL, attempts left), CAP_REACHED (FAIL at the attempt cap:
+    stop or decide), AWAITING_CONTI_CHANGE (rewrite requested, conti not yet
+    changed), AWAITING_TAKE (conti changed: the new brief is ready for attempt n+1).
+    """
+    p = Path(project)
+    _shot(p, shot_id)
+    cap = attempt_cap(p)
+    rows = _records(p, shot_id)
+    base = {"shot_id": shot_id, "cap": cap, "attempt": 0, "verdict": None}
+    if not rows:
+        return {**base, "stage": "NEEDS_TAKE", "next": f"import a take, then conti-check {shot_id}"}
+    latest = rows[-1]
+    attempt, verdict = latest["attempt"], latest["verdict"]
+    base.update(attempt=attempt, verdict=verdict, take_sha256=latest["take_sha256"])
+    now_sha = conti_digest(load_conti(p, shot_id))
+    request = latest.get("revision_request") or {}
+    if request and not request.get("fulfilled_by"):
+        if request.get("conti_sha256") == now_sha:
+            return {**base, "stage": "AWAITING_CONTI_CHANGE", "rewrite_request_id": request.get("rewrite_request_id"),
+                    "next": "answer the rewrite request (conti-submit --request <id>) or edit the conti field"}
+        return {**base, "stage": "AWAITING_TAKE", "next_attempt": attempt + 1,
+                "next": f"conti changed: conti-brief {shot_id}, make and import take {attempt + 1}, conti-check"}
+    if verdict == "PASS":
+        return {**base, "stage": "ACCEPTED", "next": "accepted — nothing left for this shot"}
+    if verdict == "FAIL":
+        if cap is not None and attempt >= cap:
+            return {**base, "stage": "CAP_REACHED",
+                    "next": f"attempt {attempt} is the cap {cap}: accept it, stop, or raise production.max_attempts_per_shot"}
+        return {**base, "stage": "NEEDS_REWRITE", "failures": _failures(latest),
+                "next": f"conti-rewrite-request {shot_id}"}
+    return {**base, "stage": "NEEDS_VERDICTS", "next": f"conti-judge-request {shot_id} (or conti-verdict)"}
 
 
 # ---- the vision judge: paste out, paste back ----------------------------------------

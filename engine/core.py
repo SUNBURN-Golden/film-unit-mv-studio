@@ -202,14 +202,59 @@ def production_profile(config):
     return config.get("production_profile") or "LEGACY_MV"
 
 
+GATE_MODES = ("minimal", "full")
+
+
 def production_block(p):
-    """The project.yaml `production` block (R3): mode, services, gates."""
+    """The project.yaml `production` block (R3): mode, approver, attempt cap, services, gates."""
     return read(Path(p) / "project.yaml").get("production") or {}
 
 
 def gates(p):
-    """'minimal' (default) or 'full' ceremony gates for the LEGACY path."""
-    return (production_block(p).get("gates") or "minimal")
+    """'minimal' or 'full' ceremony gates (REDESIGN_W00 R3).
+
+    `full` keeps the PLAN/WAVE/FINAL lock ladder, the route decision and the
+    spend and delivery approvals; `minimal` leaves them off the critical path
+    (UNKNOWN fencing and no-resubmit stay on either way). A project that never
+    set it follows its profile: LEGACY_MV `minimal`, FRAME_ANIMATION_V1 `full`
+    (the ceremony profile keeps its contract until the owner relaxes it).
+    """
+    config = read(Path(p) / "project.yaml")
+    mode = (config.get("production") or {}).get("gates")
+    if mode is None or mode == "":
+        return "minimal" if production_profile(config) == "LEGACY_MV" else "full"
+    if mode not in GATE_MODES:
+        raise FilmError(f"project.yaml production.gates must be one of {GATE_MODES}, not {mode!r}")
+    return mode
+
+
+def set_production(p, **fields):
+    """Change settings in the `production` block; every value is validated first.
+
+    ``approver`` (name), ``max_attempts_per_shot`` (integer >= 1), ``gates``
+    (minimal|full), ``mode``, and ``services`` (a mapping, merged per key).
+    """
+    unknown = set(fields) - {"mode", "approver", "max_attempts_per_shot", "services", "gates"}
+    if unknown:
+        raise FilmError(f"unknown production setting(s): {', '.join(sorted(unknown))}")
+    if "gates" in fields and fields["gates"] not in GATE_MODES:
+        raise FilmError(f"gates must be one of {GATE_MODES}")
+    cap = fields.get("max_attempts_per_shot")
+    if "max_attempts_per_shot" in fields and (type(cap) is not int or cap < 1):
+        raise FilmError("max_attempts_per_shot must be an integer of at least 1")
+    if "approver" in fields:
+        fields["approver"] = str(fields["approver"] or "").strip()
+    if "services" in fields and not isinstance(fields["services"], dict):
+        raise FilmError("services must be a mapping such as {video: flow}")
+    p = Path(p)
+    with project_mutex(p):
+        config = read(p / "project.yaml")
+        block = dict(config.get("production") or {})
+        for key, value in fields.items():
+            block[key] = {**(block.get("services") or {}), **value} if key == "services" else value
+        config["production"] = block
+        write(p / "project.yaml", config)
+    return block
 
 
 def require_legacy_profile(p):

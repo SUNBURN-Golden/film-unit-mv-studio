@@ -174,7 +174,12 @@ program nodes until the R5 evidence lands.
 - **R3 — settings-based approvals.** The `production` block; approver from
   settings; `gates: minimal` default so the autopilot reaches PREVIEW_READY on
   a LEGACY project with no lock command. Acceptance: existing tests pass with
-  the setting; `w00_gate` reads the approver from settings.
+  the setting; `w00_gate` reads the approver from settings. ✅ (code; the
+  claudia port landed the block and the manual-path gate, this slice finished
+  it: the approver source order and `production` command, delegations that
+  survive an approver change, and `gates` governing the FRAME_ANIMATION_V1
+  ladder, route decision, spend and delivery approvals — `animation-init`
+  pins `full`, an unset `FRAME_ANIMATION_V1` project is `full`.)
 - **R4 — pick the hard cut, finish its conti on the real song.** JunTae and the
   LLM, through `conti-request`. Acceptance: `conti-status` READY for the chosen
   shots on the real project; request and answer kept under
@@ -187,6 +192,10 @@ program nodes until the R5 evidence lands.
 - **R6 — revision loop.** Failed criterion → LLM rewrites the prompt → new brief
   → attempt n+1, capped by the setting. Acceptance: on the hard cut, one
   revision round completes with no human action other than the hand-off.
+  Code: `conti-rewrite-request`, `conti-loop`, the attempt cap in
+  `conti-revision`, and the conti-change flag on verdicts. The acceptance on the
+  hard cut is **not** met: the rewrite answer is still pasted by a person (no
+  subscription-CLI driver exists) and no real take has been revised.
 - **R7 — scale.** Packets batched per sitting, downloads auto-assigned, a
   Preview per batch. Acceptance: the first full verse in Preview, with metrics.
 - **R8 — Final.** `compile-final` and the delivery bundle of the real song;

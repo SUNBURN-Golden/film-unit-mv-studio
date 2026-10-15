@@ -330,6 +330,21 @@ def request_sha(project, request_id):
     return sha
 
 
+def persist_request(project, text):
+    """Store a paste-out request text under its own hash; returns (id, project-relative file).
+
+    ``submit_answer(..., request_id=id)`` links an answer back to it, whichever
+    request (conti discussion, revision rewrite) the text came from.
+    """
+    p = Path(project)
+    sha = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    path = safe_path(p, f"{REQUESTS_DIR}/{sha[:16]}.txt")
+    if not path.exists():
+        with project_mutex(p):
+            atomic_text(path, text)
+    return sha[:16], f"{REQUESTS_DIR}/{sha[:16]}.txt"
+
+
 def submit_answer(project, answer, source="llm", request_id=None):
     """Store every conti in a discussion answer: {"conti": [...]} or one bare doc.
 
@@ -433,10 +448,6 @@ def conti_request(project, shot_ids=None, language="English"):
     # keyed by its own hash because one request can cover several shots;
     # conti-submit --request <id> links each answer back to it. Nothing scans
     # conti/ — answers are opened by shot path only.
-    sha = hashlib.sha256(text.encode("utf-8")).hexdigest()
-    path = safe_path(p, f"{REQUESTS_DIR}/{sha[:16]}.txt")
-    if not path.exists():
-        with project_mutex(p):
-            atomic_text(path, text)
+    request_id, request_file = persist_request(p, text)
     return {"ids": [s["id"] for s in picked], "text": text,
-            "request_id": sha[:16], "request_file": f"{REQUESTS_DIR}/{sha[:16]}.txt"}
+            "request_id": request_id, "request_file": request_file}

@@ -224,7 +224,7 @@ def main(argv=None):
     approve_film.add_argument("--reviewer", required=True)
     approve_film.add_argument("--reviewer-kind", choices=["HUMAN", "SYNTHETIC_FIXTURE"],
                               default="HUMAN",
-                              help="HUMAN requires 박준태 or an unexpired delegate")
+                              help="HUMAN requires the project's approver (production.approver) or an unexpired delegate")
     approve_film.add_argument("--methods", required=True, help="Comma-separated review methods")
     approve_film.add_argument("--decision", choices=["APPROVED", "FIX_REQUIRED"], default="APPROVED")
     review_list = sub.add_parser("animation-reviews", help="Show per-cut/per-transition review state (CURRENT/STALE/UNREVIEWED)")
@@ -254,6 +254,12 @@ def main(argv=None):
     route.add_argument("--cost-time-impact", default="")
     route.add_argument("--grounds", default="", help="Recorded grounds; required for an early decision")
     route.add_argument("--early", action="store_true", help="Decide before every wave cut reached adoption")
+    prod = sub.add_parser("production", help="REDESIGN_W00 R3: show or set the project.yaml production block — approver, max_attempts_per_shot, services, gates minimal|full")
+    prod.add_argument("project")
+    prod.add_argument("--approver", help="Name of the primary approver (whole-film, delegation, delivery and spend approvals)")
+    prod.add_argument("--max-attempts", type=int, help="Per-shot attempt cap of the revision loop (default 3)")
+    prod.add_argument("--gates", choices=["minimal", "full"], help="full keeps the PLAN/WAVE/FINAL ladder, route decision, spend and delivery approvals")
+    prod.add_argument("--service", action="append", default=[], metavar="KIND=NAME", help="Subscription app per kind, e.g. video=flow; repeatable")
     w00 = sub.add_parser("w00-status", help="ANIM-022: W00 pilot records, next-wave gate OPEN/BLOCKED with reasons, quote/usage/UNKNOWN and per-deliverable approval state; evidence facets stay UNQUALIFIED/PENDING/NOT_AUTHORIZED")
     w00.add_argument("project")
     packets = sub.add_parser("packets", help="Write per-shot prompts and import commands for making media by hand in subscription apps; no provider calls")
@@ -315,6 +321,13 @@ def main(argv=None):
     rev_cmd.add_argument("shot")
     rev_cmd.add_argument("--instruction", required=True, help="The user's revision instruction, verbatim")
     rev_cmd.add_argument("--note", default="")
+    rw_cmd = sub.add_parser("conti-rewrite-request", help="W00 redesign R6: after a FAILed take, the paste-out text asking an LLM to rewrite the shot's conti; refuses at the per-shot attempt cap. Answer it with conti-submit --request <id>")
+    rw_cmd.add_argument("project")
+    rw_cmd.add_argument("shot")
+    rw_cmd.add_argument("--language", default="English", help="Language of the conti text values")
+    loop_cmd = sub.add_parser("conti-loop", help="W00 redesign R6: where a shot is in the check → rewrite → regenerate loop and the next command; without a shot, every checked shot")
+    loop_cmd.add_argument("project")
+    loop_cmd.add_argument("shot", nargs="?")
     images = sub.add_parser("images-estimate", help="Quote missing reference images or first frames with the chosen image model; no request is sent")
     images.add_argument("project")
     images.add_argument("--kind", choices=["references", "frames"], default="frames")
@@ -769,6 +782,25 @@ def main(argv=None):
                 observations=_csv(a.observations), changes=_csv(a.changes),
                 cost_time_impact=a.cost_time_impact,
                 early=a.early, grounds=a.grounds)
+        elif a.command == "production":
+            from .core import gates, production_block, set_production
+            from .w00_gate import approver_source
+            changes = {}
+            if a.approver is not None:
+                changes["approver"] = a.approver
+            if a.max_attempts is not None:
+                changes["max_attempts_per_shot"] = a.max_attempts
+            if a.gates:
+                changes["gates"] = a.gates
+            if a.service:
+                if any("=" not in item for item in a.service):
+                    raise FilmError("--service takes KIND=NAME, e.g. video=flow")
+                changes["services"] = dict(item.split("=", 1) for item in a.service)
+            if changes:
+                set_production(a.project, **changes)
+            name, source = approver_source(a.project)
+            result = {"production": production_block(a.project), "gates": gates(a.project),
+                      "approver": {"name": name, "source": source}}
         elif a.command == "w00-status":
             from .w00_gate import w00_status
             result = w00_status(a.project)
@@ -824,6 +856,14 @@ def main(argv=None):
         elif a.command == "conti-revision":
             from .conti_brief import record_revision
             result = record_revision(a.project, a.shot, a.instruction, note=a.note)
+        elif a.command == "conti-rewrite-request":
+            from .conti_brief import rewrite_request
+            result = rewrite_request(a.project, a.shot, language=a.language)
+        elif a.command == "conti-loop":
+            from .conti_brief import revision_loop
+            shots = [a.shot] if a.shot else [s["id"] for s in read(Path(a.project) / "manifest/shots.json", [])
+                                            if (Path(a.project) / "qc/conti" / s["id"]).is_dir()]
+            result = [revision_loop(a.project, sid) for sid in shots]
         elif a.command == "images-estimate":
             from . import imagegen, providers
             result = imagegen.estimate(a.project, a.kind, providers.selected_image(a.project), a.shots.split(",") if a.shots else None)

@@ -246,6 +246,19 @@ python -m engine.cli conti-metrics projects/project_001                # 샷별 
 - **check**는 가져온 테이크를 ffprobe/ffmpeg로 점검합니다. 길이가 샷보다 짧거나(DURATION) 움직이는 샷인데 샘플 프레임 사이 변화가 없으면(MOTION) FAIL, 화면비·해상도는 경고만 합니다. 5장의 샘플 프레임을 `qc/conti/<샷>/`에 저장하고, 콘티의 수용 기준을 PENDING으로 적습니다. 같은 테이크를 다시 점검하면 시도 번호가 유지되고, 새 테이크는 다음 시도입니다. 웹사이트 연결로 영상을 끌어다 놓으면 콘티가 있는 샷은 자동으로 점검합니다.
 - **judge**는 수용 기준과 샘플 프레임을 구독 중인 시각 LLM(Claude Code·Gemini CLI처럼 로컬 이미지를 읽는 공식 CLI, 또는 프레임을 첨부한 채팅)에 넘기고 답을 기준별 PASS/FAIL로 저장합니다. UNSURE는 PENDING으로 남아 사람이 그것만 확인합니다. 구독 한도에 걸리면 기다릴 뿐 유료 API로 넘어가지 않습니다.
 
+### 승인 설정과 수정 루프 (REDESIGN W00 R3·R6)
+
+```bash
+python -m engine.cli production projects/project_001 --approver "이름" --max-attempts 3 --gates minimal --service video=flow
+python -m engine.cli conti-loop projects/project_001 S012             # 지금 어느 단계인지와 다음 명령 (샷을 생략하면 점검한 모든 샷)
+python -m engine.cli conti-rewrite-request projects/project_001 S012  # 실패한 점검·기준을 LLM에 넘겨 콘티를 고치게 하는 지시문
+python -m engine.cli conti-submit projects/project_001 --file answer.json --request <id>
+```
+
+- `project.yaml`의 `production` 블록이 승인자(`approver`), 샷당 시도 한도(`max_attempts_per_shot`, 기본 3), 구독 앱(`services`), `gates`를 가집니다. 승인자는 프로젝트 설정 → 사용자 설정 `w00_gate.primary_approver` → 이 설정이 생기기 전 기록이 쓰던 이름 순으로 정해지며, 이전 기록은 그대로 읽힙니다. 승인자가 바뀌면 이전 승인자의 위임 기록은 읽히기만 하고 권한은 주지 않습니다.
+- `gates: minimal`(새 프로젝트 기본)은 수동 구독 경로에서 LOCK 없이 PREVIEW_READY까지 가고, 프레임 애니메이션 프로젝트에서는 PLAN/WAVE/FINAL 잠금, W00 경로 결정, 추가 지출·전달 승인을 요구하지 않습니다(컷·전환 검수와 최종 검토자 이름은 그대로 필요). `gates: full`은 모두 요구합니다. UNKNOWN 작업 차단과 재제출 금지는 어느 쪽이든 적용됩니다. 설정이 없는 `FRAME_ANIMATION_V1` 프로젝트와 `animation-init`으로 변환한 프로젝트는 `full`입니다. 유료·API 렌더러는 `minimal`에서도 LOCK과 견적 승인을 요구합니다.
+- 수정 루프: 점검에서 FAIL이 난 기준이나 기계 점검이 있으면 `conti-rewrite-request`가 실패 내용·현재 콘티·현재 프롬프트를 담은 지시문을 `conti/requests/<id>.txt`에 저장합니다. LLM의 답을 `conti-submit --request <id>`로 넣으면 brief가 다시 만들어지고, 새 테이크를 `conti-check`하면 시도 n+1이 되며 지시문·바뀐 콘티 필드·프롬프트 차이가 기록됩니다. 시도가 `max_attempts_per_shot`에 닿으면 `CAP_REACHED`로 멈추고(`conti-revision`도 거절), 한도를 올리는 것은 사람의 결정입니다. 판정이 점검 이후 바뀐 콘티에 대해 기록되면 그 판정에 경고가 붙습니다. LLM을 부르거나 영상을 만드는 단계는 여전히 사람이 붙여넣고 내려받습니다.
+
 ## 프레임 애니메이션 개발 설계
 
 `FRAME_ANIMATION_V1` 확장은 [채택 결정](docs/decisions/FRAME_ANIMATION_V1_ADOPTION_20260930.md), [개발 시작 안내](docs/FRAME_ANIMATION_V1_DEVELOPMENT_KO.md), [상세 설계](docs/FRAME_ANIMATION_V1_DESIGN_KO.md), [Drive 저장·원격 실행·복수 인코더 성능 설계](docs/FRAME_ANIMATION_V1_EXECUTION_STORAGE_KO.md)를 개발 기준으로 진행합니다. 구현된 개발판 흐름·경로 A/B/C·fake/UNQUALIFIED 경계는 [사용 안내](docs/FRAME_ANIMATION_V1_USER_GUIDE_KO.md)를 보세요. 정수 프레임·시퀀스·노출·전환·W00 검수와 함께 브라우저 Google 로그인, Drive에서 읽는 컴파일, AI 구독 실행 환경, FFmpeg 외 native 인코더, 성능 우선 scheduler를 다룹니다. ANIM-001~018의 순서·수용 조건을 제공합니다. 새 모드 예외는 ARCHITECTURE.md·PROJECT_SPEC.md에 연결되어 있으며 구현·실서비스 qualification은 후속 작업입니다. 현재 v0.3 기능은 기존 안내를 따릅니다.
