@@ -203,6 +203,7 @@ def production_profile(config):
 
 
 GATE_MODES = ("minimal", "full")
+REWRITE_DRIVERS = ("manual", "claude_cli")
 
 
 def production_block(p):
@@ -232,13 +233,22 @@ def set_production(p, **fields):
     """Change settings in the `production` block; every value is validated first.
 
     ``approver`` (name), ``max_attempts_per_shot`` (integer >= 1), ``gates``
-    (minimal|full), ``mode``, and ``services`` (a mapping, merged per key).
+    (minimal|full), ``mode``, ``services`` (a mapping, merged per key),
+    ``rewrite_driver`` (manual|claude_cli: who answers the conti-loop's rewrite
+    and judge requests) and ``sitting_limit`` (integer >= 1: shots per hand-off
+    sitting in ``conti-batch``).
     """
-    unknown = set(fields) - {"mode", "approver", "max_attempts_per_shot", "services", "gates"}
+    unknown = set(fields) - {"mode", "approver", "max_attempts_per_shot", "services", "gates",
+                             "rewrite_driver", "sitting_limit"}
     if unknown:
         raise FilmError(f"unknown production setting(s): {', '.join(sorted(unknown))}")
     if "gates" in fields and fields["gates"] not in GATE_MODES:
         raise FilmError(f"gates must be one of {GATE_MODES}")
+    if "rewrite_driver" in fields and fields["rewrite_driver"] not in REWRITE_DRIVERS:
+        raise FilmError(f"rewrite_driver must be one of {REWRITE_DRIVERS}")
+    limit = fields.get("sitting_limit")
+    if "sitting_limit" in fields and (type(limit) is not int or limit < 1):
+        raise FilmError("sitting_limit must be an integer of at least 1")
     cap = fields.get("max_attempts_per_shot")
     if "max_attempts_per_shot" in fields and (type(cap) is not int or cap < 1):
         raise FilmError("max_attempts_per_shot must be an integer of at least 1")

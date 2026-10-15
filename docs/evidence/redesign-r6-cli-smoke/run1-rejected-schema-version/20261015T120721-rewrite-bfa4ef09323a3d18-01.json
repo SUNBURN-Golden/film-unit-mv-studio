@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "shot_id": "S001",
+  "kind": "rewrite",
+  "driver": "claude_cli",
+  "request_id": "bfa4ef09323a3d18",
+  "request_file": "conti/requests/bfa4ef09323a3d18.txt",
+  "prompt_sha256": "bfa4ef09323a3d18834188a62e9136eaa770191890ba4cbd38b36161f106c468",
+  "status": "REJECTED",
+  "reason": "the answer was rejected and nothing was stored: S001: conti needs shot_id=S001 and schema_version=1",
+  "at": "2026-10-15T12:07:45.725903+00:00",
+  "model": "claude-fable-5-1",
+  "models": [
+    "claude-fable-5-1"
+  ],
+  "argv": [
+    "claude",
+    "-p",
+    "--output-format",
+    "json",
+    "--no-session-persistence",
+    "--tools",
+    ""
+  ],
+  "exit_code": 0,
+  "duration_s": 24.28,
+  "auth": {
+    "authMethod": "claude.ai",
+    "apiProvider": "firstParty",
+    "subscriptionType": "max"
+  },
+  "raw_output_file": "20261015T120721-rewrite-bfa4ef09323a3d18-01.stdout.txt",
+  "answer_file": "20261015T120721-rewrite-bfa4ef09323a3d18-01.answer.txt"
+}

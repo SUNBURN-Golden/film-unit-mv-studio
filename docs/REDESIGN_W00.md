@@ -193,30 +193,80 @@ program nodes until the R5 evidence lands.
   → attempt n+1, capped by the setting. Acceptance: on the hard cut, one
   revision round completes with no human action other than the hand-off.
   Code: `conti-rewrite-request`, `conti-loop`, the attempt cap in
-  `conti-revision`, and the conti-change flag on verdicts. The acceptance on the
-  hard cut is **not** met: the rewrite answer is still pasted by a person (no
-  subscription-CLI driver exists) and no real take has been revised.
+  `conti-revision`, the conti-change flag on verdicts, and the subscription-CLI
+  driver `engine/conti_cli_driver.py` (`production.rewrite_driver: manual|claude_cli`,
+  default `manual`): with `claude_cli`, `conti-loop` answers the judge request and
+  the rewrite request itself through `claude -p` on the user's Claude login.
+  - *Proven by tests with a fake `claude` executable on PATH*
+    (`tests/test_conti_cli_driver.py` — fake-CLI tests, not a model): no
+    `ANTHROPIC_*` / `CLAUDE_CODE_USE_*` variable reaches the CLI; anything but a
+    claude.ai subscription login (`claude auth status`) is refused before a call;
+    a monotonic-clock timeout kills the process group and is not retried; the raw
+    output, extracted answer and model are written to `qc/conti/<shot>/driver/`
+    before validation; a bad answer (not JSON, other shot, unchanged conti,
+    out-of-range time, unknown field, silently weakened criteria, wrong take)
+    stores nothing; a missing CLI, refusal, timeout, error envelope or rejected
+    answer falls back to the paste-it-yourself path with the persisted request.
+  - *Proven by one real run on synthetic frames*
+    (`docs/evidence/redesign-r6-cli-smoke/`): the flags and the JSON envelope work
+    against the real CLI 2.1.290 on a subscription login; the judge read the
+    sampled frames and FAILed a test card; the rewrite was stored once the request
+    carried `schema_version` and the length limits (two real rejections found
+    both). Test pattern only — nothing about a real shot.
+  - *Not met:* the acceptance on the hard cut. No real take has been revised, so
+    whether the judge is calibrated and whether a rewrite improves the next take
+    is unknown, and the generation/download step is still done by a person.
 - **R7 — scale.** Packets batched per sitting, downloads auto-assigned, a
   Preview per batch. Acceptance: the first full verse in Preview, with metrics.
+  Code: `engine/conti_batch.py`, `conti-batch plan|open|assign|preview|close|status`.
+  Sittings hold `production.sitting_limit` shots (default 4) that need a take
+  (conti READY, first frame imported, at most 8 s); `open` writes
+  `qc/batches/SIT001.json` and a prompt sheet built by the same
+  `handoff.video_brief`; `assign` matches a downloads folder's videos to slots by
+  shot id in the file name (or a `--map` file) and imports them through the
+  ordinary `handoff.import_many` (validation, log, auto conti-check), refusing the
+  whole assignment, with nothing imported, on a name carrying two shots, two
+  different files for one slot, or a map that contradicts the name or points
+  outside the sitting; `preview` runs the ordinary `compile_preview` and records
+  attempts, units, human minutes and, per take, whether that exact sha256 is the
+  source in the Preview build.
+  - *Proven by tests* (`tests/test_conti_batch.py`, ffmpeg test patterns as the
+    downloads, the real compiler for the Preview): grouping and the reasons a shot
+    is left out, the matching and each refusal, idempotent re-assignment, the
+    metrics arithmetic, the take-in-Preview check, and the CLI round trip.
+  - *Not met:* the acceptance (the first full verse in Preview) needs real takes.
+    Units and minutes are numbers the person types (`--units`, `--human-minutes`,
+    or per take at `conti-check`); nothing measures them. A Preview is a
+    whole-film build, so each sitting's Preview also contains earlier sittings'
+    takes. Generic download names (`Flow_8f3a.mp4`) need a `--map` or a rename;
+    nothing guesses from content.
 - **R8 — Final.** `compile-final` and the delivery bundle of the real song;
   only then reopen the qualification scope.
 
 ## 6. Risks and decisions for JunTae
 
-Decisions (only these):
+Decisions. Items 2–5 were taken on 2026-10-15 by the owner's delegate and are
+recorded here as decided; items 1 and 6 are still JunTae's.
 
 1. **Primary video app for the hard cut** — Flow (Veo 3.1: 16:9 / 9:16, 4·6·8 s
-   clips) vs Grok Imagine vs the Gemini app. Recommended: Flow. Needed before R4.
-2. **Hand-off automation** — keep the strict no-scripting rule for consumer apps
-   (terms-of-service and account risk), or authorize a browser-automation
-   experiment on his own account. Recommended: keep strict for now.
-3. **Judge runtime** — run the vision judge through Claude Code (Claude
-   subscription, already the Astra tool) or Gemini CLI (Google AI subscription).
-   Recommended: Claude Code.
-4. **PR #98** — freeze (recommended) or close.
-5. **Program closeout** — accept anim-022, anim-023 and
-   film-studio-qualification as superseded, or keep executing them.
-6. **Which song and which 5–10 s scene** is the hard cut.
+   clips) vs Grok Imagine vs the Gemini app. Recommended: Flow. **Open**; needed
+   before R4.
+2. **Hand-off automation** — **decided: keep the strict no-scripting rule for
+   consumer video apps** (terms-of-service and account risk). Paste, generate,
+   download and drop stay with the person; `handoff.py` is unchanged. A vendor's
+   own CLI used on the user's own subscription (item 3) is not a consumer app and
+   is not covered by this rule.
+3. **Judge and rewrite runtime** — **decided: Claude Code CLI on the user's
+   subscription login (`claude -p`)**, never an API key and never a paid API.
+   Implemented as `engine/conti_cli_driver.py` behind
+   `production.rewrite_driver: manual|claude_cli` (default `manual`); the
+   fallback is always the paste-it-yourself path. Gemini CLI stays an alternative that is not built.
+4. **PR #98** — **decided: frozen** (left open, no rebases, no review rounds)
+   until hard-cut evidence exists.
+5. **Program closeout** — **decided: anim-022, anim-023 and
+   film-studio-qualification are superseded** by this redesign; they are not
+   executed.
+6. **Which song and which 5–10 s scene** is the hard cut. **Open.**
 
 Risks: subscription allowances are unmeasured — record them in the hard-cut
 evidence rather than guess; character consistency rests on hand-made reference

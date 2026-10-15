@@ -259,6 +259,8 @@ def main(argv=None):
     prod.add_argument("--approver", help="Name of the primary approver (whole-film, delegation, delivery and spend approvals)")
     prod.add_argument("--max-attempts", type=int, help="Per-shot attempt cap of the revision loop (default 3)")
     prod.add_argument("--gates", choices=["minimal", "full"], help="full keeps the PLAN/WAVE/FINAL ladder, route decision, spend and delivery approvals")
+    prod.add_argument("--rewrite-driver", choices=["manual", "claude_cli"], help="Who answers conti-loop's rewrite and judge requests: manual (paste it yourself, default) or claude_cli (`claude -p` on your Claude subscription login; never an API key)")
+    prod.add_argument("--sitting-limit", type=int, help="Shots per hand-off sitting in conti-batch (default 4)")
     prod.add_argument("--service", action="append", default=[], metavar="KIND=NAME", help="Subscription app per kind, e.g. video=flow; repeatable")
     w00 = sub.add_parser("w00-status", help="ANIM-022: W00 pilot records, next-wave gate OPEN/BLOCKED with reasons, quote/usage/UNKNOWN and per-deliverable approval state; evidence facets stay UNQUALIFIED/PENDING/NOT_AUTHORIZED")
     w00.add_argument("project")
@@ -325,9 +327,25 @@ def main(argv=None):
     rw_cmd.add_argument("project")
     rw_cmd.add_argument("shot")
     rw_cmd.add_argument("--language", default="English", help="Language of the conti text values")
-    loop_cmd = sub.add_parser("conti-loop", help="W00 redesign R6: where a shot is in the check → rewrite → regenerate loop and the next command; without a shot, every checked shot")
+    loop_cmd = sub.add_parser("conti-loop", help="W00 redesign R6: where a shot is in the check → rewrite → regenerate loop and the next command; without a shot, every checked shot. With production.rewrite_driver claude_cli it also answers the judge and rewrite requests through `claude -p` on your subscription login, falling back to the paste-it-yourself path on any failure")
     loop_cmd.add_argument("project")
     loop_cmd.add_argument("shot", nargs="?")
+    loop_cmd.add_argument("--language", default="English", help="Language of the conti text values when the claude_cli driver rewrites")
+    loop_cmd.add_argument("--no-driver", action="store_true", help="Only report the stage, even when production.rewrite_driver is claude_cli")
+    batch_cmd = sub.add_parser("conti-batch", help="W00 redesign R7: hand-off sittings. plan = group the shots that need a take by production.sitting_limit; open = freeze the next sitting and write its sheet; assign = match a downloads folder's videos to the sitting's slots by shot id in the file name (ambiguity refuses everything) and import them; preview = ordinary compile-preview plus the sitting's metrics record; close = give up the unfilled slots; status = list sittings")
+    batch_cmd.add_argument("action", choices=["plan", "open", "assign", "preview", "close", "status"])
+    batch_cmd.add_argument("project")
+    batch_cmd.add_argument("batch", nargs="?", help="Sitting id such as SIT001 (assign, preview, close)")
+    batch_cmd.add_argument("--size", type=int, help="Shots per sitting for this call (default production.sitting_limit)")
+    batch_cmd.add_argument("--folder", help="assign: downloads folder (default FILM_UNIT_DOWNLOADS or ~/Downloads)")
+    batch_cmd.add_argument("--minutes", type=int, default=180, help="assign: only files modified in the last N minutes")
+    batch_cmd.add_argument("--map", help="assign: JSON file of {file name: shot id} for files whose name has no shot id")
+    batch_cmd.add_argument("--dry-run", action="store_true", help="assign: show the matches, import nothing")
+    batch_cmd.add_argument("--service", help="assign: the app the takes came from (default production.services.video)")
+    batch_cmd.add_argument("--units", type=float, help="preview: subscription units the sitting used")
+    batch_cmd.add_argument("--human-minutes", type=float, help="preview: minutes at the keyboard for the sitting")
+    batch_cmd.add_argument("--quality", choices=["draft", "final"], default="draft", help="preview: render size (still a Preview)")
+    batch_cmd.add_argument("--note", default="", help="close: why")
     images = sub.add_parser("images-estimate", help="Quote missing reference images or first frames with the chosen image model; no request is sent")
     images.add_argument("project")
     images.add_argument("--kind", choices=["references", "frames"], default="frames")
@@ -792,6 +810,10 @@ def main(argv=None):
                 changes["max_attempts_per_shot"] = a.max_attempts
             if a.gates:
                 changes["gates"] = a.gates
+            if a.rewrite_driver:
+                changes["rewrite_driver"] = a.rewrite_driver
+            if a.sitting_limit is not None:
+                changes["sitting_limit"] = a.sitting_limit
             if a.service:
                 if any("=" not in item for item in a.service):
                     raise FilmError("--service takes KIND=NAME, e.g. video=flow")
@@ -863,7 +885,31 @@ def main(argv=None):
             from .conti_brief import revision_loop
             shots = [a.shot] if a.shot else [s["id"] for s in read(Path(a.project) / "manifest/shots.json", [])
                                             if (Path(a.project) / "qc/conti" / s["id"]).is_dir()]
-            result = [revision_loop(a.project, sid) for sid in shots]
+            if a.no_driver:
+                result = [revision_loop(a.project, sid) for sid in shots]
+            else:
+                from .conti_cli_driver import ClaudeCli, advance, rewrite_driver
+                cli = ClaudeCli.from_settings() if rewrite_driver(a.project) == "claude_cli" else None
+                result = [advance(a.project, sid, cli=cli, language=a.language) for sid in shots]
+        elif a.command == "conti-batch":
+            from . import conti_batch
+            if a.action in {"assign", "preview", "close"} and not a.batch:
+                raise FilmError(f"conti-batch {a.action} needs a sitting id such as SIT001")
+            if a.action == "plan":
+                result = conti_batch.plan_batches(a.project, a.size)
+            elif a.action == "open":
+                result = conti_batch.open_batch(a.project, a.size)
+            elif a.action == "assign":
+                mapping = json.loads(Path(a.map).read_text(encoding="utf-8")) if a.map else None
+                result = conti_batch.assign_downloads(a.project, a.batch, folder=a.folder, minutes=a.minutes,
+                                                      mapping=mapping, apply=not a.dry_run, service=a.service)
+            elif a.action == "preview":
+                result = conti_batch.preview_batch(a.project, a.batch, units=a.units, human_minutes=a.human_minutes,
+                                                   quality=a.quality)
+            elif a.action == "close":
+                result = conti_batch.close_batch(a.project, a.batch, a.note)
+            else:
+                result = conti_batch.batch_status(a.project)
         elif a.command == "images-estimate":
             from . import imagegen, providers
             result = imagegen.estimate(a.project, a.kind, providers.selected_image(a.project), a.shots.split(",") if a.shots else None)

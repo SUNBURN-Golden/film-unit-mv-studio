@@ -34,6 +34,7 @@ CONTINUITY_KEYS = {"from_previous", "to_next", "props", "wardrobe"}
 
 CONTI_SCHEMA = {
     "conti": [{
+        "schema_version": 1,
         "shot_id": "S001",
         "scene_goal": "what this shot must accomplish, concretely",
         "lyric_anchors": [{"cue_id": "optional", "text": "the lyric line it answers",
@@ -57,6 +58,11 @@ CONTI_SCHEMA = {
     }]
 }
 
+# Stated to the model because validate_conti rejects the whole answer for a longer value.
+LIMITS_NOTE = ("Length limits are enforced and one longer value rejects the whole answer: scene_goal up to 600 characters; "
+               "actions, beat hits and transitions up to 200; every other text value, each acceptance_criteria entry and "
+               "each open_questions entry included, up to 300; props and cue_id up to 80; palette entries up to 40; camera.type up to 30; at most 24 items per list and 8 blocking entries.")
+
 SYSTEM = """You are the storyboard director's partner for a music video. Reply with ONE JSON object and nothing else.
 - Discuss in maximal detail, then answer one conti object per requested shot, exactly the listed ids, in the given JSON shape.
 - Never invent lyric text or timing: use only the timed cues and beat times supplied. Anchor only inside each shot's own range.
@@ -64,8 +70,9 @@ SYSTEM = """You are the storyboard director's partner for a music video. Reply w
 - acceptance_criteria must be concrete checkable statements (what a reviewer can mark pass/fail), not mood words.
 - open_questions lists anything still undecided; an empty list means the shot's direction is settled.
 - Write every text value in {language}.
+- {limits}
 Answer in exactly this JSON shape:
-{schema}"""
+{schema}""".replace("{limits}", LIMITS_NOTE)
 
 
 # ---- structure ----------------------------------------------------------------

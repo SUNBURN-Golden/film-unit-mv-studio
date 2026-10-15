@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "shot_id": "S001",
+  "kind": "rewrite",
+  "driver": "claude_cli",
+  "request_id": "91083e50d19a058e",
+  "request_file": "conti/requests/91083e50d19a058e.txt",
+  "prompt_sha256": "91083e50d19a058ea24c1dcc9e20195151ae4ed1e2e4daa7878bfb215b0871e2",
+  "status": "APPLIED",
+  "reason": "answer validated and stored",
+  "at": "2026-10-15T12:11:15.114133+00:00",
+  "model": "claude-fable-5-1",
+  "models": [
+    "claude-fable-5-1"
+  ],
+  "argv": [
+    "claude",
+    "-p",
+    "--output-format",
+    "json",
+    "--no-session-persistence",
+    "--tools",
+    ""
+  ],
+  "exit_code": 0,
+  "duration_s": 23.95,
+  "auth": {
+    "authMethod": "claude.ai",
+    "apiProvider": "firstParty",
+    "subscriptionType": "max"
+  },
+  "raw_output_file": "20261015T121051-rewrite-91083e50d19a058e-01.stdout.txt",
+  "answer_file": "20261015T121051-rewrite-91083e50d19a058e-01.answer.txt"
+}

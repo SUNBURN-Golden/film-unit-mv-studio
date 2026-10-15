@@ -29,7 +29,7 @@ import re
 import numpy as np
 from PIL import Image
 
-from .conti import CONTI_SCHEMA, load_conti, missing_fields, persist_request
+from .conti import CONTI_SCHEMA, LIMITS_NOTE, load_conti, missing_fields, persist_request
 from .core import (FilmError, atomic_text, ffmpeg, now, object_hash, probe, production_block, project_mutex,
                    read, require_legacy_profile, safe_path, write)
 from .director import extract_json
@@ -535,8 +535,9 @@ REWRITE_SYSTEM = """You are revising ONE shot's conti (storyboard document) for 
 - Keep every at_ms inside the shot's own range, use only the declared cast, and write text values in {language}.
 - Do not weaken, delete or reword acceptance_criteria to make a failure pass. Edit a criterion only when it cannot be checked from the picture, and say so in open_questions.
 - Put anything you cannot decide in open_questions; an empty list means the direction is settled.
+- {limits}
 Answer in exactly this JSON shape:
-{schema}"""
+{schema}""".replace("{limits}", LIMITS_NOTE)
 
 
 def _failures(record):
