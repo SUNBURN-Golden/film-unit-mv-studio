@@ -1,10 +1,11 @@
 # CLAUDIA_PORT — claudia-bot investigation, port decisions, and the plan for sections 2–4
 
-**Status: PHASE 1 of 2 — investigation and plan only.** No engine code is
-changed by this document. Every claim below is marked as inspected source,
-verified external fact (with URL), or planned work. Nothing here is a claim of
-real external generation: `README.md:7` still applies — this repository has
-zero verified real external AI video generations on record.
+**Status: PHASE 2 — built and run on a real Korean song (§5).** Sections 0–4
+are the reviewed plan (kept as reviewed; where the build deviated, §5.2 says
+so). §5 is the phase-2 report: what was built, the real run, before/after
+outputs, human intervention, time, cost, failures and unsupported items.
+Nothing here is a claim of real external AI generation: `README.md:7` still
+applies — the image/video generation step was **not** performed (§5.5).
 
 Revision 2 (2026-10-14), after the r1 plan review: the manual-generation cost
 ledger is reclassified **reuse-as-is** (`qc/conti/` records + `conti-metrics`
@@ -567,3 +568,216 @@ real Korean song. If any generation step proves impossible within existing
 subscriptions, that step will be reported plainly and everything else
 (analysis, alignment, briefs, review, composition) delivered with real local
 tools — FFmpeg included — per the hard rules.
+
+---
+
+## 5. Phase-2 build report (2026-10-15)
+
+### 5.1 What was built (all under existing dirs and schemas)
+
+| Area (§1) | Built | Where |
+|---|---|---|
+| 1.4 Korean lyric-line timing | `lyrics-align`: forced alignment of the **lyric sheet** on the vocal stem with local faster-whisper (cross-attention DTW, float32), claudia energy-rise + interpolation rules, duration-outlier repair, repeat-offset and low-confidence ear check. Writes `lyrics/align_proposal.json` (importable by `lyrics-import`, review empty) and `lyrics/align_report.json`; never `lyrics_timed.json` | `engine/align.py` |
+| 1.4 vocal stem | `ensure_vocals`: `input/vocals.<wav\|mp3>` (supplied) → demucs if importable → harmonic/vocal-band proxy labelled `proxy`; cached on the master sha | `engine/audio.py` |
+| 1.4 sync measurement | `conti-sync`: claudia `avsync.py` port (lag, NCC, synced spans, divergence, beat-snapped cut suggestion) into the take's check record; a take with no audio stream is recorded `unmeasurable`, never lag 0 | `engine/sync_check.py` |
+| 1.1 persisted requests | `conti-request` → `conti/requests/<sha16>.txt`; `conti-submit --request <id>` stores `request_sha256` (one optional key; excluded from the conti digest); `conti-judge-request` → `qc/conti/<shot>/<take sha16>.judge-<sha16>.txt` (not `*.json`, so never counted as a take); director world/shots requests appended to `bible/director_requests.jsonl` | `engine/conti.py`, `engine/conti_brief.py`, `engine/handoff.py` |
+| 1.5 revision chain | `conti-revision`: the verbatim instruction is stored **inside the revised take's check record** (`revision_request`, with the conti and prompts as they stood). The person changes the conti field; the next `conti-check` writes `revision` into the new take's record: instruction, revised take, `conti_changed` field paths, prompt diff — and marks the request fulfilled. No new record file | `engine/conti_brief.py` |
+| 1.2 identity text | optional `far` beside `look`; wide framings use `far`, otherwise `look`/`invariants` as before; sung vs motion video prompt (sung shots quote the cue words and close on "only the lead sings") | `engine/conti_brief.py`, `engine/director.py` |
+| R3 dependency | `project.yaml` `production` block (`mode`, `approver`, `max_attempts_per_shot: 3`, `services`, `gates: minimal`); `gates: minimal` lets the **manual** path reach PREVIEW_READY without the lock ceremony (paid/mock renderers keep it); `w00_gate` reads the approver from `production.approver`, then the user setting, then the built-in name; `conti-check` warns past the attempt cap | `engine/core.py`, `engine/autopilot.py`, `engine/w00_gate.py` |
+| 1.7 ledger | reused as-is: `conti-check --service --units --human-minutes`, `conti-metrics` (now also counts revisions) | — |
+
+No new job queue, takes DB, ledger or state machine was added.
+
+### 5.2 Where the build deviated from the reviewed plan, and why
+
+1. **Korean alignment is sheet-forced, not "Whisper transcription + fuzzy match".**
+   On the real song, free transcription of the separated vocal (faster-whisper
+   small/medium, VAD on or off, prompted with the sheet or not) dropped whole
+   verses, looped on hallucinations ("ㅋㅋㅋ…", "I'll be back…") and, matched
+   to the sheet, anchored the first chorus to the third. Forcing the known
+   sheet text through Whisper's own alignment heads and accepting a line only
+   where it is the first thing sung in the window was stable — and needs no
+   MMS_FA (CC-BY-NC weights), no uroman, no torch. `norm_text` stays (Hangul-safe)
+   for same-text grouping. The MMS_FA spike was therefore not run.
+2. **int8 is unsafe on the run machine.** CTranslate2 int8 returned different
+   encoder outputs for identical input (max abs diff 36–78 between two calls);
+   float32 was bit-identical. `compute_type=float32` is the default
+   (`lyrics-align --compute-type`). Part of the "Whisper can't hear sung Korean"
+   impression earlier in the run was this bug.
+3. **Whisper needs the speech gate off for singing.** Default
+   `no_speech_threshold` discarded every sung segment; the forced path does not
+   use it.
+4. **Revision record lives inside the take check records** (plan revision 3),
+   carrying `conti_changed` so a revision is expressed as a conti field change
+   (REDESIGN_W00 §2.2) rather than a free-text side record.
+
+### 5.3 The real run (Korean song, end to end inside Film Unit)
+
+**Input — real Korean song, not the film master.** The owner's master is not
+on this machine (no audio anywhere in the workspace; OneDrive not mounted
+here). The real Korean song used instead: *2021 아리랑 응원가* sung by 윤도현
+(Wikimedia Commons `File:2021 아리랑 응원가 윤도현 가창 음원.flac`, CC BY 4.0,
+source Korea Copyright Commission 공유마당; 201.2 s, flac sha256
+`498a0e76…3bba`), converted losslessly to WAV for `init`. Attribution
+required: 윤도현, 성윤용, 김민기, 강규용, 김승남, 박상우, 안도형, 윤정훈 / Korea
+Copyright Commission, CC BY 4.0. It is a modern band arrangement with rap
+sections — a hard case for sung-Korean alignment.
+
+**Lyric sheet.** The traditional Arirang verse (public domain) as one
+`[아리랑]` section plus two `[아리랑]` repeat markers (12 effective lines).
+The arrangement's rap/bridge lines have no published sheet (the 공유마당 page
+was unreachable from this box; a web search found none), so they are **not**
+on the sheet; the aligner reports those spans as long gaps. The verse order
+was chosen by the operator from what is sung — that choice is part of "the
+user supplies lyrics", and it is the owner's to correct.
+
+**Vocal stem.** demucs 4.0.1 `htdemucs --two-stems vocals` (CPU, separate venv,
+weights licence flagged in §0) supplied as `input/vocals.wav` → source
+`supplied`.
+
+**Alignment result** (`docs/evidence/claudia-hardcut-01/align_report.json`):
+12/12 lines placed (10 forced, 2 forced+repair, 0 interpolated, 0 unplaced) in
+71 s of CPU wall time; 50 forced alignments over 33 vocal onsets.
+
+| Line | Chorus 1 | Chorus 2 | Chorus 3 |
+|---|---|---|---|
+| 아리랑 아리랑 아라리요 | 16.60–22.76 | 75.69–81.87 | 136.59–142.73 (repaired) |
+| 아리랑 고개로 넘어간다 | 23.13–30.07 | 82.24–89.30 | 143.15–150.31 (repaired) |
+| 나를 버리고 가시는 님은 | 31.30–38.02 | 90.39–97.03 | 150.69–157.93 |
+| 십리도 못 가서 발병난다 | 38.02–45.31 | 97.03–103.94 | 157.93–165.42 |
+
+Internal consistency (not ground truth): chorus 2 and 3 line starts sit
+59.1–59.9 s and 119.4–120.0 s after chorus 1's; the ear-check list holds 3
+rows (one confidence 0.45, one repair note, one −0.60 s repeat offset).
+**Pass bar (§3.2 step 2) — not yet judged.** This run has **no human ear
+check**: the pass criterion ("≥ 80 % of sampled line starts within ±300 ms of
+the reviewer's ear-marked start") needs the owner to listen; the cues were
+imported **unreviewed** and Preview says so.
+
+**Scene and revision** (`docs/evidence/claudia-hardcut-01/run.json`): the hard
+cut is shot `S027` = 30.80–38.80 s (8.0 s → Flow's 8 s clip), the line
+"나를 버리고 가시는 님은" (cue 31.30–38.02 s), one character (the user's own
+2D lead "Haneul", `look` + `far` in the bible — no Claudia canon, style
+`2D cel animation`, rule `no photorealism`). Path, all through Film Unit
+commands/functions:
+
+1. `make_package` → `split-shot` at 30 800 / 38 800 ms (cut edits never move cues).
+2. `lyrics-import` of the proposal **without a reviewer**.
+3. `conti-request` persisted as `conti/requests/06449c30be9be465.txt`; the conti
+   answer (written by Claude Opus 5.5 in this Claude Code session — the
+   "director = user's subscription LLM" role, not the owner) stored with
+   `conti-submit --request 06449c30be9be465`. 4 acceptance criteria. Brief:
+   sung shot, 8 s clip.
+4. **Take 1** imported → `conti-check`: DURATION / ASPECT / RESOLUTION / MOTION
+   all PASS; `conti-sync` → `unmeasurable` (the take has no audio stream —
+   correct, not a fake lag 0); judge request persisted. `compile-preview` →
+   **B0001**.
+5. **Revision instruction** (verbatim): *"손은 첫 박에 들지 말고 '가시는'에서
+   고개 쪽으로 드세요"* → `conti-revision` on take 1 → one conti field changed
+   (`blocking[0].motion_beats[0]` at_ms + action: gesture moved from clip
+   0.60 s to 3.84 s = the aligned word "가시는" at 34.64 s) → brief regenerated
+   → **take 2** → `conti-check` records `revision` (`conti_changed` =
+   `blocking[0].motion_beats[0].action`, `…at_ms`; prompt diff) and marks
+   take 1's request fulfilled → `compile-preview` → **B0002**.
+6. Vision judge on take 2 (Claude, from the 5 sampled frames, via
+   `conti-judge-submit`): criteria 1, 2, 4 PASS; 3 (push-in) UNSURE → stays
+   PENDING for a person. Overall verdict PENDING — correct.
+7. Invariants after B0002 (asserted by the run script): master sha unchanged
+   ✅, lyric timing fingerprint unchanged ✅, every other shot's manifest entry
+   byte-identical ✅, every B0001 file's sha unchanged ✅.
+
+### 5.4 Before / after outputs
+
+| | Before (B0001, take 1) | After (B0002, take 2) |
+|---|---|---|
+| Take sha256 | `18ea8dec7939ddfd…` | `47b4ebce7c659eb9…` |
+| Gesture | hand up from clip 0.6 s | hand rises on "가시는" (clip 3.84 s) |
+| Scene clip (8 s, from MASTER_SUBBED, real audio + Korean subtitle) | `docs/evidence/claudia-hardcut-01/scene_before.mp4` | `…/scene_after.mp4` |
+| Stills at 1.0/2.5/4.0/6.0 s | `before_*.jpg` | `after_*.jpg` (grid: `before_after_grid.jpg`) |
+| Check record | `check_18ea8dec7939ddfd.json` | `check_47b4ebce7c659eb9.json` (with `revision`, judgements) |
+
+The full-length builds (`MASTER_CLEAN.mp4`, `MASTER_SUBBED.mp4`, `lyrics.ass/.srt`)
+are in the run project (`projects/arirang_hardcut/builds/B0001`, `B0002`, not
+committed — `projects/` is git-ignored); only the 8 s scene excerpts are
+committed. The other 30-odd shots of the song are timing slates — this was a
+one-shot scene test.
+
+### 5.5 Human intervention, time, cost, failures, unsupported
+
+- **Human intervention: 0 owner actions.** Every step — including the parts
+  that are the owner's in production (choosing the lyric verse order,
+  answering the conti, issuing the revision instruction, the judge) — was
+  performed by the agent in this session and is labelled so. The owner's ear
+  check of the cues and acceptance of the scene are still outstanding.
+- **Elapsed (monotonic CPU wall, shared machine under load 6–130):**
+  vocal separation 23 min (demucs, CPU, contended); `lyrics-align` 71 s;
+  package → B0001 → revision → B0002 incl. both local renders (12.6 s, 9.9 s)
+  and both full-song Preview compiles: 71 s. Investigation/tuning of the
+  aligner took most of the session (~1 h, see §5.2).
+- **Real cost: $0 cash, 0 subscription units.** No paid API, no API key, no
+  purchase. Tools: FFmpeg, faster-whisper (MIT, model from huggingface.co),
+  demucs (MIT code; htdemucs weights licence unflagged), all local; the agent
+  itself ran on the Claude Code subscription. `conti-metrics`: 2 attempts,
+  0 units, 0 human minutes, 1 revision.
+- **Not a generation — the takes are `LOCAL_PROCEDURAL`.** No image/video app
+  (Gemini, Flow, Grok Imagine) is reachable from this machine, and Film Unit
+  never scripts consumer web apps. Both takes were drawn by a local PIL +
+  FFmpeg script in the bible's ink-on-paper style (mouth driven by the real
+  vocal stem, gesture/turn/push from the conti beats) and imported through the
+  normal `import-asset` path. They prove the pipeline and the revision loop,
+  **not** look quality: they are crude placeholders, not usable as final film
+  footage. The first real Flow/Gemini take remains the owner's step
+  (REDESIGN_W00 R5).
+- **Failures on the way (verbatim causes):** Whisper free transcription on the
+  sung stem: verses missing / hallucination loops; CTranslate2 int8 encoder
+  non-determinism on this CPU; faster-whisper's PyAV decoder failed
+  (`open() got an unexpected keyword argument 'metadata_errors'`) — the engine
+  decodes with FFmpeg instead; large-v3 on the full mix was OOM-killed;
+  `no_speech_threshold` discarded all singing; a concurrent Devin builder
+  wrote in the same worktree for the first ~2 h (single-writer rule — this
+  session waited, then took over its uncommitted work and reworked it).
+- **Unsupported / not done:** the owner's own film master (not on this
+  machine); owner ear-check of cues (pass bar §3.2 not yet judged); real
+  subscription image/video generation; lip-sync *measurement* of a real take
+  (only capability-gated `unmeasurable` was exercised; the copy-mode
+  measurement is covered by synthetic tests only); rap/bridge lyrics without a
+  published sheet; Final (`compile-final`) — needs reviewed lyrics, LOCK and
+  real takes; MMS_FA spike (not needed, §5.2); service prices in §3.3 were
+  verified at plan time (2026-10-14) and **not** re-fetched in this build.
+
+### 5.6 Test-pass counts (separate from production success)
+
+See §5.7 — the pytest tally is recorded there and in the PR body. A green
+suite proves the code paths on synthetic fixtures; production success is only
+what §5.3–5.5 show.
+
+### 5.7 Test-pass counts
+
+- `tests/test_claudia_port.py`: **19 passed** (synthetic fixtures; a fake
+  forced aligner — no model, no network).
+- Affected suites together (`test_claudia_port`, `test_conti`,
+  `test_conti_brief`, `test_handoff`, `test_autopilot`, `test_director`,
+  `test_packets`, `test_lyrics`, `test_anim_022`, `test_ui_handoff`,
+  `test_schema_presets`): **150 passed, 1 failed** in 221 s. The failure,
+  `test_autopilot.py::test_gemini_video_end_to_end_with_the_chosen_image_model`,
+  fails identically on unmodified `origin/main` on this machine (local FFmpeg
+  — a known box-specific failure); CI is the authority for it.
+- The full suite was started but not finished locally (≈1 h on this loaded
+  machine); CI runs it on the PR head.
+
+These counts are code-path evidence only. **Production success in this PR is
+limited to what §5.3–5.5 show:** a real Korean song aligned line-by-line
+(unreviewed), one scene composed with real audio and Korean subtitles, one
+revision applied end to end — with locally drawn placeholder takes, not real
+generations.
+
+### 5.8 Owner decisions this run surfaces
+
+1. Ear-check the 12 proposed cues (start with the 3 ear-check rows), then
+   `lyrics-import --reviewer` — or correct them in the editor.
+2. Supply the film's own master + lyric sheet (and any rap/bridge text) and
+   run `lyrics-align` on it.
+3. Make the first real take of `S027`-style scenes in Flow / Gemini from the
+   persisted brief and import it in place of the `LOCAL_PROCEDURAL` take.
+4. Whether demucs (torch, unflagged htdemucs weights) may run on the owner's
+   machine, or stems come from the owner's DAW (`input/vocals.wav`).

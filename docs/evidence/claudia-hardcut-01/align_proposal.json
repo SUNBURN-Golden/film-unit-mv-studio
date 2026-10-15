@@ -1,0 +1,130 @@
+{
+  "schema_version": 1,
+  "source_path": "input/lyrics.txt",
+  "source_sha256": "d6c3ba868c40b248c67bc40028869a1c2a9724886f3297c760d7df9de968eaa6",
+  "repeat_expansions": {
+    "L0007": [
+      "L0002",
+      "L0003",
+      "L0004",
+      "L0005"
+    ],
+    "L0009": [
+      "L0002",
+      "L0003",
+      "L0004",
+      "L0005"
+    ]
+  },
+  "cues": [
+    {
+      "id": "L0002",
+      "source_row_id": "L0002",
+      "text": "아리랑 아리랑 아라리요",
+      "char_start": 0,
+      "char_end": 12,
+      "start_ms": 16600,
+      "end_ms": 22760
+    },
+    {
+      "id": "L0003",
+      "source_row_id": "L0003",
+      "text": "아리랑 고개로 넘어간다",
+      "char_start": 0,
+      "char_end": 12,
+      "start_ms": 23130,
+      "end_ms": 30070
+    },
+    {
+      "id": "L0004",
+      "source_row_id": "L0004",
+      "text": "나를 버리고 가시는 님은",
+      "char_start": 0,
+      "char_end": 13,
+      "start_ms": 31300,
+      "end_ms": 38020
+    },
+    {
+      "id": "L0005",
+      "source_row_id": "L0005",
+      "text": "십리도 못 가서 발병난다",
+      "char_start": 0,
+      "char_end": 13,
+      "start_ms": 38020,
+      "end_ms": 45310
+    },
+    {
+      "id": "L0007_L0002",
+      "source_row_id": "L0007:L0002",
+      "text": "아리랑 아리랑 아라리요",
+      "char_start": 0,
+      "char_end": 12,
+      "start_ms": 75690,
+      "end_ms": 81870
+    },
+    {
+      "id": "L0007_L0003",
+      "source_row_id": "L0007:L0003",
+      "text": "아리랑 고개로 넘어간다",
+      "char_start": 0,
+      "char_end": 12,
+      "start_ms": 82240,
+      "end_ms": 89300
+    },
+    {
+      "id": "L0007_L0004",
+      "source_row_id": "L0007:L0004",
+      "text": "나를 버리고 가시는 님은",
+      "char_start": 0,
+      "char_end": 13,
+      "start_ms": 90390,
+      "end_ms": 97030
+    },
+    {
+      "id": "L0007_L0005",
+      "source_row_id": "L0007:L0005",
+      "text": "십리도 못 가서 발병난다",
+      "char_start": 0,
+      "char_end": 13,
+      "start_ms": 97030,
+      "end_ms": 103940
+    },
+    {
+      "id": "L0009_L0002",
+      "source_row_id": "L0009:L0002",
+      "text": "아리랑 아리랑 아라리요",
+      "char_start": 0,
+      "char_end": 12,
+      "start_ms": 136590,
+      "end_ms": 142730
+    },
+    {
+      "id": "L0009_L0003",
+      "source_row_id": "L0009:L0003",
+      "text": "아리랑 고개로 넘어간다",
+      "char_start": 0,
+      "char_end": 12,
+      "start_ms": 143150,
+      "end_ms": 150310
+    },
+    {
+      "id": "L0009_L0004",
+      "source_row_id": "L0009:L0004",
+      "text": "나를 버리고 가시는 님은",
+      "char_start": 0,
+      "char_end": 13,
+      "start_ms": 150690,
+      "end_ms": 157930
+    },
+    {
+      "id": "L0009_L0005",
+      "source_row_id": "L0009:L0005",
+      "text": "십리도 못 가서 발병난다",
+      "char_start": 0,
+      "char_end": 13,
+      "start_ms": 157930,
+      "end_ms": 165420
+    }
+  ],
+  "review": null
+}

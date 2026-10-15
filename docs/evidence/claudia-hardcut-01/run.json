@@ -1,0 +1,146 @@
+{
+  "steps": [
+    {
+      "step": "package",
+      "t_s": 1.6,
+      "character": "CHAR_01"
+    },
+    {
+      "step": "lyrics-import",
+      "t_s": 1.6,
+      "cues": 12,
+      "reviewed": false,
+      "warnings": [
+        "Lyric timing has not been reviewed for the current source and cues"
+      ]
+    },
+    {
+      "step": "hard-cut shot",
+      "t_s": 1.6,
+      "shot": "S027",
+      "in_ms": 30800,
+      "out_ms": 38800,
+      "render_mode": "LIMITED_MOTION",
+      "line": "나를 버리고 가시는 님은",
+      "cue": [
+        31300,
+        38020
+      ],
+      "word_gasi_s": 34.64
+    },
+    {
+      "step": "conti v1",
+      "t_s": 1.6,
+      "request": "conti/requests/06449c30be9be465.txt",
+      "conti_sha": "121164fb74b68d2b49f30341da56a753016f9c6260019e8a9aed476ee4988f3f",
+      "clip_seconds": 8,
+      "sung": true
+    },
+    {
+      "step": "take 1",
+      "t_s": 14.9,
+      "sha": "18ea8dec7939ddfd6862fb1c0227c2616ba3c81a0f219029907ea568cdba359b",
+      "render_s": 12.6,
+      "verdict": "PENDING",
+      "mechanical": {
+        "DURATION": "PASS",
+        "ASPECT": "PASS",
+        "RESOLUTION": "PASS",
+        "MOTION": "PASS"
+      },
+      "sync": "unmeasurable",
+      "judge_request": "qc/conti/S027/18ea8dec7939ddfd.judge-87fb579aa766ec19.txt"
+    },
+    {
+      "step": "preview 1",
+      "t_s": 49.1,
+      "build": "B0001",
+      "status": "COMPLETE"
+    },
+    {
+      "step": "revision + take 2",
+      "t_s": 59.6,
+      "instruction": "손은 첫 박에 들지 말고 '가시는'에서 고개 쪽으로 드세요",
+      "sha": "47b4ebce7c659eb97011f5f2b800b94113abf63592a0eca4e788a332ecf47fa8",
+      "render_s": 9.9,
+      "verdict": "PENDING",
+      "conti_changed": [
+        "blocking[0].motion_beats[0].action",
+        "blocking[0].motion_beats[0].at_ms"
+      ],
+      "gesture_clip_s": 3.84
+    },
+    {
+      "step": "preview 2",
+      "t_s": 71.1,
+      "build": "B0002",
+      "status": "COMPLETE"
+    },
+    {
+      "step": "invariants",
+      "t_s": 71.2,
+      "master_sha_unchanged": true,
+      "lyric_timing_fingerprint_unchanged": true,
+      "other_shots_unchanged": true,
+      "build1_files_unchanged": true,
+      "build1_verify": "ran"
+    }
+  ],
+  "shot": "S027",
+  "in_ms": 30800,
+  "out_ms": 38800,
+  "line": "나를 버리고 가시는 님은",
+  "builds": [
+    "B0001",
+    "B0002"
+  ],
+  "takes": [
+    "18ea8dec7939ddfd6862fb1c0227c2616ba3c81a0f219029907ea568cdba359b",
+    "47b4ebce7c659eb97011f5f2b800b94113abf63592a0eca4e788a332ecf47fa8"
+  ],
+  "revision": {
+    "instruction": "손은 첫 박에 들지 말고 '가시는'에서 고개 쪽으로 드세요",
+    "requested_at": "2026-10-15T01:32:17.648478+00:00",
+    "revises_take": "18ea8dec7939ddfd6862fb1c0227c2616ba3c81a0f219029907ea568cdba359b",
+    "revises_attempt": 1,
+    "conti_before": "121164fb74b68d2b49f30341da56a753016f9c6260019e8a9aed476ee4988f3f",
+    "conti_after": "140f88b6812d5c32de590aae0b129aaf8da66f4c83705897794988376032eafd",
+    "conti_changed": [
+      "blocking[0].motion_beats[0].action",
+      "blocking[0].motion_beats[0].at_ms"
+    ],
+    "prompt_diff": {
+      "first_frame_prompt": "",
+      "video_prompt": "--- \n+++ \n@@ -5,3 +5,3 @@\n Camera: push — at 0.2 s: slow push in (about 6%) over the whole shot\n-Haneul: standing, facing the pass three-quarters; steady, singing; at 0.6 s: raises her right hand toward the hill pass; at 4.5 s: turns her head toward the pass\n+Haneul: standing, facing the pass three-quarters; steady, singing; at 3.8 s: raises her right hand toward the hill pass on the word '가시는'; at 4.5 s: turns her head toward the pass\n Lyric 0.5–7.2 s “나를 버리고 가시는 님은”: she sings it straight to the pass"
+    }
+  },
+  "invariants": {
+    "master_sha_unchanged": true,
+    "lyric_timing_fingerprint_unchanged": true,
+    "other_shots_unchanged": true,
+    "build1_files_unchanged": true,
+    "build1_verify": "ran"
+  },
+  "metrics": {
+    "shot_id": "S027",
+    "attempts": 2,
+    "verdict": "PENDING",
+    "take_sha256": "47b4ebce7c659eb97011f5f2b800b94113abf63592a0eca4e788a332ecf47fa8",
+    "units": 0.0,
+    "human_minutes": 0.0,
+    "revisions": 1
+  },
+  "totals": {
+    "shots_checked": 1,
+    "attempts": 2,
+    "passed": 0,
+    "units": 0.0,
+    "human_minutes": 0.0
+  },
+  "master": {
+    "source": "Wikimedia Commons File:2021 아리랑 응원가 윤도현 가창 음원.flac (CC BY 4.0, Korea Copyright Commission)",
+    "flac_sha256": "498a0e7684cee199d4e8257e4795f2f3c5efcaf2218fa56c6fc00553e7773bba",
+    "master_wav_sha256": "46385ff14f70abd4d22c667eb380f093794d8a239773b18f52dcab9e3f590e9b"
+  },
+  "elapsed_s": 71.2
+}
