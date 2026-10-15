@@ -21,13 +21,16 @@ reviews or LOCK. Records live under ``qc/conti/<shot>/``.
 """
 from fractions import Fraction
 from pathlib import Path
+import difflib
+import hashlib
 import json
+import re
 
 import numpy as np
 from PIL import Image
 
 from .conti import load_conti, missing_fields
-from .core import (FilmError, ffmpeg, now, object_hash, probe, project_mutex, read,
+from .core import (FilmError, atomic_text, ffmpeg, now, object_hash, probe, project_mutex, read,
                    require_legacy_profile, safe_path, write)
 from .director import extract_json
 from .packets import aspect_ratio, entry_text, frame_references, _style_words
@@ -42,6 +45,12 @@ STILL_DIFF = 2.0                # mean |Δ| per channel between sampled frames a
 ASPECT_TOLERANCE = 0.03
 VERDICTS = ("PASS", "FAIL", "PENDING")
 ANSWER_VERDICTS = {"PASS": "PASS", "FAIL": "FAIL", "UNSURE": "PENDING"}
+
+# Claudia port: a wide shot asks for the shorter `far` identity line instead
+# of the full `look` block — close-up detail reads as noise at that distance.
+# Entries without `far` (or `look`) are described by what is there; nothing
+# invents identity text.
+WIDE_SHOT = re.compile(r"\b(?:wide|full[- ]?length|establishing|long shot|EWS|WS|FS)\b", re.IGNORECASE)
 
 JUDGE_SYSTEM = """You are checking one generated music-video take against its storyboard (conti). Reply with ONE JSON object and nothing else.
 - Look at every attached frame (they are evenly spaced samples of the clip, first to last).
@@ -70,7 +79,7 @@ def conti_digest(doc):
     """Content digest of a conti — the brief and every take check are pinned to it."""
     if not doc:
         return None
-    return object_hash({k: v for k, v in doc.items() if k not in {"updated_at", "source"}})
+    return object_hash({k: v for k, v in doc.items() if k not in {"updated_at", "source", "request_sha256"}})
 
 
 def _shots(p):
@@ -97,19 +106,29 @@ def _beats(rows, shot, key="action"):
             for r in rows if r.get(key) or r.get("hit") or r.get("action")]
 
 
+def _identity(entry, wide):
+    """The identity text for a frame prompt: `far` on a wide shot when the
+    entry carries one, else the full `look` (empty when neither exists)."""
+    if wide and str(entry.get("far") or "").strip():
+        return str(entry["far"]).strip()
+    return str(entry.get("look") or "")
+
+
 def first_frame_prompt(p, shot, doc, aspect):
     """Still-image prompt for the shot's first frame, from the conti where it is filled in."""
     cast = _bible(p, "characters.yaml", "characters", set(shot.get("characters", [])))
     places = _bible(p, "locations.yaml", "locations", set(shot.get("locations", [])))
     style = _style_words(p)
     cont = doc.get("continuity", {})
+    framing = doc.get("framing") or shot.get("composition", "")
+    wide = bool(WIDE_SHOT.search(framing or ""))
     lines = [f"Create one still image: the first frame of music-video shot {shot['id']}, {aspect} aspect ratio.",
              f"Scene: {doc.get('scene_goal')}" if doc.get("scene_goal") else shot.get("description", ""),
-             f"Framing: {doc.get('framing') or shot.get('composition', '')}",
+             f"Framing: {framing}",
              f"Camera: {doc.get('camera', {}).get('type') or (shot.get('camera') or {}).get('type', 'locked')}"]
     for b in doc.get("blocking", []):
         who = cast.get(b["character"], {})
-        look = entry_text(who)
+        look = _identity(who, wide) if wide and str(who.get("far") or "").strip() else entry_text(who)
         name = who.get("name") or b["character"]
         lines.append(f"{name}" + (f" ({look})" if look else "") + ": "
                      + "; ".join(x for x in (b.get("pose"), f"expression {b['expression']}" if b.get("expression") else "") if x))
@@ -129,17 +148,35 @@ def first_frame_prompt(p, shot, doc, aspect):
     return "\n".join(x for x in lines if x)
 
 
+def _sung(shot, doc):
+    """The lyric text the shot answers — the words that start inside it."""
+    words = []
+    for a in doc.get("lyric_anchors", []):
+        if a["start_ms"] < shot["out_ms"] and a["end_ms"] > shot["in_ms"]:
+            words.append(str(a["text"]))
+    return " ".join(words)
+
+
 def video_prompt(p, shot, doc, length):
-    """Motion-only prompt: the approved first frame already carries look and composition."""
+    """Motion-only prompt: the approved first frame already carries look and composition.
+
+    Claudia port: a shot that answers lyric cues is a *sung* shot — it gets
+    the lip-sync head quoting the exact window words and the "only the lead
+    sings" closer (the measured copy winner over long screenplay prompts);
+    every other shot is a *motion* clip and closes on the nobody-sings rule.
+    """
     cast = _bible(p, "characters.yaml", "characters", set(shot.get("characters", [])))
     cam = doc.get("camera", {})
     cont = doc.get("continuity", {})
     clip = length["clip_seconds"]
-    lines = ["Animate this approved first frame. Preserve its exact composition, style and character identities.",
-             (f"Make a {clip} s clip; the first {length['seconds']} s are used." if clip
-              else f"The shot is {length['seconds']} s long."),
-             f"Scene: {doc['scene_goal']}" if doc.get("scene_goal") else shot.get("description", ""),
-             f"Camera: {cam.get('type', 'locked')}" + (" — " + "; ".join(_beats(cam.get("moves", []), shot)) if cam.get("moves") else "")]
+    words = _sung(shot, doc)
+    lines = ["Animate this approved first frame. Preserve its exact composition, style and character identities."]
+    if words:
+        lines.append(f"Sung shot: the lead lip-syncs the attached vocal exactly, every word in time: “{words}”")
+    lines += [(f"Make a {clip} s clip; the first {length['seconds']} s are used." if clip
+               else f"The shot is {length['seconds']} s long."),
+              f"Scene: {doc['scene_goal']}" if doc.get("scene_goal") else shot.get("description", ""),
+              f"Camera: {cam.get('type', 'locked')}" + (" — " + "; ".join(_beats(cam.get("moves", []), shot)) if cam.get("moves") else "")]
     for b in doc.get("blocking", []):
         name = cast.get(b["character"], {}).get("name") or b["character"]
         parts = [x for x in (b.get("pose"), b.get("expression")) if x]
@@ -155,7 +192,10 @@ def video_prompt(p, shot, doc, length):
         lines.append("Keep unchanged: " + "; ".join(x for x in (", ".join(cont.get("props", [])), cont.get("wardrobe", "")) if x))
     if doc.get("transition_out"):
         lines.append(f"Ends: {doc['transition_out']}")
-    lines.append("No audio. No new text. No new scenes. Only the motion described above.")
+    lines.append("One continuous shot, no cuts. " + (
+        "Only the lead sings; every other mouth stays closed." if words
+        else "Nobody's lips form words."))
+    lines.append("No new text. No new scenes. Only the motion described above.")
     return "\n".join(x for x in lines if x)
 
 
@@ -188,6 +228,7 @@ def shot_brief(project, shot_id):
     return {"shot_id": shot_id, "in_ms": shot["in_ms"], "out_ms": shot["out_ms"], **length,
             "aspect": aspect, "render_mode": shot["render_mode"], "start_frame": first,
             "frame_ready": shot.get("storyboard_kind") == "imported",
+            "sung": bool(doc and _sung(shot, doc)),
             "first_frame_prompt": frame, "video_prompt": motion,
             "attach": list(dict.fromkeys(attach)), "missing_references": list(dict.fromkeys(missing)),
             "checklist": criteria, "conti_sha256": conti_digest(doc), "warnings": warnings}
@@ -207,6 +248,69 @@ def _records(p, shot_id):
     folder = _record_dir(p, shot_id)
     rows = [read(f) for f in sorted(folder.glob("*.json"))] if folder.is_dir() else []
     return sorted((r for r in rows if isinstance(r, dict)), key=lambda r: (r.get("attempt", 0), r.get("checked_at", "")))
+
+
+def _changed(before, after, path=""):
+    """Field paths that differ between two conti documents (bookkeeping keys ignored)."""
+    if isinstance(before, dict) and isinstance(after, dict):
+        out = []
+        for k in sorted(set(before) | set(after)):
+            if not path and k in {"updated_at", "source", "request_sha256"}:
+                continue
+            out += _changed(before.get(k), after.get(k), f"{path}.{k}" if path else k)
+        return out
+    if isinstance(before, list) and isinstance(after, list) and len(before) == len(after):
+        out = []
+        for i, (x, y) in enumerate(zip(before, after)):
+            out += _changed(x, y, f"{path}[{i}]")
+        return out
+    return [] if before == after else [path]
+
+
+def record_revision(project, shot_id, instruction, note=""):
+    """Store a user's verbatim revision instruction on the take it revises.
+
+    The instruction lands in the latest checked take's own check record
+    (``revision_request``) with the conti and both prompts as they stood, so
+    no second record file appears under ``qc/conti/<shot>/``. The person (or
+    the LLM in the conti discussion) then changes the conti field the
+    instruction is about; the next take checked in carries ``revision``:
+    the instruction, the revised take, the conti fields that changed and the
+    prompt diff — the instruction → conti → prompt → take chain.
+    """
+    instruction = str(instruction or "").strip()
+    if not instruction:
+        raise FilmError("an instruction is required")
+    p = Path(project)
+    with project_mutex(p):
+        require_legacy_profile(p)
+        doc = load_conti(p, shot_id)
+        if doc is None:
+            raise FilmError(f"{shot_id}: no conti — settle direction first (conti-draft/conti-submit)")
+        rows = _records(p, shot_id)
+        if not rows:
+            raise FilmError(f"{shot_id}: no checked take to revise — conti-check a take first")
+        latest = rows[-1]
+        if (latest.get("revision_request") or {}).get("fulfilled_by"):
+            raise FilmError(f"{shot_id}: the latest take was already revised; check the new take first")
+        brief = shot_brief(p, shot_id)
+        latest["revision_request"] = {
+            "instruction": instruction[:2000], "note": str(note or "")[:600], "at": now(),
+            "conti": doc, "conti_sha256": brief["conti_sha256"],
+            "first_frame_prompt": brief["first_frame_prompt"], "video_prompt": brief["video_prompt"],
+            "fulfilled_by": None}
+        write(_record_path(p, shot_id, latest["take_sha256"]), latest)
+    return {"shot_id": shot_id, "revises_take": latest["take_sha256"], "attempt": latest["attempt"],
+            **{k: v for k, v in latest["revision_request"].items() if k != "conti"},
+            "next": "change the conti field the instruction is about (conti-submit), import the new take, then conti-check"}
+
+
+def _open_request(rows):
+    """The newest check record holding an unfulfilled revision request, or None."""
+    for r in reversed(rows):
+        if (r.get("revision_request") or {}) and not r["revision_request"].get("fulfilled_by"):
+            return r
+    return None
 
 
 def _take(p, shot_id, sha):
@@ -322,6 +426,33 @@ def check_take(project, shot_id, *, sha256=None, service="", units=None, human_m
                                for i, c in enumerate((doc or {}).get("acceptance_criteria", []))],
                   "judgements": [], "reviewer": "",
                   "warnings": [] if doc else ["no conti: there are no acceptance criteria to judge"]}
+        from .core import production_block
+        cap = production_block(p).get("max_attempts_per_shot")
+        if isinstance(cap, int) and not isinstance(cap, bool) and cap > 0 and attempt > cap:
+            record["warnings"].append(f"attempt {attempt} is over the per-shot cap {cap} "
+                                      "(project.yaml production.max_attempts_per_shot): stop or decide")
+        source = _open_request(previous) if same is None else None
+        if source is not None:
+            req = source["revision_request"]
+            brief = shot_brief(p, shot_id)
+            changed = _changed(req.get("conti") or {}, doc or {})
+            record["revision"] = {
+                "instruction": req["instruction"], "requested_at": req["at"],
+                "revises_take": source["take_sha256"], "revises_attempt": source["attempt"],
+                "conti_before": req["conti_sha256"], "conti_after": conti_digest(doc),
+                "conti_changed": changed,
+                "prompt_diff": {k: "\n".join(difflib.unified_diff(
+                    (req.get(k) or "").splitlines(), (brief[k] or "").splitlines(), lineterm="", n=1))
+                    for k in ("first_frame_prompt", "video_prompt")}}
+            if not changed:
+                record["warnings"].append("revision: the conti did not change since the instruction — "
+                                          "this take answers the same brief")
+            req["fulfilled_by"] = take["sha256"]
+            write(_record_path(p, shot_id, source["take_sha256"]), source)
+        elif same is not None:
+            for key in ("revision", "revision_request"):
+                if same.get(key):
+                    record[key] = same[key]
         record["verdict"] = _overall(record)
         write(_record_path(p, shot_id, take["sha256"]), record)
     return record
@@ -373,7 +504,12 @@ def record_verdicts(project, shot_id, sha256, verdicts, reviewer, note=""):
 # ---- the vision judge: paste out, paste back ----------------------------------------
 
 def judge_request(project, shot_id, sha256=None):
-    """Text for a vision-capable LLM: the criteria, the brief and the sampled frames to attach."""
+    """Text for a vision-capable LLM: the criteria, the brief and the sampled frames to attach.
+
+    The request text is persisted beside the take record
+    (``<take sha16>.judge-<request sha16>.txt``) so a pasted answer can always
+    be re-read against what was asked.
+    """
     p = Path(project)
     record = load_check(p, shot_id, sha256)
     if not record["criteria"]:
@@ -385,10 +521,16 @@ def judge_request(project, shot_id, sha256=None):
                "criteria": [{"index": c["index"], "text": c["text"]} for c in record["criteria"]],
                "frames": record["frames"]}
     attach = [str(safe_path(p, f)) for f in record["frames"]]
+    text = (f"{JUDGE_SYSTEM}\n\n=== 입력 자료 (JSON) ===\n{json.dumps(payload, ensure_ascii=False)}\n\n"
+            "=== 함께 올릴 프레임 ===\n" + "\n".join(attach) +
+            "\n\n위 지시대로 JSON 객체 하나만 답하세요. 설명 문장 없이, 코드 블록 하나 안에 넣어도 됩니다.")
+    # Not *.json: _records loads every *.json here as a take check record.
+    request_sha = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    request_path = _record_dir(p, shot_id) / f"{record['take_sha256'][:16]}.judge-{request_sha[:16]}.txt"
+    with project_mutex(p):
+        atomic_text(request_path, text)
     return {"shot_id": shot_id, "take": record["take_sha256"], "attach": attach,
-            "text": (f"{JUDGE_SYSTEM}\n\n=== 입력 자료 (JSON) ===\n{json.dumps(payload, ensure_ascii=False)}\n\n"
-                     "=== 함께 올릴 프레임 ===\n" + "\n".join(attach) +
-                     "\n\n위 지시대로 JSON 객체 하나만 답하세요. 설명 문장 없이, 코드 블록 하나 안에 넣어도 됩니다.")}
+            "request_file": str(request_path.relative_to(p)), "text": text}
 
 
 def submit_judgement(project, shot_id, answer, sha256=None, source="llm"):
@@ -426,7 +568,8 @@ def conti_metrics(project):
         units = sum(float(r["units"]) for r in records if r.get("units") is not None)
         minutes = sum(float(r["human_minutes"]) for r in records if r.get("human_minutes") is not None)
         rows.append({"shot_id": shot["id"], "attempts": len(records), "verdict": latest["verdict"],
-                     "take_sha256": latest["take_sha256"], "units": units, "human_minutes": minutes})
+                     "take_sha256": latest["take_sha256"], "units": units, "human_minutes": minutes,
+                     "revisions": sum(1 for r in records if r.get("revision"))})
         totals["shots_checked"] += 1
         totals["attempts"] += len(records)
         totals["passed"] += latest["verdict"] == "PASS"

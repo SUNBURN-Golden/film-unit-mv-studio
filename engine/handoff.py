@@ -9,15 +9,17 @@ touches lyrics, cut timing, reviews or LOCK. No function here polls or retries.
 """
 from dataclasses import dataclass
 from pathlib import Path
+import json
 import os
 import re
+import shlex
 import time
 import uuid
 from urllib.parse import urlsplit
 
 from PIL import Image
 
-from .core import FilmError, digest, now, probe, project_mutex, read, require_legacy_profile, safe_path, write
+from .core import FilmError, atomic_text, digest, now, probe, project_mutex, read, require_legacy_profile, safe_path, write
 from . import director
 from .packets import aspect_ratio, compact_prompt, frame_prompt, frame_references, reference_prompt
 from .renderers import build_prompt
@@ -81,6 +83,16 @@ def _paste_text(system, user):
             "위 지시대로 JSON 객체 하나만 답하세요. 설명 문장 없이, 코드 블록 하나 안에 넣어도 됩니다.")
 
 
+def _log_request(p, kind, ids, text):
+    """Append the exact paste-out request to bible/director_requests.jsonl —
+    the answer lands in the director proposal, so the request stays beside it."""
+    path = safe_path(p, "bible/director_requests.jsonl")
+    prior = path.read_text(encoding="utf-8") if path.exists() else ""
+    entry = json.dumps({"kind": kind, "ids": ids, "at": now(), "text": text}, ensure_ascii=False)
+    with project_mutex(p):
+        atomic_text(path, prior + entry + "\n")
+
+
 def _shots(p):
     shots = read(p / "manifest/shots.json", [])
     if not shots:
@@ -105,7 +117,9 @@ def world_request(project, notes="", language="English"):
     p = Path(project)
     _shots(p)
     system, user = director.world_messages(p, director.context(p, notes, language), language)
-    return _paste_text(system, user)
+    text = _paste_text(system, user)
+    _log_request(p, "world", [], text)
+    return text
 
 
 def submit_world(project, answer, service_id="custom", notes="", language="English", replace=False):
@@ -133,7 +147,9 @@ def shots_request(project):
     ctx = director.context(p, proposal.get("notes", ""), proposal["language"])
     batch = [s for s in _shots(p) if s["id"] in set(state["next_ids"])]
     system, user = director.batch_messages(p, ctx, proposal["world"], batch, proposal["language"])
-    return {"ids": state["next_ids"], "text": _paste_text(system, user)}
+    text = _paste_text(system, user)
+    _log_request(p, "shots", state["next_ids"], text)
+    return {"ids": state["next_ids"], "text": text}
 
 
 def submit_shots(project, answer):
@@ -367,16 +383,31 @@ def video_brief(project, shot_id):
 
     With a conti (engine/conti.py) the prompt is the conti's motion-only brief —
     every beat in clip-relative seconds — and the acceptance checklist rides along.
+    A sung shot also names the vocal reference to attach; the brief says which
+    app the production block names, and how to book the take after import.
     """
     from .conti_brief import shot_brief
+    from .core import production_block
     p = Path(project)
     shot = _shot(p, shot_id)
     first = (shot.get("references") or [f"storyboard/{shot_id}.png"])[0]
     brief = shot_brief(p, shot_id)
+    vocals, vocals_source = None, None
+    if brief["sung"]:
+        try:
+            from .sync_check import vocal_reference
+            ref = vocal_reference(p, shot_id)
+            vocals, vocals_source = ref["path"], ref["source"]
+        except FilmError:
+            vocals = None
+    service = (production_block(p).get("services") or {}).get("video") or "the video app"
     return {"prompt": brief["video_prompt"] or build_prompt(p, shot), "seconds": -(-shot["duration_ms"] // 1000),
             "clip_seconds": brief["clip_seconds"], "start_frame": first,
             "frame_ready": shot.get("storyboard_kind") == "imported", "render_mode": shot["render_mode"],
-            "checklist": brief["checklist"], "conti_sha256": brief["conti_sha256"], "warnings": brief["warnings"]}
+            "sung": brief["sung"], "vocal_reference": vocals, "vocal_source": vocals_source, "service": service,
+            "checklist": brief["checklist"], "conti_sha256": brief["conti_sha256"], "warnings": brief["warnings"],
+            "after_import": (f"python -m engine.cli conti-check {shlex.quote(str(p))} {shot_id} "
+                             f"--service <app> --units <credits> --human-minutes <minutes>")}
 
 
 def reference_brief(project, folder, entry_id):

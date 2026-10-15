@@ -157,6 +157,14 @@ def init_project(root, name, audio, brief, lyrics="", synthetic=False, aspect="4
         "audio": {"path": str(dest.relative_to(p)), "sha256": digest(dest), "synthetic_test_audio": synthetic},
         "format": {"width": width, "height": height, "fps": 24, "aspect_ratio": aspect, "crf": 18},
         "budget": {"max_credits": 10000, "max_usd": 0, "max_retry_per_shot": 2, "draft_resolution": "720p", "final_resolution": "1080p"},
+        # REDESIGN_W00 R3: production mode, the subscription apps the user
+        # fills in, and which ceremony gates apply on the LEGACY path.
+        # "minimal" skips the lock ceremony only for the fully-manual path;
+        # paid/API renderers always keep lock + estimate approval.
+        "production": {"mode": "manual_subscription", "approver": "",
+                       "max_attempts_per_shot": 3,
+                       "services": {"image": "", "video": ""},
+                       "gates": "minimal"},
         "qc": {"threshold": 85},
         "renderer": {"default": "mock", "mode": "AUTO"},
     })
@@ -192,6 +200,16 @@ def validate_manifest(shots, duration_ms, fps=24):
 def production_profile(config):
     """Absent or LEGACY_MV keeps the current ms path; anything else is not legacy."""
     return config.get("production_profile") or "LEGACY_MV"
+
+
+def production_block(p):
+    """The project.yaml `production` block (R3): mode, services, gates."""
+    return read(Path(p) / "project.yaml").get("production") or {}
+
+
+def gates(p):
+    """'minimal' (default) or 'full' ceremony gates for the LEGACY path."""
+    return (production_block(p).get("gates") or "minimal")
 
 
 def require_legacy_profile(p):

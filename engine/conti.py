@@ -11,10 +11,12 @@ manifest, lyric text, lyric timing, reviews or LOCK, and it makes no network
 call and no paid request. The paste-out discussion request follows the same
 rule as the browser hand-off: the User opens the service in their own browser.
 """
+import hashlib
 import json
+import re
 from pathlib import Path
 
-from .core import FilmError, now, project_mutex, read, require_legacy_profile, safe_path, timecode, write
+from .core import FilmError, atomic_text, now, project_mutex, read, require_legacy_profile, safe_path, timecode, write
 from .director import extract_json
 
 SCHEMA_VERSION = 1
@@ -26,7 +28,8 @@ MAX_ITEMS = 24
 KEYS = {"schema_version", "shot_id", "updated_at", "source", "scene_goal",
         "lyric_anchors", "beat_map", "framing", "camera", "blocking",
         "lighting", "palette", "continuity", "references", "transition_in",
-        "transition_out", "acceptance_criteria", "open_questions"}
+        "transition_out", "acceptance_criteria", "open_questions", "request_sha256"}
+REQUESTS_DIR = "conti/requests"
 CONTINUITY_KEYS = {"from_previous", "to_next", "props", "wardrobe"}
 
 CONTI_SCHEMA = {
@@ -157,7 +160,11 @@ def validate_conti(shot, doc):
             raise FilmError("references must be project-relative paths")
         clean_refs.append(rel)
 
+    request_sha = doc.get("request_sha256")
+    if request_sha is not None and not (isinstance(request_sha, str) and re.fullmatch(r"[0-9a-f]{64}", request_sha)):
+        raise FilmError(f"{sid}: request_sha256 must be a sha256 hex digest")
     return {"schema_version": SCHEMA_VERSION, "shot_id": sid,
+            **({"request_sha256": request_sha} if request_sha else {}),
             "updated_at": _text(doc.get("updated_at", ""), "updated_at", 0, 60),
             "source": _text(doc.get("source", "manual"), "source", 0, 64) or "manual",
             "scene_goal": _text(doc.get("scene_goal", ""), "scene_goal", 0, 600),
@@ -308,13 +315,31 @@ def _row(p, shot, doc):
     return {"shot_id": shot["id"], "ready": not missing, "missing": missing}
 
 
-def submit_answer(project, answer, source="llm"):
+def request_sha(project, request_id):
+    """The full sha256 of a persisted conti request, verified against its bytes."""
+    p = Path(project)
+    rid = str(request_id or "").strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{16}", rid):
+        raise FilmError("request id must be the 16-hex id conti-request printed")
+    path = safe_path(p, f"{REQUESTS_DIR}/{rid}.txt")
+    if not path.is_file():
+        raise FilmError(f"no persisted conti request {rid} under {REQUESTS_DIR}/")
+    sha = hashlib.sha256(path.read_bytes()).hexdigest()
+    if sha[:16] != rid:
+        raise FilmError(f"persisted conti request {rid} was edited after it was written")
+    return sha
+
+
+def submit_answer(project, answer, source="llm", request_id=None):
     """Store every conti in a discussion answer: {"conti": [...]} or one bare doc.
 
     The whole batch validates before anything is written, so a bad entry never
-    leaves a half-updated set.
+    leaves a half-updated set. With ``request_id`` (printed by conti-request)
+    each stored conti records ``request_sha256`` — the exact request text that
+    produced it stays readable at ``conti/requests/<id>.txt``.
     """
     p = Path(project)
+    linked = request_sha(p, request_id) if request_id else None
     data = extract_json(answer) if isinstance(answer, str) else answer
     docs = (data.get("conti") if isinstance(data, dict) and "conti" in data
             else [data] if isinstance(data, dict) and data.get("shot_id") else None)
@@ -322,7 +347,8 @@ def submit_answer(project, answer, source="llm"):
         raise FilmError("The answer must hold a non-empty 'conti' list")
     with project_mutex(p):
         require_legacy_profile(p)
-        picked = [(validate_conti(_shot(p, d.get("shot_id") if isinstance(d, dict) else None), d), source)
+        picked = [(validate_conti(_shot(p, d.get("shot_id") if isinstance(d, dict) else None),
+                                  {**d, "request_sha256": linked} if linked and isinstance(d, dict) else d), source)
                   for d in docs]
         for clean, src in picked:
             clean["source"], clean["updated_at"] = src, now()
@@ -401,6 +427,16 @@ def conti_request(project, shot_ids=None, language="English"):
                          "rules": style.get("rules", [])},
                "shots": entries}
     system = SYSTEM.format(language=language, schema=json.dumps(CONTI_SCHEMA, ensure_ascii=False))
-    return {"ids": [s["id"] for s in picked],
-            "text": (f"{system}\n\n=== 입력 자료 (JSON) ===\n{json.dumps(payload, ensure_ascii=False)}\n\n"
-                     "위 지시대로 JSON 객체 하나만 답하세요. 설명 문장 없이, 코드 블록 하나 안에 넣어도 됩니다.")}
+    text = (f"{system}\n\n=== 입력 자료 (JSON) ===\n{json.dumps(payload, ensure_ascii=False)}\n\n"
+            "위 지시대로 JSON 객체 하나만 답하세요. 설명 문장 없이, 코드 블록 하나 안에 넣어도 됩니다.")
+    # Persist the exact request text (Claudia port, docs/CLAUDIA_PORT.md §1.1):
+    # keyed by its own hash because one request can cover several shots;
+    # conti-submit --request <id> links each answer back to it. Nothing scans
+    # conti/ — answers are opened by shot path only.
+    sha = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    path = safe_path(p, f"{REQUESTS_DIR}/{sha[:16]}.txt")
+    if not path.exists():
+        with project_mutex(p):
+            atomic_text(path, text)
+    return {"ids": [s["id"] for s in picked], "text": text,
+            "request_id": sha[:16], "request_file": f"{REQUESTS_DIR}/{sha[:16]}.txt"}

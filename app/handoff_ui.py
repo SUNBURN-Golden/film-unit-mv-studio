@@ -191,12 +191,18 @@ def _one_prompt(p, kind, targets):
         if brief:
             note = "" if brief["frame_ready"] else " · 먼저 첫 프레임을 가져오면 그 이미지로 영상을 만들 수 있습니다"
             clip = f" · 앱에서 **{brief['clip_seconds']}초** 클립으로" if brief.get("clip_seconds") else ""
-            st.write(f"시작 프레임 `{brief['start_frame']}` · 최소 **{brief['seconds']}초**{clip}{note}")
+            st.write(f"시작 프레임 `{brief['start_frame']}` · 최소 **{brief['seconds']}초**{clip}{note} · 앱: **{brief['service']}**")
+            if brief.get("sung"):
+                if brief.get("vocal_reference"):
+                    st.caption(f"노래 샷: 보컬 참조 `{brief['vocal_reference']}`를 클립과 함께 앱에 올리세요(있으면). 프롬프트가 정확한 가사를 인용합니다.")
+                else:
+                    st.caption("노래 샷: 보컬 참조를 만들지 못했습니다 — `lyrics-align`을 실행하거나 `input/vocals.wav`를 넣으세요.")
             for warning in brief.get("warnings", []):
                 st.caption(f"콘티: {warning}")
             st.code(brief["prompt"], language=None, wrap_lines=True)
             if brief.get("checklist"):
                 st.caption("가져온 뒤 점검할 수용 기준: " + " · ".join(brief["checklist"]))
+            st.caption("가져온 뒤 원가 기록: `" + brief["after_import"] + "`")
 
 
 def render_media(p, image_manual, video_manual):

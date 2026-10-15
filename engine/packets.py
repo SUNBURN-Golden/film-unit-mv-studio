@@ -205,6 +205,8 @@ def page(packets, warnings, aspect):
             '<h1>FILM UNIT / 구독 앱 작업지시서</h1>'
             '<p>샷마다 프롬프트를 복사해 앱에서 만들고, 내려받은 파일을 가져오기 명령으로 넣으세요. '
             f'이 페이지는 아무 서비스도 호출하지 않습니다. 프로젝트 화면비: <b>{e(aspect)}</b>.</p>'
+            '<p>테이크를 가져온 뒤에는 <code>conti-check</code>에 어떤 앱에서 만들었는지, '
+            '몇 크레딧(units)과 몇 분(human-minutes)을 썼는지 함께 남기세요 — 이 기록이 실제 제작 원가가 됩니다.</p>'
             + (f'<ul class="warn">{notes}</ul>' if notes else "")
             + "".join(cards) + f"<script>{script}</script></html>")
 

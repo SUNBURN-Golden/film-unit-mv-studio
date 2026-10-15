@@ -130,6 +130,11 @@ def test_free_images_that_keep_failing_are_reported_and_can_be_retried(project):
 
 
 def test_hand_made_stages_stop_with_a_work_order(project):
+    # full gates: even the manual path waits for a real lock (mock_only does not count);
+    # gates: minimal — the new project.yaml default — lets the manual path skip this ceremony
+    config = read(project / "project.yaml")
+    config["production"]["gates"] = "full"
+    write(project / "project.yaml", config)
     providers.select(project, "image", "manual_image")
     providers.select(project, "video", "manual_video")
     step = autopilot(project)

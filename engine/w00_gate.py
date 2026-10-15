@@ -65,7 +65,28 @@ from .builds import list_builds, verify_build
 from .core import FilmError, atomic_text, digest, now, project_mutex, read, \
     safe_path
 
-PRIMARY_APPROVER = "박준태"
+PRIMARY_APPROVER = "박준태"          # built-in default; see primary_approver()
+
+
+def primary_approver(p=None):
+    """The human primary approver name (REDESIGN_W00 R3: approvals are settings).
+
+    Order: the project's ``production.approver`` in project.yaml, then the
+    user setting ``w00_gate.primary_approver`` (engine/settings.py), then the
+    built-in name — so projects without the setting keep validating.
+    """
+    if p is not None:
+        from .core import production_block
+        try:
+            name = str(production_block(p).get("approver") or "").strip()
+        except FilmError:
+            name = ""
+        if name:
+            return name
+    from .settings import get_settings
+    name = (get_settings("w00_gate").get("primary_approver") or "").strip()
+    return name or PRIMARY_APPROVER
+
 
 PILOT_TYPE = "w00_pilot"
 PILOTS_PATH = "production/w00_pilots.jsonl"
@@ -213,7 +234,7 @@ def validate_pilot(record):
     return record
 
 
-def validate_delegation(record):
+def validate_delegation(record, p=None):
     """Structural contract of one `approver_delegation` record."""
     check_document(record, DELEGATION_TYPE)
     if type(record) is not dict or set(record.keys()) != DELEGATION_FIELDS:
@@ -223,11 +244,12 @@ def validate_delegation(record):
                                    if type(record["delegation_id"]) is str
                                    else ""):
         raise FilmError(f"Bad delegation id: {record['delegation_id']}")
-    if record["delegator"] != PRIMARY_APPROVER:
+    approver = primary_approver(p)
+    if record["delegator"] != approver:
         raise FilmError("a delegation's delegator must be the primary "
-                        f"approver {PRIMARY_APPROVER}")
+                        f"approver {approver}")
     if type(record["delegate"]) is not str or not record["delegate"].strip() \
-            or record["delegate"] == PRIMARY_APPROVER:
+            or record["delegate"] == approver:
         raise FilmError("a delegation needs a delegate distinct from the "
                         "primary approver")
     scope = record["scope"]
@@ -351,7 +373,7 @@ def load_pilots(p):
 
 
 def load_delegations(p):
-    return _read_log(p, DELEGATIONS_PATH, validate_delegation)
+    return _read_log(p, DELEGATIONS_PATH, lambda r: validate_delegation(r, p))
 
 
 def load_spend_approvals(p):
@@ -371,17 +393,18 @@ def _now_ms(now_ms):
 
 
 def record_delegation(project, *, delegate, scope, expires_at_ms,
-                      delegator=PRIMARY_APPROVER, note="", now_ms=None):
+                      delegator=None, note="", now_ms=None):
     """Record that the primary approver delegates `scope` until expiry."""
     p = Path(project)
     with project_mutex(p):
         require_animation_profile(p)
-        delegator = str(delegator or "").strip()
-        if delegator != PRIMARY_APPROVER:
+        approver = primary_approver(p)
+        delegator = str(delegator or "").strip() or approver
+        if delegator != approver:
             raise FilmError("only the primary approver "
-                            f"{PRIMARY_APPROVER} may delegate")
+                            f"{approver} may delegate")
         delegate = str(delegate or "").strip()
-        if not delegate or delegate == PRIMARY_APPROVER:
+        if not delegate or delegate == approver:
             raise FilmError("a delegation needs a delegate distinct from "
                             "the primary approver")
         scope = [s.strip().upper() for s in (scope or [])]
@@ -396,7 +419,7 @@ def record_delegation(project, *, delegate, scope, expires_at_ms,
                   "delegate": delegate, "scope": sorted(set(scope)),
                   "expires_at_ms": expires_at_ms, "note": str(note or ""),
                   "recorded_at": now()}
-        return _append_log(p, DELEGATIONS_PATH, record, validate_delegation,
+        return _append_log(p, DELEGATIONS_PATH, record, lambda r: validate_delegation(r, p),
                            "delegation_id", "DG")
 
 
@@ -415,15 +438,17 @@ def _delegation_for(p, delegate, scope, now_ms=None):
 
 
 def _approver_verdict(p, name, scope, now_ms=None):
-    """The W00 approver rule: 박준태 or an unexpired recorded delegate."""
+    """The W00 approver rule: the configured primary approver or an
+    unexpired recorded delegate."""
     name = str(name or "").strip()
     if not name:
         return False, "an approver name is required", None
-    if name == PRIMARY_APPROVER:
+    approver = primary_approver(p)
+    if name == approver:
         return True, "primary approver", None
     delegation = _delegation_for(p, name, scope, now_ms)
     if delegation is None:
-        return False, (f"{name} is not {PRIMARY_APPROVER} and holds no "
+        return False, (f"{name} is not {approver} and holds no "
                        f"unexpired delegation covering {scope}"), None
     return True, (f"delegated by {delegation['delegator']} "
                   f"({delegation['delegation_id']})"), \
