@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "shot_id": "S001",
+  "kind": "judge",
+  "driver": "claude_cli",
+  "request_id": "36e5d170d9b47247",
+  "request_file": "qc/conti/S001/456addbb545d8539.judge-36e5d170d9b47247.txt",
+  "prompt_sha256": "9e848fcf5f1890b87e9994199f66181ddee16eeed612ba5d836e9dd4f4d07930",
+  "status": "APPLIED",
+  "reason": "answer validated and stored",
+  "at": "2026-10-15T12:10:51.146518+00:00",
+  "model": "claude-fable-5-1",
+  "models": [
+    "claude-fable-5-1"
+  ],
+  "argv": [
+    "claude",
+    "-p",
+    "--output-format",
+    "json",
+    "--no-session-persistence",
+    "--tools",
+    "Read",
+    "--allowedTools",
+    "Read",
+    "--add-dir",
+    "/tmp/r6smoke-o4mqp4hf/smoke/qc/conti/S001/456addbb545d8539"
+  ],
+  "exit_code": 0,
+  "duration_s": 20.0,
+  "auth": {
+    "authMethod": "claude.ai",
+    "apiProvider": "firstParty",
+    "subscriptionType": "max"
+  },
+  "raw_output_file": "20261015T121030-judge-36e5d170d9b47247-01.stdout.txt",
+  "answer_file": "20261015T121030-judge-36e5d170d9b47247-01.answer.txt"
+}
