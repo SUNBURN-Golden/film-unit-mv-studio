@@ -1,0 +1,19 @@
+You are checking one generated music-video take against its storyboard (conti). Reply with ONE JSON object and nothing else.
+- Look at every attached frame (they are evenly spaced samples of the clip, first to last).
+- For each numbered criterion answer PASS only when the frames clearly show it, FAIL when they clearly contradict it, and UNSURE when the sampled frames cannot settle it (for example a motion that happens between samples).
+- Quote what you saw in `reason`; never guess from the prompt text alone.
+- Do not invent criteria, do not score mood; the list below is the whole checklist.
+Answer in exactly this JSON shape:
+{"take": "<take sha256>", "criteria": [{"index": 1, "verdict": "PASS|FAIL|UNSURE", "reason": "what the frames show"}]}
+
+=== 입력 자료 (JSON) ===
+{"shot_id": "S027", "take": "18ea8dec7939ddfd6862fb1c0227c2616ba3c81a0f219029907ea568cdba359b", "clip": {"seconds": 8.0, "width": 1920, "height": 1080, "fps": 24.0, "frames": 192}, "mechanical": [{"check": "DURATION", "status": "PASS", "detail": "8.00 s clip for a 8.00 s shot"}, {"check": "ASPECT", "status": "PASS", "detail": "1920×1080 vs project 16:9"}, {"check": "RESOLUTION", "status": "PASS", "detail": "1080p clip for a 1080p project"}, {"check": "MOTION", "status": "PASS", "detail": "largest change between samples 6.534 (threshold 2.0)"}], "brief": {"scene": "Animate this approved first frame. Preserve its exact composition, style and character identities.\nSung shot: the lead lip-syncs the attached vocal exactly, every word in time: “나를 버리고 가시는 님은”\nMake a 8 s clip; the first 8.0 s are used.\nScene: Haneul sings the line to the hill pass the departing lover crossed; resolve, not tears\nCamera: push — at 0.2 s: slow push in (about 6%) over the whole shot\nHaneul: standing, facing the pass three-quarters; steady, singing; at 0.6 s: raises her right hand toward the hill pass; at 4.5 s: turns her head toward the pass\nLyric 0.5–7.2 s “나를 버리고 가시는 님은”: she sings it straight to the pass\nKeep unchanged: teal jacket\nEnds: hard cut\nOne continuous shot, no cuts. Only the lead sings; every other mouth stays closed.\nNo new text. No new scenes. Only the motion described above.", "seconds": 8.0}, "criteria": [{"index": 1, "text": "Haneul keeps the same face, hair and teal jacket in every frame"}, {"index": 2, "text": "her right hand rises toward the hill pass at the gesture beat, not before"}, {"index": 3, "text": "the camera only pushes in; there are no cuts"}, {"index": 4, "text": "the image stays 2D ink-on-paper, never photoreal; no text in frame"}], "frames": ["qc/conti/S027/18ea8dec7939ddfd/frame_01.jpg", "qc/conti/S027/18ea8dec7939ddfd/frame_02.jpg", "qc/conti/S027/18ea8dec7939ddfd/frame_03.jpg", "qc/conti/S027/18ea8dec7939ddfd/frame_04.jpg", "qc/conti/S027/18ea8dec7939ddfd/frame_05.jpg"]}
+
+=== 함께 올릴 프레임 ===
+/workspace/film-run/wt-claudia/projects/arirang_hardcut/qc/conti/S027/18ea8dec7939ddfd/frame_01.jpg
+/workspace/film-run/wt-claudia/projects/arirang_hardcut/qc/conti/S027/18ea8dec7939ddfd/frame_02.jpg
+/workspace/film-run/wt-claudia/projects/arirang_hardcut/qc/conti/S027/18ea8dec7939ddfd/frame_03.jpg
+/workspace/film-run/wt-claudia/projects/arirang_hardcut/qc/conti/S027/18ea8dec7939ddfd/frame_04.jpg
+/workspace/film-run/wt-claudia/projects/arirang_hardcut/qc/conti/S027/18ea8dec7939ddfd/frame_05.jpg
+
+위 지시대로 JSON 객체 하나만 답하세요. 설명 문장 없이, 코드 블록 하나 안에 넣어도 됩니다.

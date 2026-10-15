@@ -25,6 +25,7 @@ WORLD_SCHEMA = {
     "style": {"visual_style": {"medium": "", "background": "", "line": "", "shading": "", "camera": ""},
               "palette": {"name": "#RRGGBB"}, "rules": ["short visual rule"]},
     "characters": [{"id": "CHAR_A", "name": "", "look": "fixed visual traits repeated in every shot: age, face, hair, clothing colors, distinctive items",
+                    "far": "optional: the same identity in a few words, for wide/far shots where look detail does not read",
                     "behavior": "how this person moves and emotes", "invariants": {"trait": "value"}, "variants": []}],
     "locations": [{"id": "LOC_A", "description": "fixed visual traits of this place", "required_views": ["wide", "medium", "prop"]}],
 }
@@ -99,6 +100,8 @@ def validate_world(data):
             raise FilmError(f"{entry['id']}: invariants must be an object")
         characters.append({"id": entry["id"], "name": str(entry.get("name", "")).strip()[:80],
                            "look": _text(entry.get("look"), f"{entry['id']}.look", 10, 800),
+                           **({"far": _text(entry["far"], f"{entry['id']}.far", 5, 300)}
+                              if str(entry.get("far") or "").strip() else {}),
                            "behavior": _text(entry.get("behavior", "restrained"), f"{entry['id']}.behavior", 1, 300),
                            "invariants": {str(k)[:40]: str(v)[:120] for k, v in traits.items()},
                            "variants": [str(v)[:60] for v in entry.get("variants", []) if isinstance(entry.get("variants"), list)]})

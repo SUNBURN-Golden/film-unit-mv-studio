@@ -1,0 +1,68 @@
+{
+  "schema_version": 1,
+  "shot_id": "S027",
+  "request_sha256": "06449c30be9be465b25b5b351f0c217875a958573c79903fa785ef1e0de7fbd1",
+  "updated_at": "2026-10-15T01:32:17.650933+00:00",
+  "source": "llm:claude-opus-5.5 (Claude Code subscription)",
+  "scene_goal": "Haneul sings the line to the hill pass the departing lover crossed; resolve, not tears",
+  "lyric_anchors": [
+    {
+      "text": "나를 버리고 가시는 님은",
+      "start_ms": 31300,
+      "end_ms": 38020,
+      "intent": "she sings it straight to the pass"
+    }
+  ],
+  "beat_map": [],
+  "framing": "medium shot, character left third, the hill pass on the right",
+  "camera": {
+    "type": "push",
+    "moves": [
+      {
+        "at_ms": 31000,
+        "action": "slow push in (about 6%) over the whole shot"
+      }
+    ]
+  },
+  "blocking": [
+    {
+      "character": "CHAR_01",
+      "pose": "standing, facing the pass three-quarters",
+      "expression": "steady, singing",
+      "motion_beats": [
+        {
+          "at_ms": 34640,
+          "action": "raises her right hand toward the hill pass on the word '가시는'"
+        },
+        {
+          "at_ms": 35300,
+          "action": "turns her head toward the pass"
+        }
+      ]
+    }
+  ],
+  "lighting": "flat daylight on warm gray paper",
+  "palette": [
+    "#ECEAE4",
+    "#181818",
+    "#48A6A0"
+  ],
+  "continuity": {
+    "from_previous": "same hillside",
+    "to_next": "she keeps facing the pass",
+    "props": [],
+    "wardrobe": "teal jacket"
+  },
+  "references": [
+    "storyboard/S027.png"
+  ],
+  "transition_in": "hard cut",
+  "transition_out": "hard cut",
+  "acceptance_criteria": [
+    "Haneul keeps the same face, hair and teal jacket in every frame",
+    "her right hand rises toward the hill pass at the gesture beat, not before",
+    "the camera only pushes in; there are no cuts",
+    "the image stays 2D ink-on-paper, never photoreal; no text in frame"
+  ],
+  "open_questions": []
+}

@@ -270,6 +270,7 @@ def main(argv=None):
     conti_sub.add_argument("project")
     conti_sub.add_argument("--file", required=True)
     conti_sub.add_argument("--source", default="llm", help="Recorded source label, e.g. manual or handoff:claude")
+    conti_sub.add_argument("--request", help="The 16-hex request id conti-request printed; links each stored conti to conti/requests/<id>.txt")
     sub.add_parser("conti-status", help="W00 redesign: per-shot conti completeness — which fields still keep the direction unsettled").add_argument("project")
     brief_cmd = sub.add_parser("conti-brief", help="W00 redesign R2: first-frame and motion-only prompts for one shot from its conti (beats in clip-relative seconds, clip length snapped to 4/6/8 s), attachments and the acceptance checklist; no service is contacted")
     brief_cmd.add_argument("project")
@@ -301,6 +302,19 @@ def main(argv=None):
     judge_sub.add_argument("--sha", help="Take sha256; default the latest checked take")
     judge_sub.add_argument("--source", default="llm", help="Recorded judge label, e.g. llm:claude")
     sub.add_parser("conti-metrics", help="W00 redesign R2: per-shot attempts, latest verdict, subscription units and human minutes — the hard-cut ledger").add_argument("project")
+    align_cmd = sub.add_parser("lyrics-align", help="Claudia port: propose lyric-line timing by forced alignment of the sheet on the vocal stem (local faster-whisper); writes lyrics/align_proposal.json + align_report.json, never lyrics_timed.json")
+    align_cmd.add_argument("project")
+    align_cmd.add_argument("--model", default="small")
+    align_cmd.add_argument("--compute-type", default="float32", help="CTranslate2 compute type; float32 is the stable default")
+    sync_cmd = sub.add_parser("conti-sync", help="Claudia port: measure a checked take's audio against the vocal stem — lag, synced spans, divergence; updates the take's check record")
+    sync_cmd.add_argument("project")
+    sync_cmd.add_argument("shot")
+    sync_cmd.add_argument("--sha", help="Take sha256; default the shot's current draft/final take")
+    rev_cmd = sub.add_parser("conti-revision", help="W00 redesign R2: record a verbatim revision instruction on the shot's latest checked take; the next checked take carries the instruction, changed conti fields and prompt diff")
+    rev_cmd.add_argument("project")
+    rev_cmd.add_argument("shot")
+    rev_cmd.add_argument("--instruction", required=True, help="The user's revision instruction, verbatim")
+    rev_cmd.add_argument("--note", default="")
     images = sub.add_parser("images-estimate", help="Quote missing reference images or first frames with the chosen image model; no request is sent")
     images.add_argument("project")
     images.add_argument("--kind", choices=["references", "frames"], default="frames")
@@ -775,7 +789,7 @@ def main(argv=None):
             from .conti import submit_answer
             result = submit_answer(a.project,
                                    json.loads(Path(a.file).read_text(encoding="utf-8")),
-                                   source=a.source)
+                                   source=a.source, request_id=a.request)
         elif a.command == "conti-status":
             from .conti import conti_status
             result = conti_status(a.project)
@@ -801,6 +815,15 @@ def main(argv=None):
         elif a.command == "conti-metrics":
             from .conti_brief import conti_metrics
             result = conti_metrics(a.project)
+        elif a.command == "lyrics-align":
+            from .align import propose
+            result = propose(a.project, model_size=a.model, compute_type=a.compute_type)
+        elif a.command == "conti-sync":
+            from .sync_check import measure_take
+            result = measure_take(a.project, a.shot, sha256=a.sha)
+        elif a.command == "conti-revision":
+            from .conti_brief import record_revision
+            result = record_revision(a.project, a.shot, a.instruction, note=a.note)
         elif a.command == "images-estimate":
             from . import imagegen, providers
             result = imagegen.estimate(a.project, a.kind, providers.selected_image(a.project), a.shots.split(",") if a.shots else None)

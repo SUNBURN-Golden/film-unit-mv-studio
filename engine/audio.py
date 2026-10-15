@@ -1,10 +1,15 @@
 """Measured audio timing. Structural boundaries are candidates, never verse labels."""
 from pathlib import Path
+import importlib.util
+import subprocess
+import sys
+import tempfile
+
 import numpy as np
-from scipy.signal import find_peaks
+from scipy.signal import butter, filtfilt, find_peaks
 import librosa
 import soundfile as sf
-from .core import FilmError, digest, ffmpeg, read, require_legacy_profile, write
+from .core import FilmError, digest, ffmpeg, now, read, require_legacy_profile, safe_path, write
 
 
 def analyze(project):
@@ -77,6 +82,101 @@ def analyze(project):
     fig.savefig(p / "analysis/waveform.png", dpi=130)
     plt.close(fig)
     return data
+
+
+# ---------------------------------------------------------------------------
+# vocal stem (Claudia port: lyric alignment and take sync checks need a
+# vocal-only reference; Film Unit never ships a paid separator)
+
+
+VOCALS_JSON = "analysis/vocals.json"
+VOCALS_PATH = "analysis/vocals.wav"
+
+
+def _supplied_vocals(p):
+    """A vocal stem the user dropped in input/ (vocals.<ext>), or None."""
+    for ext in (".wav", ".mp3"):
+        candidate = p / "input" / f"vocals{ext}"
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _demucs_available():
+    return importlib.util.find_spec("demucs") is not None
+
+
+def _demucs_separate(master, target):
+    """Run the installed demucs CLI once; returns the separated vocals.wav."""
+    with tempfile.TemporaryDirectory(prefix="filmunit-demucs-") as tmp:
+        cmd = [sys.executable, "-m", "demucs", "--two-stems", "vocals",
+               "-o", tmp, str(master)]
+        run = subprocess.run(cmd, capture_output=True, text=True)
+        if run.returncode != 0:
+            raise FilmError("demucs separation failed: "
+                            + (run.stderr or run.stdout)[-300:])
+        found = sorted(Path(tmp).rglob("vocals.wav"))
+        if not found:
+            raise FilmError("demucs finished but produced no vocals.wav")
+        return found[0].read_bytes()
+
+
+def _proxy_vocals(p, target):
+    """Honest fallback stem: harmonic component band-limited to the voice
+    range. Labelled 'proxy' everywhere — it is not a demucs separation."""
+    wav = p / "analysis/mono_22050.wav"
+    if not wav.is_file():
+        raise FilmError("run analyze first — analysis/mono_22050.wav is missing")
+    y, sr = sf.read(wav, dtype="float32")
+    harmonic, _ = librosa.effects.hpss(y)
+    b, a = butter(4, [200 / (sr / 2), 8000 / (sr / 2)], btype="band")
+    vocal = filtfilt(b, a, harmonic).astype("float32")
+    peak = float(np.max(np.abs(vocal))) if len(vocal) else 0.0
+    if peak > 1e-6:
+        vocal *= min(0.89, 0.89 / peak)
+    sf.write(target, vocal, sr, subtype="PCM_16")
+
+
+def ensure_vocals(project, shot=None):
+    """A vocal-only reference WAV for lyric alignment and take sync checks.
+
+    Sources, in order: `input/vocals.<wav|mp3>` supplied by the user
+    (labelled 'supplied'), a local demucs separation when demucs is
+    installed ('demucs'), else a harmonic+vocal-band proxy from the
+    analysis WAV ('proxy' — honest, never presented as a separation).
+    Cached under analysis/; rebuilt when the master sha changes.
+    `shot` is accepted for callers that intend to window the stem
+    (see sync_check.vocal_reference); the stem itself is always full-song.
+    """
+    p = Path(project)
+    require_legacy_profile(p)
+    config = read(p / "project.yaml")
+    master = safe_path(p, config["audio"]["path"])
+    master_sha = digest(master)
+    supplied = _supplied_vocals(p)
+    supplied_sha = digest(supplied) if supplied is not None else None
+    cached = read(p / VOCALS_JSON, {})
+    if cached.get("master_sha256") == master_sha \
+            and cached.get("supplied_sha256") == supplied_sha \
+            and safe_path(p, cached.get("path", "")).is_file():
+        return {"path": cached["path"], "source": cached["source"],
+                "sha256": digest(safe_path(p, cached["path"]))}
+    target = p / VOCALS_PATH
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if supplied is not None:
+        ffmpeg(["-i", supplied, "-vn", "-ac", "1", "-ar", "22050",
+                "-c:a", "pcm_s16le", target])
+        source = "supplied"
+    elif _demucs_available():
+        target.write_bytes(_demucs_separate(master, target))
+        source = "demucs"
+    else:
+        _proxy_vocals(p, target)
+        source = "proxy"
+    write(p / VOCALS_JSON, {"master_sha256": master_sha, "path": VOCALS_PATH,
+                            "source": source, "supplied_sha256": supplied_sha,
+                            "created_at": now()})
+    return {"path": VOCALS_PATH, "source": source, "sha256": digest(target)}
 
 
 def synth_test_audio(path, seconds=65, sr=44100):

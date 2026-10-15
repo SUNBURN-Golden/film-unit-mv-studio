@@ -13,7 +13,7 @@ KEEP/CHANGE/MIX decision opens later waves.
 from pathlib import Path
 import shlex
 
-from .core import FilmError, production_profile, read, require_lock, write
+from .core import FilmError, gates, production_profile, read, require_lock, write
 from .schema import ANIMATION_PROFILE
 from . import imagegen, providers
 from .gemini import DEFAULT_CONFIG
@@ -22,6 +22,15 @@ from .imagegen import reserved_usd
 
 def placeholders(p):
     return [s["id"] for s in read(p / "manifest/shots.json") if s.get("storyboard_kind") == "placeholder"]
+
+
+def _missing_takes(p):
+    """Shots that need a video take and have none (manual renderer path)."""
+    assets = read(p / "manifest/assets.json", {"shots": {}}).get("shots", {})
+    return [s["id"] for s in read(p / "manifest/shots.json")
+            if s["render_mode"] != "STATIC"
+            and not (assets.get(s["id"], {}).get("final")
+                     or assets.get(s["id"], {}).get("draft"))]
 
 
 def _packets(p):
@@ -85,18 +94,37 @@ def autopilot(project, image=None):
                     "next": f"Review storyboard/storyboard.html. Replace any frame you dislike, then: "
                             f"python -m engine.cli lock {target} --reviewer <name>"}
 
+    # R3: `gates: minimal` drops the lock ceremony only for the fully-manual
+    # video path — every take is user-made, so no spend needs the lock.
+    # Paid/API renderers (mock included: it rehearses that path) keep it.
+    minimal = gates(p) == "minimal" and video_choice.renderer == "manual"
+
     # 2. LOCK is always a human review of the complete storyboard.
-    try:
-        require_lock(p, video_choice.renderer or "gemini")
-    except FilmError:
-        return {"stage": "NEEDS_LOCK",
-                "next": f"Review storyboard/storyboard.html, then: python -m engine.cli lock {target} --reviewer <name>"}
+    if not minimal:
+        try:
+            require_lock(p, video_choice.renderer or "gemini")
+        except FilmError:
+            return {"stage": "NEEDS_LOCK",
+                    "next": f"Review storyboard/storyboard.html, then: python -m engine.cli lock {target} --reviewer <name>"}
 
     # 3. Video.
     renderer = video_choice.renderer
     if renderer == "manual":
-        return {"stage": "NEEDS_MANUAL_VIDEO", "packets": _packets(p),
-                "next": "작업지시서로 샷 영상을 만들어 06 · COMPILE에서 가져온 뒤 Preview를 만드세요."}
+        waiting = _missing_takes(p)
+        if waiting:
+            return {"stage": "NEEDS_MANUAL_VIDEO", "packets": _packets(p), "shots": waiting,
+                    "next": "작업지시서로 샷 영상을 만들어 06 · COMPILE에서 가져온 뒤 Preview를 만드세요."}
+        if not minimal:
+            return {"stage": "NEEDS_MANUAL_VIDEO", "packets": _packets(p),
+                    "next": "가져온 샷을 검토한 뒤 Preview를 만드세요: "
+                            f"python -m engine.cli compile-preview {target}"}
+        from .compiler import compile_preview
+        build = compile_preview(p)
+        return {"stage": "PREVIEW_READY", "build": build.get("build_dir"),
+                "needs_review": [s["id"] for s in read(p / "manifest/shots.json")
+                                 if s["render_mode"] != "STATIC"],
+                "failed": [],
+                "next": "Preview를 확인하고 샷을 검토·교체한 뒤 다시 가져오세요."}
     if renderer == "mock":
         from .compiler import compile_preview
         build = compile_preview(p)

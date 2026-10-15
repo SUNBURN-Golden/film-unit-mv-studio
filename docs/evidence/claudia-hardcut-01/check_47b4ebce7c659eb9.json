@@ -1,0 +1,113 @@
+{
+  "schema_version": 1,
+  "shot_id": "S027",
+  "take_sha256": "47b4ebce7c659eb97011f5f2b800b94113abf63592a0eca4e788a332ecf47fa8",
+  "take_path": "render/assets/47b4ebce7c659eb97011f5f2b800b94113abf63592a0eca4e788a332ecf47fa8.mp4",
+  "take_kind": "draft",
+  "conti_sha256": "140f88b6812d5c32de590aae0b129aaf8da66f4c83705897794988376032eafd",
+  "attempt": 2,
+  "service": "local-procedural (no generation)",
+  "units": 0,
+  "human_minutes": 0,
+  "note": "LOCAL_PROCEDURAL stand-in drawn by code; not an AI generation",
+  "checked_at": "2026-10-15T01:32:28.052709+00:00",
+  "probe": {
+    "seconds": 8.0,
+    "width": 1920,
+    "height": 1080,
+    "fps": 24.0,
+    "frames": 192
+  },
+  "mechanical": [
+    {
+      "check": "DURATION",
+      "status": "PASS",
+      "detail": "8.00 s clip for a 8.00 s shot"
+    },
+    {
+      "check": "ASPECT",
+      "status": "PASS",
+      "detail": "1920×1080 vs project 16:9"
+    },
+    {
+      "check": "RESOLUTION",
+      "status": "PASS",
+      "detail": "1080p clip for a 1080p project"
+    },
+    {
+      "check": "MOTION",
+      "status": "PASS",
+      "detail": "largest change between samples 6.76 (threshold 2.0)"
+    }
+  ],
+  "frames": [
+    "qc/conti/S027/47b4ebce7c659eb9/frame_01.jpg",
+    "qc/conti/S027/47b4ebce7c659eb9/frame_02.jpg",
+    "qc/conti/S027/47b4ebce7c659eb9/frame_03.jpg",
+    "qc/conti/S027/47b4ebce7c659eb9/frame_04.jpg",
+    "qc/conti/S027/47b4ebce7c659eb9/frame_05.jpg"
+  ],
+  "criteria": [
+    {
+      "index": 1,
+      "text": "Haneul keeps the same face, hair and teal jacket in every frame",
+      "verdict": "PASS",
+      "reason": "all five samples show the same round face, black bob with wind strands and teal jacket"
+    },
+    {
+      "index": 2,
+      "text": "her right hand rises toward the hill pass at the gesture beat, not before",
+      "verdict": "PASS",
+      "reason": "right hand hangs down in samples 1-3 and is raised toward the right (the pass) in samples 4-5; it does not rise before the middle of the clip"
+    },
+    {
+      "index": 3,
+      "text": "the camera only pushes in; there are no cuts",
+      "verdict": "PENDING",
+      "reason": "no cut is visible between samples, but a ~6% push-in cannot be settled from five stills"
+    },
+    {
+      "index": 4,
+      "text": "the image stays 2D ink-on-paper, never photoreal; no text in frame",
+      "verdict": "PASS",
+      "reason": "flat 2D ink lines on gray paper in every sample; no text in the frame"
+    }
+  ],
+  "judgements": [
+    {
+      "at": "2026-10-15T01:33:39.045900+00:00",
+      "reviewer": "llm:claude-opus-5.5 (Claude Code, this session)",
+      "verdicts": {
+        "1": "PASS",
+        "2": "PASS",
+        "3": "PENDING",
+        "4": "PASS"
+      },
+      "note": "judge answer"
+    }
+  ],
+  "reviewer": "llm:claude-opus-5.5 (Claude Code, this session)",
+  "warnings": [],
+  "revision": {
+    "instruction": "손은 첫 박에 들지 말고 '가시는'에서 고개 쪽으로 드세요",
+    "requested_at": "2026-10-15T01:32:17.648478+00:00",
+    "revises_take": "18ea8dec7939ddfd6862fb1c0227c2616ba3c81a0f219029907ea568cdba359b",
+    "revises_attempt": 1,
+    "conti_before": "121164fb74b68d2b49f30341da56a753016f9c6260019e8a9aed476ee4988f3f",
+    "conti_after": "140f88b6812d5c32de590aae0b129aaf8da66f4c83705897794988376032eafd",
+    "conti_changed": [
+      "blocking[0].motion_beats[0].action",
+      "blocking[0].motion_beats[0].at_ms"
+    ],
+    "prompt_diff": {
+      "first_frame_prompt": "",
+      "video_prompt": "--- \n+++ \n@@ -5,3 +5,3 @@\n Camera: push — at 0.2 s: slow push in (about 6%) over the whole shot\n-Haneul: standing, facing the pass three-quarters; steady, singing; at 0.6 s: raises her right hand toward the hill pass; at 4.5 s: turns her head toward the pass\n+Haneul: standing, facing the pass three-quarters; steady, singing; at 3.8 s: raises her right hand toward the hill pass on the word '가시는'; at 4.5 s: turns her head toward the pass\n Lyric 0.5–7.2 s “나를 버리고 가시는 님은”: she sings it straight to the pass"
+    }
+  },
+  "verdict": "PENDING",
+  "sync": {
+    "status": "unmeasurable",
+    "reason": "the take has no audio stream (motion clips made with no audio play at lag 0)",
+    "measured_at": "2026-10-15T01:32:28.149287+00:00"
+  }
+}

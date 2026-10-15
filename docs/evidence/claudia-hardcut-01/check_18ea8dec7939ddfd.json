@@ -1,0 +1,162 @@
+{
+  "schema_version": 1,
+  "shot_id": "S027",
+  "take_sha256": "18ea8dec7939ddfd6862fb1c0227c2616ba3c81a0f219029907ea568cdba359b",
+  "take_path": "render/assets/18ea8dec7939ddfd6862fb1c0227c2616ba3c81a0f219029907ea568cdba359b.mp4",
+  "take_kind": "draft",
+  "conti_sha256": "121164fb74b68d2b49f30341da56a753016f9c6260019e8a9aed476ee4988f3f",
+  "attempt": 1,
+  "service": "local-procedural (no generation)",
+  "units": 0,
+  "human_minutes": 0,
+  "note": "LOCAL_PROCEDURAL stand-in drawn by code; not an AI generation",
+  "checked_at": "2026-10-15T01:31:43.266534+00:00",
+  "probe": {
+    "seconds": 8.0,
+    "width": 1920,
+    "height": 1080,
+    "fps": 24.0,
+    "frames": 192
+  },
+  "mechanical": [
+    {
+      "check": "DURATION",
+      "status": "PASS",
+      "detail": "8.00 s clip for a 8.00 s shot"
+    },
+    {
+      "check": "ASPECT",
+      "status": "PASS",
+      "detail": "1920×1080 vs project 16:9"
+    },
+    {
+      "check": "RESOLUTION",
+      "status": "PASS",
+      "detail": "1080p clip for a 1080p project"
+    },
+    {
+      "check": "MOTION",
+      "status": "PASS",
+      "detail": "largest change between samples 6.534 (threshold 2.0)"
+    }
+  ],
+  "frames": [
+    "qc/conti/S027/18ea8dec7939ddfd/frame_01.jpg",
+    "qc/conti/S027/18ea8dec7939ddfd/frame_02.jpg",
+    "qc/conti/S027/18ea8dec7939ddfd/frame_03.jpg",
+    "qc/conti/S027/18ea8dec7939ddfd/frame_04.jpg",
+    "qc/conti/S027/18ea8dec7939ddfd/frame_05.jpg"
+  ],
+  "criteria": [
+    {
+      "index": 1,
+      "text": "Haneul keeps the same face, hair and teal jacket in every frame",
+      "verdict": "PENDING",
+      "reason": ""
+    },
+    {
+      "index": 2,
+      "text": "her right hand rises toward the hill pass at the gesture beat, not before",
+      "verdict": "PENDING",
+      "reason": ""
+    },
+    {
+      "index": 3,
+      "text": "the camera only pushes in; there are no cuts",
+      "verdict": "PENDING",
+      "reason": ""
+    },
+    {
+      "index": 4,
+      "text": "the image stays 2D ink-on-paper, never photoreal; no text in frame",
+      "verdict": "PENDING",
+      "reason": ""
+    }
+  ],
+  "judgements": [],
+  "reviewer": "",
+  "warnings": [],
+  "verdict": "PENDING",
+  "sync": {
+    "status": "unmeasurable",
+    "reason": "the take has no audio stream (motion clips made with no audio play at lag 0)",
+    "measured_at": "2026-10-15T01:31:43.358785+00:00"
+  },
+  "revision_request": {
+    "instruction": "손은 첫 박에 들지 말고 '가시는'에서 고개 쪽으로 드세요",
+    "note": "",
+    "at": "2026-10-15T01:32:17.648478+00:00",
+    "conti": {
+      "schema_version": 1,
+      "shot_id": "S027",
+      "request_sha256": "06449c30be9be465b25b5b351f0c217875a958573c79903fa785ef1e0de7fbd1",
+      "updated_at": "2026-10-15T01:31:30.105617+00:00",
+      "source": "llm:claude-opus-5.5 (Claude Code subscription)",
+      "scene_goal": "Haneul sings the line to the hill pass the departing lover crossed; resolve, not tears",
+      "lyric_anchors": [
+        {
+          "text": "나를 버리고 가시는 님은",
+          "start_ms": 31300,
+          "end_ms": 38020,
+          "intent": "she sings it straight to the pass"
+        }
+      ],
+      "beat_map": [],
+      "framing": "medium shot, character left third, the hill pass on the right",
+      "camera": {
+        "type": "push",
+        "moves": [
+          {
+            "at_ms": 31000,
+            "action": "slow push in (about 6%) over the whole shot"
+          }
+        ]
+      },
+      "blocking": [
+        {
+          "character": "CHAR_01",
+          "pose": "standing, facing the pass three-quarters",
+          "expression": "steady, singing",
+          "motion_beats": [
+            {
+              "at_ms": 31400,
+              "action": "raises her right hand toward the hill pass"
+            },
+            {
+              "at_ms": 35300,
+              "action": "turns her head toward the pass"
+            }
+          ]
+        }
+      ],
+      "lighting": "flat daylight on warm gray paper",
+      "palette": [
+        "#ECEAE4",
+        "#181818",
+        "#48A6A0"
+      ],
+      "continuity": {
+        "from_previous": "same hillside",
+        "to_next": "she keeps facing the pass",
+        "props": [],
+        "wardrobe": "teal jacket"
+      },
+      "references": [
+        "storyboard/S027.png"
+      ],
+      "transition_in": "hard cut",
+      "transition_out": "hard cut",
+      "acceptance_criteria": [
+        "Haneul keeps the same face, hair and teal jacket in every frame",
+        "her right hand rises toward the hill pass at the gesture beat, not before",
+        "the camera only pushes in; there are no cuts",
+        "the image stays 2D ink-on-paper, never photoreal; no text in frame"
+      ],
+      "open_questions": []
+    },
+    "conti_sha256": "121164fb74b68d2b49f30341da56a753016f9c6260019e8a9aed476ee4988f3f",
+    "first_frame_prompt": "Create one still image: the first frame of music-video shot S027, 16:9 aspect ratio.\nScene: Haneul sings the line to the hill pass the departing lover crossed; resolve, not tears\nFraming: medium shot, character left third, the hill pass on the right\nCamera: push\nHaneul (young Korean woman, early 20s, short black bob hair blown by wind, round face, teal jacket over a white shirt, drawn as 2D cel animation with thin black ink outlines): standing, facing the pass three-quarters; expression steady, singing\nLocation: LOC_01\nLighting: flat daylight on warm gray paper\nPalette: #ECEAE4, #181818, #48A6A0\nVisible: teal jacket\nKeep every character and location identical to the attached reference images.\nNo text, captions, lyrics, logos or watermarks.",
+    "video_prompt": "Animate this approved first frame. Preserve its exact composition, style and character identities.\nSung shot: the lead lip-syncs the attached vocal exactly, every word in time: “나를 버리고 가시는 님은”\nMake a 8 s clip; the first 8.0 s are used.\nScene: Haneul sings the line to the hill pass the departing lover crossed; resolve, not tears\nCamera: push — at 0.2 s: slow push in (about 6%) over the whole shot\nHaneul: standing, facing the pass three-quarters; steady, singing; at 0.6 s: raises her right hand toward the hill pass; at 4.5 s: turns her head toward the pass\nLyric 0.5–7.2 s “나를 버리고 가시는 님은”: she sings it straight to the pass\nKeep unchanged: teal jacket\nEnds: hard cut\nOne continuous shot, no cuts. Only the lead sings; every other mouth stays closed.\nNo new text. No new scenes. Only the motion described above.",
+    "fulfilled_by": "47b4ebce7c659eb97011f5f2b800b94113abf63592a0eca4e788a332ecf47fa8"
+  }
+}
