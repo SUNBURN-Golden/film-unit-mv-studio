@@ -1,14 +1,15 @@
 # REDESIGN W01 — 구독 자동화와 비전문가 UX로의 전면 재설계
 
-대상: `film-unit-mv-studio` main (작성일 2026-10-19). 작성 근거: JunTae 요구사항
+대상: `film-unit-mv-studio` main (작성일 2026-10-19, §7 소유자 결정 반영 개정
+2026-10-20). 작성 근거: JunTae 요구사항
 (2026-10-19) — "앱이 실제로 영상을 만들지 못하고 API 키에 의존하는 것은 원래 목적
 (이미 내고 있는 AI 구독을 활용해 고품질 MV를 만드는 '쌀먹')의 배신이다."
 
 이 문서는 REDESIGN W00(`docs/REDESIGN_W00.md`)을 **대체하지 않고 그 위에서 방향을
 바꾼다**. 구체적으로 W00 §6 결정 2("소비자 영상 앱의 무-스크립팅 규칙 유지",
 2026-10-15 소유자 대리인 결정)를 **소유자의 새 지시(2026-10-19)가 명시적으로 뒤집는다**:
-이제 브라우저·데스크톱 자동화가 목표 경로다. 이 변경은 아래 §7에서 소유자 확인이
-필요한 결정 항목으로 다시 올린다.
+이제 브라우저·데스크톱 자동화가 목표 경로다. 소유자가 2026-10-20에 이 번복을
+포함한 관련 결정 전부를 확정했다(§7 "결정 완료").
 
 목표 우선순위 (소유자 지시 순서):
 
@@ -45,11 +46,15 @@
 
 ### 1-2. API 키 없이는 자동으로 도는 단계가 없다
 
-- `engine/providers.py` — 모델 선택의 모든 "자동" provider가 키를 요구한다:
-  `ANTHROPIC_API_KEY`(:44), `GEMINI_API_KEY`(:49), `GROQ_API_KEY`(:55),
-  `OPENROUTER_API_KEY`(:60), `CLOUDFLARE_API_TOKEN`(:65), `OPENAI_API_KEY`(:70).
-  video 단계의 유일한 자동 선택지는 `gemini_video`(Veo 3.1 Lite, paid)와
-  `fal_video`(Wan 2.2 Turbo, paid) — 둘 다 키+종량제다(:112-118).
+- `engine/providers.py` — 원격 "자동" provider는 전부 키를 요구한다:
+  `ANTHROPIC_API_KEY`(:60), `GEMINI_API_KEY`(:65), `GROQ_API_KEY`(:69),
+  `OPENROUTER_API_KEY`(:72), `CLOUDFLARE_API_TOKEN`(:75), `OPENAI_API_KEY`(:80),
+  `XAI_API_KEY`(:83). 예외는 로컬·직접입력 provider다: `ollama`(:85),
+  `lmstudio`(:88), `custom_openai`(:91)는 비밀키 대신 `base_url`을 받는다
+  (custom_openai의 `CUSTOM_LLM_API_KEY`는 선택 사항, :92). video 단계의
+  유일한 자동 선택지는 `gemini_video`(Veo 3.1 Lite, paid, `GEMINI_API_KEY`
+  :113)와 `fal_video`(Wan 2.2 Turbo, paid, `FAL_KEY` :117) — 둘 다
+  키+종량제다(:112-118). `mock_video`(:121)는 테스트 전용이다.
 - `engine/settings.py:54-83` — 키는 `~/.film_unit/secrets.json`(또는
   `FILM_UNIT_HOME`)에 저장. 앱 UI(`app/models_ui.py` `_provider_form`)가 키
   입력 폼을 그린다.
@@ -70,6 +75,7 @@
 - `docs/BROWSER_HANDOFF.md:7` — "하지 않는 것: 로그인하지 않고, 대신 조작하지
   않고, 화면에서 결과를 긁어오지 않습니다."
 - `docs/REDESIGN_W00.md` §6 결정 2 — 이 규칙을 2026-10-15에 재확인했다.
+  2026-10-20 소유자 결정으로 번복되었다(§7 결정 1).
 - `engine/execution_workers/subscription.py` — 구독 실행 환경 바인딩이
   존재하지만 routing이 `MANUAL`만 허용한다("a consumer site with no official
   execution API is MANUAL only — no UI automation"). 모든 route는
@@ -77,6 +83,11 @@
 - 유일한 실제 자동화는 `engine/conti_cli_driver.py`: `claude -p`(Claude Code CLI,
   사용자 본인 구독 로그인)로 judge/rewrite 요청에 답한다. 텍스트 단계 하나뿐이고,
   영상 생성·다운로드는 여전히 사람 손이다.
+- `engine/openart_bridge.py` — OpenArt 연동이 존재하지만 소비자 UI 자동화가
+  아니라 인증된 메타데이터·비용 호출 위의 **유료 요청/영수증 교환**이다
+  (`register_quote`가 exact-config `model_cost` 증적을 등록하고,
+  `import_completed`가 기록된 request/history ID가 일치할 때만 결과를
+  가져온다). 크레딧 과금 경로이며 구독 자동화의 예외를 만들지 않는다.
 
 ### 1-4. 사람이 해야 하는 수동 단계의 현재 목록
 
@@ -136,7 +147,7 @@
 
 ## 2. 비전문가 목표 사용자 흐름 (화면 단위)
 
-원칙: 사용자는 **6개 화면**만 본다. 탭·LOCK·take·build 같은 내부 용어는 화면에
+원칙: 사용자는 **7개 화면(0–6)**만 본다. 탭·LOCK·take·build 같은 내부 용어는 화면에
 나오지 않는다(기록은 내부에서 계속 쓴다). 각 화면은 "지금 할 일" 하나만 묻는다.
 
 ### 화면 0 — 시작 / 로그인 상태 확인
@@ -185,7 +196,7 @@
 
 - 샷 카드 목록 + 상태: `대기 / 만들어지는 중 / 가져오는 중 / 검사 중 / 완료 /
   손봐야 함`.
-- 사용자는 기본적으로 **보기만** 한다. 자동화가 막히면 해당 색 카드에
+- 사용자는 기본적으로 **보기만** 한다. 자동화가 막히면 해당 샷 카드에
   "직접 만들기" 버튼이 뜨고(수동 fallback: 프롬프트 복사 + 파일 끌어놓기),
   진행은 멈추지 않는다.
 - 구독 한도 소진 시 "내일/리셋 후 이어서 합니다"로 표시. 대기 중에도 앱을
@@ -215,30 +226,33 @@
 
 ## 3. API 키 없는 구독 자동화 아키텍처
 
-### 3-1. 어떤 서비스를 어떻게 돌리는가 (전부 후보 — 실제 구독 보유·UI 조사 필요)
+### 3-1. 어떤 서비스를 어떻게 돌리는가 (§7 승인 목록 안의 후보 — 실제 UI 조사 필요)
 
 | 역할 | 후보 서비스 | 구동 방식 (후보) |
 |---|---|---|
 | 콘티·프롬프트 글 | Claude Code CLI(구현됨, `engine/conti_cli_driver.py`), ChatGPT/Codex CLI, Gemini CLI | 벤더 공식 CLI — 자동화 가능, ToS 리스크 낮음 |
 | 콘티·프롬프트 글 | ChatGPT 웹, Claude 웹, Gemini 웹, Grok 웹 | 브라우저 자동화(사용자 프로필) — 소비자 UI, ToS 리스크 있음 |
 | 참조 이미지·첫 프레임 | Gemini 앱(Nano Banana), ChatGPT 이미지, Midjourney 웹, OpenArt 웹, Grok Imagine | 브라우저 자동화 — 후보, 미검증 |
-| 샷 영상 | Google Flow(Veo), Gemini 앱의 Veo, Grok Imagine(SuperGrok), Kling, Runway, OpenArt 영상, Midjourney video | 브라우저 자동화 — 전부 후보. **실제 보유 구독과 각 서비스 UI가 batch/업로드/다운로드를 어떻게 노출하는지 확인이 선행 과제** |
+| 샷 영상 | ChatGPT/Sora, Google Flow(Veo), Gemini 앱의 Veo, Grok Imagine(SuperGrok), Kling, Runway, OpenArt 영상, Midjourney video | 브라우저 자동화 — §7 승인 목록과 일치. **각 서비스 UI가 batch/업로드/다운로드를 어떻게 노출하는지 확인이 선행 과제** |
 
 선정 원칙: (a) JunTae가 실제로 내고 있는 구독 우선, (b) 첫 프레임+참조 이미지
 업로드를 받는 것 우선(2D 캐릭터 일관성), (c) 구독 단위가 예측 가능한 것.
+자동화가 허용된 서비스는 §7 승인 목록(ChatGPT/Sora, Flow/Gemini Veo,
+Grok Imagine, Kling, Runway, OpenArt, Midjourney)뿐이고, 표의 후보 중
+목록 밖 항목(예: Claude 웹, Gemini 웹 텍스트)은 수동 모드로만 쓴다.
 
 ### 3-2. 세션·로그인 모델 — 자격은 사용자 기기를 떠나지 않는다
 
 - 사용자는 **자기 브라우저 프로필에서 직접 로그인**한다(각 서비스 첫 연결 때
   한 번). 앱은 비밀번호·쿠키·토큰을 저장·전송·복사하지 않는다. 앱이 기록하는
   것은 `service: flow, logged_in: true, checked_at: …` 같은 probe 결과뿐.
-- helper가 브라우저를 붙이는 방식(후보 2개, §7 결정):
+- helper가 브라우저를 붙이는 방식(§7 결정: **A 채택**, B extension은 후속 보류):
   - **A. Playwright가 사용자 Chrome/Edge 프로필에 attach**:
     `chrome --remote-debugging-port`로 띄운 사용자 프로필에
     `connect_over_cdp`, 또는 `launch_persistent_context(user_data_dir=…)`로
     전용 프로필 복사본이 아닌 **사용자 지정 프로필**을 연다. 로그인 상태는
     프로필 안에 그대로 남는다.
-  - **B. 브라우저 extension**이 사용자가 연 탭 안에서만 동작하고, 로컬
+  - **B. (보류) 브라우저 extension**이 사용자가 연 탭 안에서만 동작하고, 로컬
     localhost의 앱과 메시지를 주고받는다. 셀렉터 변경에 더 강하고
     "사람이 보고 있는 탭에서 일어나는 일"이라는 모델이 명확.
 - 어느 쪽이든 **headless는 금지**: 자동화는 항상 사용자가 볼 수 있는 창에서
@@ -251,18 +265,19 @@
 ```
 ┌──────────────────────┐         ┌─────────────────────────┐
 │ Web app (localhost)  │         │ Local helper (Windows 1순위) │
-│ - 6개 화면 UX         │  파일   │ - PowerShell bootstrapper   │
-│ - 콘티 대화 상태      │  큐     │ - Playwright 또는 extension  │
+│ - 7개 화면 UX         │  파일   │ - PowerShell bootstrapper   │
+│ - 콘티 대화 상태      │  큐     │ - Playwright(프로필 attach)  │
 │ - 프로젝트 상태·기록   │◄──────►│ - 서비스별 adapter(셀렉터)   │
 │ - job queue writer   │  JSON  │ - 업로드/생성/다운로드 실행   │
 │ - ffmpeg 편집(기존)   │         │ - 다운로드 폴더 → inbox 이동  │
 └──────────────────────┘         └─────────────────────────┘
 ```
 
-- **web app**: 기존 로컬 Streamlit을 전면 재작성하거나(§7 결정) 최소한 위 6개
-  화면으로 재구성. 프로젝트 상태·검수·빌드는 기존 `engine` 모듈을 그대로 호출.
+- **web app**: 기존 로컬 Streamlit을 유지한 채(§7 결정: Streamlit 유지)
+  위 7개 화면(0–6) 단일 흐름으로 재구성. 프로젝트 상태·검수·빌드는 기존
+  `engine` 모듈을 그대로 호출.
   ffmpeg 편집·자막·빌드는 `engine/compiler.py` 계열 그대로 — 서버리스 이전 없음.
-- **helper**: Windows를 1순위로(소유자 지시: PowerShell 예시).
+- **helper**: Windows가 1순위(§7 결정: Windows first, PowerShell bootstrap).
   `bootstrap.ps1`이 Python venv + `playwright install` + 서비스 adapter를
   준비하고, helper 프로세스가 프로젝트 폴더의 큐를 감시한다. macOS/Linux는 같은
   프로토콜의 나중 포트.
@@ -335,7 +350,8 @@ fence — **같은 idempotency_key의 재제출만 허용되고, 새 key의 "같
 4. **예산 가드 / 이중 차감 금지**: 모든 생성 시도는 idempotency_key로 기록되고,
    완료된 샷은 재제출하지 않는다. 구독 단위·시도 횟수·사람 시간은 장부
    (`qc/conti/`)에 별도 단위로 남긴다 — 돈으로 환산해 합치지 않는다.
-   paid API 경로는 존재하지 않는다.
+   기본 경로에 paid API는 없다(legacy 코드는 다음 항목의 게이트 뒤에만
+   남는다).
 5. **유료 API 없음**: `engine/providers.py`의 paid provider(gemini_video,
    fal_video, paid text)는 기본 제품에서 선택지로 보이지 않게 하고, 키 입력
    UI를 제거한다. API 키 자동화 경로를 만들지 않는다. (W00 §4의
@@ -352,9 +368,9 @@ fence — **같은 idempotency_key의 재제출만 허용되고, 새 key의 "같
 [
   {
     "id": "w01-001",
-    "title": "W01-001: 단일 흐름 web UI 뼈대 (6개 화면, 기존 engine 호출)",
+    "title": "W01-001: 단일 흐름 web UI 뼈대 (7개 화면 0–6, 기존 engine 호출)",
     "depends_on": [],
-    "spec": "목표: app/ 아래에 새 단일 흐름 UI(화면 0~6 껍데기 + 실제 라우팅)를 만든다. 기존 16탭 control_panel은 유지하되 진입점을 새 흐름으로 바꾼다.\n범위: 화면 1 업로드 → 기존 init/analyze/package 호출; 화면 4 진행 보드는 수동 모드만; 화면 6은 기존 compile-preview 결과 재생. 콘티·자동화는 다음 노드.\n완료 기준: 새 UI에서 곡+가사+이미지를 넣어 프로젝트가 만들어지고 기존 placeholder Preview MP4가 화면 6에서 재생된다. 기존 pytest 통과.\n공통 조건: 유료 요청·credential 발급·실제 서비스 호출 없음. 기존 프로젝트/검수/LOCK 계약 유지.",
+    "spec": "목표: app/ 아래에 새 단일 흐름 UI(화면 0~6, 총 7개 껍데기 + 실제 라우팅)를 만든다. 기존 16탭 control_panel은 유지하되 진입점을 새 흐름으로 바꾼다.\n범위: 화면 1 업로드 → 기존 init/analyze/package 호출; 화면 4 진행 보드는 수동 모드만; 화면 6은 기존 compile-preview 결과 재생. 콘티·자동화는 다음 노드.\n완료 기준: 새 UI에서 곡+가사+이미지를 넣어 프로젝트가 만들어지고 기존 placeholder Preview MP4가 화면 6에서 재생된다. 기존 pytest 통과.\n공통 조건: 유료 요청·credential 발급·실제 서비스 호출 없음. 기존 프로젝트/검수/LOCK 계약 유지.",
     "audit_floor": "A2",
     "astra_auto_merge": true
   },
@@ -388,7 +404,7 @@ fence — **같은 idempotency_key의 재제출만 허용되고, 새 key의 "같
     "id": "w01-005",
     "title": "W01-005: Windows helper bootstrap + 세션 probe (제출 없음)",
     "depends_on": ["w01-004"],
-    "spec": "목표: PowerShell bootstrapper + helper 프로세스가 사용자 Chrome/Edge 프로필(attach 또는 지정 user_data_dir)에서 각 후보 서비스의 로그인 상태만 probe한다. 제출·업로드·스크래핑은 하지 않는다.\n범위: bootstrap.ps1, helper 실행기, probe adapter 1개(구조만), 화면 0의 '연결됨/로그인 필요' 표시 연결.\n완료 기준: 로그인된 프로필에서 logged_in:true/false가 화면 0에 표시된다. 자격·쿠키를 파일에 쓰지 않는 것을 코드 리뷰로 확인.\n공통 조건: 생성 요청 없음. Windows 우선, 다른 OS는 후속.",
+    "spec": "목표: PowerShell bootstrapper + helper 프로세스가 사용자 본인 Chrome/Edge 프로필에 Playwright attach(§7 결정 — 전용 프로필 복사본이 아닌 사용자 지정 프로필)로 각 후보 서비스의 로그인 상태만 probe한다. 제출·업로드·스크래핑은 하지 않는다.\n범위: bootstrap.ps1, helper 실행기, probe adapter 1개(구조만), 화면 0의 '연결됨/로그인 필요' 표시 연결.\n완료 기준: 로그인된 프로필에서 logged_in:true/false가 화면 0에 표시된다. 자격·쿠키를 파일에 쓰지 않는 것을 코드 리뷰로 확인.\n공통 조건: 생성 요청 없음. Windows 우선, 다른 OS는 후속.",
     "audit_floor": "A3",
     "astra_auto_merge": false,
     "user_merge": true,
@@ -398,7 +414,7 @@ fence — **같은 idempotency_key의 재제출만 허용되고, 새 key의 "같
     "id": "w01-006",
     "title": "W01-006: 첫 서비스 adapter — 샷 1개 자동 생성 (사용자 확인 제출)",
     "depends_on": ["w01-005"],
-    "spec": "목표: JunTae가 고른 첫 영상 서비스(§7 미결)의 adapter로 첫 프레임 업로드 + 프롬프트 입력 + 생성 요청 + 다운로드 → results 폴더 → 기존 import/conti-check 경로까지 자동으로 간다. 첫 N회는 각 제출 전에 사용자가 브라우저에서 확인하는 모드로 시작한다.\n범위: adapter 1개, UI probe 규칙(모르는 페이지면 FAILED_UNSUPPORTED_UI → 수동 강등), pacing(한 번에 하나), NEEDS_HUMAN 경로.\n완료 기준: 샷 1개가 자동화로 생성·가져오기·검사되어 Preview에 들어간다. 실제 서비스 사용은 사람 승인 하에.\n공통 조건: 서비스 ToS 위험은 §3-4 표기대로 사용자 명시 동의가 선행. 유료 API 아님.",
+    "spec": "목표: §7 승인 목록(ChatGPT/Sora, Flow/Gemini Veo, Grok Imagine, Kling, Runway, OpenArt, Midjourney) 안에서 노드 시작 시 고른 첫 영상 서비스의 adapter로 첫 프레임 업로드 + 프롬프트 입력 + 생성 요청 + 다운로드 → results 폴더 → 기존 import/conti-check 경로까지 자동으로 간다. 첫 N회는 각 제출 전에 사용자가 브라우저에서 확인하는 모드로 시작한다.\n범위: adapter 1개, UI probe 규칙(모르는 페이지면 FAILED_UNSUPPORTED_UI → 수동 강등), pacing(한 번에 하나), NEEDS_HUMAN 경로.\n완료 기준: 샷 1개가 자동화로 생성·가져오기·검사되어 Preview에 들어간다. 실제 서비스 사용은 사람 승인 하에.\n공통 조건: 서비스 ToS 위험은 §3-4 표기대로 사용자 명시 동의가 선행. 유료 API 아님.",
     "audit_floor": "A3",
     "astra_auto_merge": false,
     "user_merge": true,
@@ -406,9 +422,9 @@ fence — **같은 idempotency_key의 재제출만 허용되고, 새 key의 "같
   },
   {
     "id": "w01-007",
-    "title": "W01-007: 콘티 LLM 자동화 (구독 웹챗 adapter 또는 CLI 확장)",
+    "title": "W01-007: 콘티 LLM 자동화 (승인 목록 내 구독 웹챗 adapter 추가)",
     "depends_on": ["w01-006"],
-    "spec": "목표: 화면 2의 LLM 표면에 자동화 경로를 추가한다 — claude_cli(구현됨)에 더해 사용자가 고른 구독 웹챗(ChatGPT/Gemini/Claude 중 택1) adapter로 지시문 전송·답 수신을 자동화한다.\n범위: webchat adapter 1개, 답 추출 → 기존 conti 검증, 실패 시 수동 붙여넣기 fallback.\n완료 기준: 한 샷의 콘티가 화면 2에서 수동 복사 없이 READY가 된다(테스트는 fake DOM, 실제 검증은 증거 기록).\n공통 조건: 유료 API 아님.",
+    "spec": "목표: 화면 2의 LLM 표면에 자동화 경로를 추가한다 — claude_cli(구현됨, §7에서 우선 표면으로 확정)에 더해 §7 승인 목록 안의 구독 웹챗(예: ChatGPT 웹) adapter로 지시문 전송·답 수신을 자동화한다.\n범위: webchat adapter 1개, 답 추출 → 기존 conti 검증, 실패 시 수동 붙여넣기 fallback.\n완료 기준: 한 샷의 콘티가 화면 2에서 수동 복사 없이 READY가 된다(테스트는 fake DOM, 실제 검증은 증거 기록).\n공통 조건: 유료 API 아님.",
     "audit_floor": "A2",
     "astra_auto_merge": true
   },
@@ -447,8 +463,8 @@ fence — **같은 idempotency_key의 재제출만 허용되고, 새 key의 "같
   {
     "id": "w01-012",
     "title": "W01-012: W01 수용 — 실곡 한 절 이상 자동화 경로로 완성 + 문서",
-    "depends_on": ["w01-008", "w01-009", "w01-010"],
-    "spec": "목표: 실제 곡의 한 절 이상을 화면 1→6으로 완성한다(콘티 대화 → 자동 생성 → 수정 루프 1회 이상 → Preview). 장부(시도·단위·사람 시간)와 adapter 파손/수동 강등 사례를 docs/evidence/w01-first-verse/에 기록한다.\n완료 기준: 해당 구간이 실제 생성 테이크로 Preview에 들어가고, 준태님이 확인한다. 문서: README의 W01 절 + 각 adapter의 지원 UI 버전 표.\n공통 조건: 실제 서비스 사용·승인은 사람.",
+    "depends_on": ["w01-008", "w01-009", "w01-010", "w01-011"],
+    "spec": "목표: 소유자가 추후 고르는 실제 곡(§7 TBD)의 한 절 이상을 화면 1→6으로 완성한다(콘티 대화 → 자동 생성 → 수정 루프 1회 이상 → Preview). 노드 내 자동 테스트는 짧은 placeholder/fixture 음원을 쓰고, 실곡 실행은 사람이 수행한다(§6). 장부(시도·단위·사람 시간)와 adapter 파손/수동 강등 사례를 docs/evidence/w01-first-verse/에 기록한다.\n완료 기준: 해당 구간이 실제 생성 테이크로 Preview에 들어가고, 준태님이 확인한다. 문서: README의 W01 절 + 각 adapter의 지원 UI 버전 표.\n공통 조건: 실제 서비스 사용·승인은 사람.",
     "audit_floor": "A3",
     "astra_auto_merge": false,
     "user_merge": true,
@@ -471,28 +487,32 @@ fence — **같은 idempotency_key의 재제출만 허용되고, 새 key의 "같
 6. **발행**: YouTube 등 업로드·공개는 앱이 하지 않는다.
 7. **한도·차단 대응**: 구독 한도 소진 시 기다릴지 다른 서비스로 갈지 결정;
    계정 경고가 오면 자동화 중단 여부를 사람이 결정.
+8. **첫 실곡 투입**: 자동 테스트는 짧은 placeholder/fixture 음원만 쓴다.
+   실제 곡의 선정(소유자 TBD, §7)과 첫 실곡 실행은 항상 사람 단계다.
 
 ---
 
-## 7. 준태님 결정 필요 사항
+## 7. 소유자 결정 — 결정 완료 (2026-10-20)
 
-1. **W00 결정 2의 번복 확인** — 소비자 영상 앱의 무-스크립팅 규칙을 폐기하고
-   브라우저 자동화를 허용하는 것(2026-10-19 지시로 해석했으나, 계정 정지
-   리스크가 있는 결정이므로 명시 확인 요청). 서비스별 허용 목록도 함께.
-2. **첫 자동화 대상 영상 서비스** — 실제로 내고 있는 구독이 무엇인지에 따라
-   첫 adapter가 결정된다: Flow(Veo)/Gemini 앱 Veo, Grok Imagine(SuperGrok),
-   Kling, Runway, OpenArt, Midjourney. 보유 구독 목록 요청.
-3. **helper 방식** — Playwright attach(사용자 프로필/전용 프로필) vs 브라우저
-   extension vs 둘 다. extension은 셀렉터 변경에 강하고 모델이 깨끗하지만
-   개발 면적이 크다; Playwright는 기존 Python 스택과 맞지만 브라우저 자동화
-   탐지에 더 노출될 수 있다.
-4. **OS 우선순위** — Windows 전용으로 먼저 갈지(PowerShell bootstrap, 소유자
-   예시와 일치), macOS/Linux 포트를 초기 범위에 넣을지.
-5. **web UI 기술** — 기존 Streamlit 위에서 6화면으로 재구성(빠름, 표현 한계)
-   vs 경량 웹 스택으로 교체(가이드 채팅·실시간 진행 보드에 유리, 공수 큼).
-6. **콘티 LLM 표면 우선순위** — 구현된 claude_cli만으로 충분한지, 구독 웹챗
-   자동화 adapter를 초기에 넣을지(사용자가 Claude 구독이 없으면 필수).
-7. **첫 실곡·첫 구간** — W00에서 열린 항목("어떤 곡의 어느 5~10초")의 후속:
-   새 흐름의 첫 대상 곡과 범위.
-8. **기존 paid 경로의 처리** — `FILM_UNIT_LEGACY_PAID` 게이트 유지(코드 보존)
-   vs 완전 삭제. 게이트 유지를 추천(마이그레이션 부담 없음).
+JunTae가 2026-10-20 11:57 KST에 전부 확정했다. 이전 "결정 필요" 항목의 처리 결과:
+
+1. **브라우저 자동화 승인 — W00 §6 결정 2 번복 확정.** 사용자 본인이 내고 있는
+   구독의 브라우저 자동화를 **승인한다**. 허용 서비스: **ChatGPT/Sora,
+   Flow/Gemini Veo, Grok Imagine, Kling, Runway, OpenArt, Midjourney**.
+   이 목록 밖의 서비스를 자동화하려면 새 승인이 필요하다. ToS 위반·계정 정지
+   리스크(§3-4)와 서비스별 사용자 명시 동의 조건은 그대로 유효하다.
+2. **OS — Windows first.** bootstrap은 PowerShell로 시작하고, macOS/Linux는
+   같은 프로토콜의 후속 포트다(§3-3).
+3. **helper 방식 — Playwright attach.** 사용자 본인 브라우저 프로필에
+   Playwright를 붙인다(§3-2 안 A). 브라우저 extension은 이번 범위에 넣지
+   않는다(필요 시 후속 결정).
+4. **web UI — Streamlit 유지.** 기존 로컬 Streamlit을 7개 화면(0–6) 단일
+   흐름으로 재구성한다. 별도 웹 스택으로 교체하지 않는다.
+5. **콘티 LLM — claude_cli 우선.** 화면 2의 첫 자동화 표면은 구현된
+   `engine/conti_cli_driver.py` 경로다. 구독 웹챗 adapter는 후속 노드
+   (w01-007)에서 승인 목록 안 서비스로 추가한다.
+6. **기존 paid 경로 — `FILM_UNIT_LEGACY_PAID` 게이트 유지, 기본 OFF.**
+   코드는 보존하되 기본 설치에서는 비활성화한다(w01-011).
+7. **첫 실곡 — 소유자가 추후 결정(TBD).** 그 전까지 모든 자동 테스트는
+   짧은 placeholder/fixture 음원을 쓰고, 첫 실곡 실행은 사람 단계로
+   남는다(§6 항목 8).
